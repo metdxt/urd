@@ -9,3 +9,9 @@ repository = "https://github.com/metdxt/urd"
 [dependencies]
 chumsky = "0.11.2"
 logos = "0.15.1"
+thiserror = "2.0.17"
+
+[lints]
+clippy.unwrap_used = "deny"
+clippy.expect_used = "deny"
+rust.missing_docs = "warn"
