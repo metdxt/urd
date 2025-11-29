@@ -18,7 +18,10 @@ pub enum StringPart {
     Literal(String),
 
     /// Interpolated variable reference
-    #[regex(r#"\{\s*([a-zA-Z_][a-zA-Z0-9_]*)?\s*\}"#, variable_parsing_callback)]
+    #[regex(
+        r#"\{\s*([a-zA-Z_][a-zA-Z0-9_]*)?\s*\}"#,
+        interpolation_parsing_callback
+    )]
     Variable(String),
 }
 
@@ -107,7 +110,7 @@ fn escape_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result<String
 }
 
 /// Parses string interpolation variables, e.g. {...}
-fn variable_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result<String> {
+fn interpolation_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result<String> {
     let slice = lex.slice();
     let inner_content = slice.trim_start_matches('{').trim_end_matches('}').trim();
     if inner_content.is_empty() {
@@ -214,5 +217,14 @@ mod tests {
                 StringPart::Literal("d".to_string()),
             ],
         );
+    }
+
+    #[test]
+    fn test_empty_interpolation() {
+        let mut lex = TestToken::lexer(r#""hello {}world""#);
+        assert!(matches!(lex.next(), Some(Err(LexerError::Interpolation))));
+
+        let mut lex = TestToken::lexer(r#""hello {   }world""#);
+        assert!(matches!(lex.next(), Some(Err(LexerError::Interpolation))));
     }
 }
