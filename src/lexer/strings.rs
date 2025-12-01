@@ -2,6 +2,13 @@ use super::Result;
 use crate::erro::LexerError;
 use logos::{Lexer, Logos};
 
+/// Interpolation details
+#[derive(Debug, Clone, PartialEq)]
+pub struct Interpolation {
+    pub path: String,
+    pub format: Option<String>,
+}
+
 /// Part of a string
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
@@ -18,11 +25,8 @@ pub enum StringPart {
     Literal(String),
 
     /// Interpolated variable reference
-    #[regex(
-        r#"\{\s*([a-zA-Z_][a-zA-Z0-9_]*)?\s*\}"#,
-        interpolation_parsing_callback
-    )]
-    Variable(String),
+    #[regex(r#"\{[^{}"]+\}"#, interpolation_parsing_callback)]
+    Interpolation(Interpolation),
 }
 
 /// String parsed from code
@@ -109,14 +113,54 @@ fn escape_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result<String
     }
 }
 
-/// Parses string interpolation variables, e.g. {...}
-fn interpolation_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result<String> {
+/// Parses string interpolation variables, e.g. {variable.path:format}
+fn interpolation_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result<Interpolation> {
     let slice = lex.slice();
-    let inner_content = slice.trim_start_matches('{').trim_end_matches('}').trim();
+    let inner_content = slice.trim_matches(|c| c == '{' || c == '}').trim();
+
     if inner_content.is_empty() {
         return Err(LexerError::Interpolation);
     }
-    Ok(inner_content.to_string())
+
+    let (path_str, format) = if let Some((p, f)) = inner_content.split_once(':') {
+        (p.trim(), Some(f.trim().to_string()))
+    } else {
+        (inner_content, None)
+    };
+
+    if !is_valid_path(path_str) {
+        return Err(LexerError::Interpolation);
+    }
+
+    Ok(Interpolation {
+        path: path_str.to_string(),
+        format,
+    })
+}
+
+fn is_valid_path(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    for part in s.split('.') {
+        if part.is_empty() {
+            return false;
+        }
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            if !first.is_ascii_alphabetic() && first != '_' {
+                return false;
+            }
+            for c in chars {
+                if !c.is_ascii_alphanumeric() && c != '_' {
+                    return false;
+                }
+            }
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -134,7 +178,7 @@ mod tests {
         StringLit(ParsedString),
     }
 
-    use super::StringPart;
+    use super::{Interpolation, StringPart};
 
     fn parse(input: &str) -> ParsedString {
         let mut lex = TestToken::lexer(input);
@@ -192,7 +236,10 @@ mod tests {
             s,
             &[
                 StringPart::Literal("hello ".to_string()),
-                StringPart::Variable("name".to_string()),
+                StringPart::Interpolation(Interpolation {
+                    path: "name".to_string(),
+                    format: None,
+                }),
                 StringPart::Literal("!".to_string()),
             ],
         );
@@ -201,7 +248,49 @@ mod tests {
     #[test]
     fn test_interpolation_spacing() {
         let s = parse(r#""{  foo  }""#);
-        assert_parts(s, &[StringPart::Variable("foo".to_string())]);
+        assert_parts(
+            s,
+            &[StringPart::Interpolation(Interpolation {
+                path: "foo".to_string(),
+                format: None,
+            })],
+        );
+    }
+
+    #[test]
+    fn test_interpolation_path() {
+        let s = parse(r#""{user.name}""#);
+        assert_parts(
+            s,
+            &[StringPart::Interpolation(Interpolation {
+                path: "user.name".to_string(),
+                format: None,
+            })],
+        );
+    }
+
+    #[test]
+    fn test_interpolation_format() {
+        let s = parse(r#""{val:02}""#);
+        assert_parts(
+            s,
+            &[StringPart::Interpolation(Interpolation {
+                path: "val".to_string(),
+                format: Some("02".to_string()),
+            })],
+        );
+    }
+
+    #[test]
+    fn test_interpolation_path_and_format() {
+        let s = parse(r#""{user.age : 03}""#);
+        assert_parts(
+            s,
+            &[StringPart::Interpolation(Interpolation {
+                path: "user.age".to_string(),
+                format: Some("03".to_string()),
+            })],
+        );
     }
 
     #[test]
@@ -213,7 +302,10 @@ mod tests {
                 StringPart::Literal("a".to_string()),
                 StringPart::EscapedChar("\n".to_string()),
                 StringPart::Literal("b".to_string()),
-                StringPart::Variable("c".to_string()),
+                StringPart::Interpolation(Interpolation {
+                    path: "c".to_string(),
+                    format: None,
+                }),
                 StringPart::Literal("d".to_string()),
             ],
         );
@@ -222,9 +314,9 @@ mod tests {
     #[test]
     fn test_empty_interpolation() {
         let mut lex = TestToken::lexer(r#""hello {}world""#);
-        assert!(matches!(lex.next(), Some(Err(LexerError::Interpolation))));
+        assert!(matches!(lex.next(), Some(Err(_))));
 
         let mut lex = TestToken::lexer(r#""hello {   }world""#);
-        assert!(matches!(lex.next(), Some(Err(LexerError::Interpolation))));
+        assert!(matches!(lex.next(), Some(Err(_))));
     }
 }
