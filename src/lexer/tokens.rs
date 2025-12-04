@@ -1,14 +1,21 @@
 use logos::{Lexer, Logos};
+use logos_display::{Debug, Display};
 
 use super::Result;
 use super::strings::{ParsedString, string_parsing_callback};
 use crate::erro::LexerError;
 
 /// Main token enum for Urd
-#[derive(Logos, Debug, Clone)]
+#[derive(Logos, Display, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
 pub enum Token {
+    /// When error occurs on lexer level it is packed into Error kind token.
+    /// We want parsing to be recoverable and not fail at the lexing stage.
+    Error,
+
     // ---- Basic datatypes ----
+    #[token("null")]
+    Null,
     /// String literal. Can be a static or interpolated string.
     /// In urd strings are multiline be default, no need to multiply enities.
     #[token("\"", string_parsing_callback)]
@@ -176,6 +183,11 @@ fn dice_parsing_callback<'a>(lex: &mut logos::Lexer<'a, Token>) -> Result<(u8, u
         .map_err(|_| LexerError::InvalidDice)?;
 
     Ok((count, sides))
+}
+
+/// Return a lexer for given source text
+pub fn lex_src(src: &str) -> Lexer<'_, Token> {
+    Token::lexer(src)
 }
 
 #[cfg(test)]
