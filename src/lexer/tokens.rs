@@ -71,6 +71,71 @@ pub enum Token {
     #[allow(missing_docs)]
     #[token("%")]
     Percent,
+
+    #[allow(missing_docs)]
+    #[token("=")]
+    Assign,
+
+    // ---- Comparison operators ----
+    #[allow(missing_docs)]
+    #[token("==")]
+    Equals,
+
+    #[allow(missing_docs)]
+    #[token("!=")]
+    NotEquals,
+
+    #[allow(missing_docs)]
+    #[token(">")]
+    GreaterThan,
+
+    #[allow(missing_docs)]
+    #[token("<")]
+    LessThan,
+
+    #[allow(missing_docs)]
+    #[token(">=")]
+    GreaterThanOrEquals,
+
+    #[allow(missing_docs)]
+    #[token("<=")]
+    LessThanOrEquals,
+
+    // ---- Bitwise operators ----
+    #[allow(missing_docs)]
+    #[token("&")]
+    BitwiseAnd,
+
+    #[allow(missing_docs)]
+    #[token("|")]
+    BitwiseOr,
+
+    #[allow(missing_docs)]
+    #[token("^")]
+    BitwiseXor,
+
+    #[allow(missing_docs)]
+    #[token("!")]
+    BitwiseNot,
+
+    #[allow(missing_docs)]
+    #[token("<<")]
+    LeftShift,
+
+    #[allow(missing_docs)]
+    #[token(">>")]
+    RightShift,
+
+    // ---- Logical operators ----
+    #[allow(missing_docs)]
+    #[token("and")]
+    #[token("&&")]
+    And,
+
+    #[allow(missing_docs)]
+    #[token("or")]
+    #[token("||")]
+    Or,
 }
 
 /// Parses ints, captured by `(0x[0-9a-fA-F_]+)|(0b[01_]+)|(0o[0-7_]+)|([0-9][0-9_]*)` regex
@@ -195,5 +260,28 @@ mod tests {
         assert!(matches!(lex("/"), Token::Slash));
         assert!(matches!(lex("//"), Token::DoubleSlash));
         assert!(matches!(lex("%"), Token::Percent));
+        assert!(matches!(lex("="), Token::Assign));
+
+        // Comparison operators
+        assert!(matches!(lex("=="), Token::Equals));
+        assert!(matches!(lex("!="), Token::NotEquals));
+        assert!(matches!(lex(">"), Token::GreaterThan));
+        assert!(matches!(lex("<"), Token::LessThan));
+        assert!(matches!(lex(">="), Token::GreaterThanOrEquals));
+        assert!(matches!(lex("<="), Token::LessThanOrEquals));
+
+        // Bitwise operators
+        assert!(matches!(lex("&"), Token::BitwiseAnd));
+        assert!(matches!(lex("|"), Token::BitwiseOr));
+        assert!(matches!(lex("^"), Token::BitwiseXor));
+        assert!(matches!(lex("!"), Token::BitwiseNot));
+        assert!(matches!(lex("<<"), Token::LeftShift));
+        assert!(matches!(lex(">>"), Token::RightShift));
+
+        // Logical operators
+        assert!(matches!(lex("and"), Token::And));
+        assert!(matches!(lex("&&"), Token::And));
+        assert!(matches!(lex("or"), Token::Or));
+        assert!(matches!(lex("||"), Token::Or));
     }
 }
