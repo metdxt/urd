@@ -13,14 +13,14 @@
 use crate::runtime::value::RuntimeValue;
 
 /// Represents a node in the Abstract Syntax Tree.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Ast {
     /// The content of this AST node
     content: AstContent,
 }
 
 /// Represents binary operators in the Urd language.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Operator {
     /// Addition operator (+)
     Plus,
@@ -65,7 +65,7 @@ pub enum Operator {
 }
 
 /// Represents unary operators in the Urd language.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOperator {
     /// Bitwise NOT operator (!)
     BitwiseNot,
@@ -74,7 +74,7 @@ pub enum UnaryOperator {
 }
 
 /// Represents the different types of content an AST node can contain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AstContent {
     /// A literal value
     Value(RuntimeValue),
