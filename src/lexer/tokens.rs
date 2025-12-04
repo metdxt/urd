@@ -40,6 +40,37 @@ pub enum Token {
     /// Dice syntax. Supports small d or capital D seprator and up to 255 count/sides
     #[regex(r#"\d{1,3}[dD]\d{1,3}"#, dice_parsing_callback)]
     Dice((u8, u8)),
+
+    /// Identifier
+    /// Identifier must start with ascii letter, optionally prefixed with any number of `_`.
+    /// Then it can contain any number of letters, digits or `_`
+    #[regex(r#"_*[a-zA-Z][_a-zA-Z\d]*"#, |lex| lex.slice().to_string())]
+    Ident(String),
+
+    // ---- Operators ----
+    #[allow(missing_docs)]
+    #[token("+")]
+    Plus,
+
+    #[allow(missing_docs)]
+    #[token("-")]
+    Minus,
+
+    #[allow(missing_docs)]
+    #[token("*")]
+    Star,
+
+    #[allow(missing_docs)]
+    #[token("/")]
+    Slash,
+
+    #[allow(missing_docs)]
+    #[token("//")]
+    DoubleSlash,
+
+    #[allow(missing_docs)]
+    #[token("%")]
+    Percent,
 }
 
 /// Parses ints, captured by `(0x[0-9a-fA-F_]+)|(0b[01_]+)|(0o[0-7_]+)|([0-9][0-9_]*)` regex
@@ -147,5 +178,22 @@ mod tests {
     #[test]
     fn strings() {
         assert!(matches!(lex(r#""hello""#), Token::StrLit(_)));
+    }
+
+    #[test]
+    fn identifiers() {
+        assert!(matches!(lex("foo"), Token::Ident(s) if s == "foo"));
+        assert!(matches!(lex("_bar"), Token::Ident(s) if s == "_bar"));
+        assert!(matches!(lex("baz_123"), Token::Ident(s) if s == "baz_123"));
+    }
+
+    #[test]
+    fn operators() {
+        assert!(matches!(lex("+"), Token::Plus));
+        assert!(matches!(lex("-"), Token::Minus));
+        assert!(matches!(lex("*"), Token::Star));
+        assert!(matches!(lex("/"), Token::Slash));
+        assert!(matches!(lex("//"), Token::DoubleSlash));
+        assert!(matches!(lex("%"), Token::Percent));
     }
 }
