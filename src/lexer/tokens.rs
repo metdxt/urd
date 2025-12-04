@@ -1,3 +1,12 @@
+//! # Token Definitions Module
+//!
+//! This module defines the tokens used in the Urd language. The `Token` enum represents
+//! all possible lexical elements that can be recognized by the lexer, including literals,
+//! identifiers, operators, and punctuation.
+//!
+//! The module also provides callback functions for parsing complex tokens like integers,
+//! floats, and dice expressions.
+
 use logos::{Lexer, Logos};
 use logos_display::{Debug, Display};
 
@@ -8,12 +17,14 @@ use crate::erro::LexerError;
 /// Main token enum for Urd
 #[derive(Logos, Display, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
+#[logos(skip r"[ \t\n\r]+")] // Skip whitespace
 pub enum Token {
     /// When error occurs on lexer level it is packed into Error kind token.
     /// We want parsing to be recoverable and not fail at the lexing stage.
     Error,
 
     // ---- Basic datatypes ----
+    /// The null value
     #[token("null")]
     Null,
     /// String literal. Can be a static or interpolated string.
@@ -82,6 +93,15 @@ pub enum Token {
     #[allow(missing_docs)]
     #[token("=")]
     Assign,
+
+    // ---- Parentheses ----
+    #[allow(missing_docs)]
+    #[token("(")]
+    LeftParen,
+
+    #[allow(missing_docs)]
+    #[token(")")]
+    RightParen,
 
     // ---- Comparison operators ----
     #[allow(missing_docs)]

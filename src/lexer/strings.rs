@@ -1,30 +1,49 @@
+//! # String Parsing Module
+//!
+//! This module handles parsing of string literals in Urd source code, including:
+//! - Plain string literals
+//! - Escape sequences (e.g., \n, \t, \", etc.)
+//! - Unicode escape sequences (e.g., \xHH, \uHHHH, \u{HHHH})
+//! - String interpolation (e.g., "{variable}")
+//!
+//! The main type is [`ParsedString`], which stores the parsed components of a string
+//! for later evaluation at runtime.
+
 use super::Result;
 use crate::erro::LexerError;
 use logos::{Lexer, Logos};
 
-/// Interpolation details
+/// Represents an interpolated variable within a string literal.
+///
+/// Interpolations can include a path to a variable and an optional format string.
+/// For example, in "{user.name:02}", the path is "user.name" and the format is "02".
 #[derive(Debug, Clone, PartialEq)]
 pub struct Interpolation {
+    /// The dot-separated path to the variable (e.g., "user.name")
     pub path: String,
+    /// Optional format string for formatting the interpolated value
     pub format: Option<String>,
 }
 
-/// Part of a string
+/// Represents different parts that make up a parsed string literal.
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
 pub enum StringPart {
+    /// Marker for the end of a string literal
     #[token("\"")]
     ExitString,
+    /// An escaped character (e.g., \n, \t, \x41, \u0041)
     #[regex(
         r#"\\[ntr\\"{}]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\u\{[0-9a-fA-F]{1,6}\}"#,
         escape_parsing_callback
     )]
     EscapedChar(String),
 
+    /// A literal segment of text without escapes or interpolations
     #[regex(r#"([^\\{}"]+)"#, |lex| lex.slice().to_string())]
     Literal(String),
 
-    /// Interpolated variable reference
+    /// An interpolated variable reference with optional formatting
     #[regex(r#"\{[^{}"]+\}"#, interpolation_parsing_callback)]
     Interpolation(Interpolation),
 }

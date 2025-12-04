@@ -1,3 +1,9 @@
+//! # Error Handling Module
+//!
+//! This module defines error types used throughout the Urd language implementation.
+//! It includes lexer errors, parsing errors, and runtime errors that can occur
+//! during the compilation and execution of Urd scripts.
+
 use std::num::{ParseFloatError, ParseIntError};
 
 /// Errors that can happen on lexing level
