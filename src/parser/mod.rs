@@ -16,7 +16,6 @@ pub mod aliases;
 pub mod ast;
 pub mod expr;
 
-use ariadne::{Color, Label, Report, ReportKind, Source};
 use chumsky::{input::Stream, prelude::*};
 
 use crate::lexer::{Token, lex_src};
