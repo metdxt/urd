@@ -12,6 +12,7 @@
 //! - [`ast`]: Abstract Syntax Tree definitions and node types
 //! - [`expr`]: Expression parsing implementation using Pratt parser
 
+pub mod aliases;
 pub mod ast;
 pub mod expr;
 

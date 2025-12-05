@@ -18,7 +18,7 @@
 //! - [`parser`]: Parsing tokens into an Abstract Syntax Tree (AST)
 //! - [`runtime`]: Runtime evaluation and value management
 
-#![feature(type_alias_impl_trait)]
+#![feature(trait_alias)]
 
 pub mod erro;
 pub mod lexer;
