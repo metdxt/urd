@@ -38,21 +38,7 @@ pub fn parse_src(src: &str) -> Result<(), ()> {
             Ok(())
         }
         Err(errs) => {
-            for err in errs {
-                #[allow(clippy::unwrap_used)]
-                Report::build(ReportKind::Error, ((), err.span().into_range()))
-                    .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
-                    .with_code(3)
-                    .with_message(err.to_string())
-                    .with_label(
-                        Label::new(((), err.span().into_range()))
-                            .with_message(err.reason().to_string())
-                            .with_color(Color::Red),
-                    )
-                    .finish()
-                    .eprint(Source::from(src))
-                    .unwrap();
-            }
+            println!("{:?}", errs);
             Err(())
         }
     }
@@ -123,5 +109,11 @@ mod tests {
 
         // Test string with interpolation (should parse but interpolation handled at runtime)
         assert!(parse_src("\"hello {name}\"").is_ok());
+    }
+
+    #[test]
+    fn test_failure() {
+        let a = parse_src("");
+        assert!(a.is_err());
     }
 }
