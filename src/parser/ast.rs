@@ -71,6 +71,8 @@ pub enum UnaryOperator {
     BitwiseNot,
     /// Negation operator (-)
     Negate,
+    /// Logical NOT operator (not)
+    Not,
 }
 
 /// Represents the different types of content an AST node can contain.
@@ -204,6 +206,10 @@ impl Ast {
     #[allow(missing_docs)]
     pub fn or_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Or, l, r)
+    }
+    #[allow(missing_docs)]
+    pub fn not_op(expr: Ast) -> Self {
+        Ast::unary(UnaryOperator::Not, expr)
     }
     #[allow(missing_docs)]
     pub fn assign_op(l: Ast, r: Ast) -> Self {

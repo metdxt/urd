@@ -44,6 +44,7 @@ pub fn expr<'tokens, I: Input<'tokens>>() -> impl UrdParser<'tokens, I> {
             prefix(11, just(Token::BitwiseNot), |_, r, _| {
                 Ast::bitwise_not_op(r)
             }),
+            prefix(11, just(Token::Not), |_, r, _| Ast::not_op(r)),
             prefix(11, just(Token::Minus), |_, r, _| Ast::negate_op(r)),
             // Multiplication/division (precedence 10)
             infix(left(10), just(Token::Star), |l, _, r, _| {

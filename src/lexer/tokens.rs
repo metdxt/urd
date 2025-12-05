@@ -163,6 +163,10 @@ pub enum Token {
     #[token("or")]
     #[token("||")]
     Or,
+
+    #[allow(missing_docs)]
+    #[token("not")]
+    Not,
 }
 
 /// Parses ints, captured by `(0x[0-9a-fA-F_]+)|(0b[01_]+)|(0o[0-7_]+)|([0-9][0-9_]*)` regex
