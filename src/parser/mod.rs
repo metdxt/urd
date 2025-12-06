@@ -28,7 +28,7 @@ use crate::{
 
 /// Parses a string of Urd source code and either returns a successful result or prints
 /// detailed error information.
-pub fn parse_src(src: &str) -> Result<(), Vec<Rich<'_, Token>>> {
+pub fn parse_src(src: &str) -> Result<Ast, Vec<Rich<'_, Token>>> {
     let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
         Ok(tok) => (tok, span.into()),
         Err(e) => (Token::Error(e), span.into()),
@@ -37,16 +37,7 @@ pub fn parse_src(src: &str) -> Result<(), Vec<Rich<'_, Token>>> {
     let tok_stream =
         Stream::from_iter(lexer).map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
 
-    match expr::expr().parse(tok_stream).into_result() {
-        Ok(ast) => {
-            println!("{:?}", ast);
-            Ok(())
-        }
-        Err(errs) => {
-            println!("{:?}", errs);
-            Err(errs)
-        }
-    }
+    expr::expr().parse(tok_stream).into_result()
 }
 
 #[cfg(test)]
