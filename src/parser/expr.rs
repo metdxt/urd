@@ -20,6 +20,19 @@ use super::ast::Ast;
 use crate::lexer::Token;
 use crate::runtime::value::RuntimeValue;
 
+/// Represents a value
+pub fn atom<'tokens, I: Input<'tokens>>() -> impl UrdParser<'tokens, I> {
+    select! {
+        Token::Null => Ast::value(RuntimeValue::Null),
+        Token::BoolLit(b) => Ast::value(RuntimeValue::Bool(b)),
+        Token::IntLit(i) => Ast::value(RuntimeValue::Int(i)),
+        Token::FloatLit(f) => Ast::value(RuntimeValue::Float(f)),
+        Token::StrLit(s) => Ast::value(RuntimeValue::Str(s)),
+        Token::Dice((count, sides)) => Ast::value(RuntimeValue::Dice(count, sides)),
+        Token::Ident(name) => Ast::value(RuntimeValue::Ident(name)),
+    }
+}
+
 /// Creates a Pratt parser for parsing expressions in the Urd language.
 ///
 /// The parser handles all literals, identifiers, unary operators, binary operators,
@@ -27,19 +40,9 @@ use crate::runtime::value::RuntimeValue;
 /// parser configuration with higher numbers indicating higher precedence.
 pub fn expr<'tokens, I: Input<'tokens>>() -> impl UrdParser<'tokens, I> {
     recursive(|expr| {
-        let atom = select! {
-            Token::Null => Ast::value(RuntimeValue::Null),
-            Token::BoolLit(b) => Ast::value(RuntimeValue::Bool(b)),
-            Token::IntLit(i) => Ast::value(RuntimeValue::Int(i)),
-            Token::FloatLit(f) => Ast::value(RuntimeValue::Float(f)),
-            Token::StrLit(s) => Ast::value(RuntimeValue::Str(s)),
-            Token::Dice((count, sides)) => Ast::value(RuntimeValue::Dice(count, sides)),
-            Token::Ident(name) => Ast::value(RuntimeValue::Ident(name)),
-        };
+        let term = atom().or(expr.delimited_by(just(Token::LeftParen), just(Token::RightParen)));
 
-        let atom = atom.or(expr.delimited_by(just(Token::LeftParen), just(Token::RightParen)));
-
-        atom.pratt((
+        term.pratt((
             // Unary operators (precedence 11)
             prefix(11, just(Token::BitwiseNot), |_, r, _| {
                 Ast::bitwise_not_op(r)
