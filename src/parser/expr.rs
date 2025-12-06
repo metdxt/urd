@@ -125,15 +125,463 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
 mod tests {
     use crate::{
         parse_test,
-        parser::{ast::Ast, expr::expr},
+        parser::{
+            ast::{Ast, Operator, UnaryOperator},
+            expr::expr,
+        },
         runtime::value::RuntimeValue,
     };
 
+    // Test literals
     #[test]
-    fn test_parse() {
+    fn test_literals() {
         assert_eq!(
             parse_test!(expr(), "42"),
             Ok(Ast::value(RuntimeValue::Int(42)))
-        )
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "3.14"),
+            Ok(Ast::value(RuntimeValue::Float(3.14)))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "true"),
+            Ok(Ast::value(RuntimeValue::Bool(true)))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "false"),
+            Ok(Ast::value(RuntimeValue::Bool(false)))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "null"),
+            Ok(Ast::value(RuntimeValue::Null))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "\"hello\""),
+            Ok(Ast::value(RuntimeValue::Str(
+                crate::lexer::strings::ParsedString::new_plain("hello")
+            )))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "2d6"),
+            Ok(Ast::value(RuntimeValue::Dice(2, 6)))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "x"),
+            Ok(Ast::value(RuntimeValue::Ident("x".to_string())))
+        );
+    }
+
+    // Test parenthesized expressions
+    #[test]
+    fn test_parenthesized_expressions() {
+        assert_eq!(
+            parse_test!(expr(), "(1)"),
+            Ok(Ast::value(RuntimeValue::Int(1)))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "(1 + 2)"),
+            Ok(Ast::binop(
+                Operator::Plus,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+    }
+
+    // Test unary operators
+    #[test]
+    fn test_unary_operators() {
+        assert_eq!(
+            parse_test!(expr(), "-42"),
+            Ok(Ast::unary(
+                UnaryOperator::Negate,
+                Ast::value(RuntimeValue::Int(42))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "not true"),
+            Ok(Ast::unary(
+                UnaryOperator::Not,
+                Ast::value(RuntimeValue::Bool(true))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "!1"),
+            Ok(Ast::unary(
+                UnaryOperator::BitwiseNot,
+                Ast::value(RuntimeValue::Int(1))
+            ))
+        );
+    }
+
+    // Test arithmetic operators
+    #[test]
+    fn test_arithmetic_operators() {
+        assert_eq!(
+            parse_test!(expr(), "1 + 2"),
+            Ok(Ast::binop(
+                Operator::Plus,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "3 - 1"),
+            Ok(Ast::binop(
+                Operator::Minus,
+                Ast::value(RuntimeValue::Int(3)),
+                Ast::value(RuntimeValue::Int(1))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "4 * 5"),
+            Ok(Ast::binop(
+                Operator::Multiply,
+                Ast::value(RuntimeValue::Int(4)),
+                Ast::value(RuntimeValue::Int(5))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "10 / 2"),
+            Ok(Ast::binop(
+                Operator::Divide,
+                Ast::value(RuntimeValue::Int(10)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "10 // 3"),
+            Ok(Ast::binop(
+                Operator::DoubleSlash,
+                Ast::value(RuntimeValue::Int(10)),
+                Ast::value(RuntimeValue::Int(3))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "10 % 3"),
+            Ok(Ast::binop(
+                Operator::Percent,
+                Ast::value(RuntimeValue::Int(10)),
+                Ast::value(RuntimeValue::Int(3))
+            ))
+        );
+    }
+
+    // Test comparison operators
+    #[test]
+    fn test_comparison_operators() {
+        assert_eq!(
+            parse_test!(expr(), "1 == 2"),
+            Ok(Ast::binop(
+                Operator::Equals,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "1 != 2"),
+            Ok(Ast::binop(
+                Operator::NotEquals,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "1 > 2"),
+            Ok(Ast::binop(
+                Operator::GreaterThan,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "1 < 2"),
+            Ok(Ast::binop(
+                Operator::LessThan,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "1 >= 2"),
+            Ok(Ast::binop(
+                Operator::GreaterThanOrEquals,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "1 <= 2"),
+            Ok(Ast::binop(
+                Operator::LessThanOrEquals,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+    }
+
+    // Test bitwise operators
+    #[test]
+    fn test_bitwise_operators() {
+        assert_eq!(
+            parse_test!(expr(), "1 & 2"),
+            Ok(Ast::binop(
+                Operator::BitwiseAnd,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "1 | 2"),
+            Ok(Ast::binop(
+                Operator::BitwiseOr,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "1 ^ 2"),
+            Ok(Ast::binop(
+                Operator::BitwiseXor,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "1 << 2"),
+            Ok(Ast::binop(
+                Operator::LeftShift,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "8 >> 2"),
+            Ok(Ast::binop(
+                Operator::RightShift,
+                Ast::value(RuntimeValue::Int(8)),
+                Ast::value(RuntimeValue::Int(2))
+            ))
+        );
+    }
+
+    // Test logical operators
+    #[test]
+    fn test_logical_operators() {
+        assert_eq!(
+            parse_test!(expr(), "true and false"),
+            Ok(Ast::binop(
+                Operator::And,
+                Ast::value(RuntimeValue::Bool(true)),
+                Ast::value(RuntimeValue::Bool(false))
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "true or false"),
+            Ok(Ast::binop(
+                Operator::Or,
+                Ast::value(RuntimeValue::Bool(true)),
+                Ast::value(RuntimeValue::Bool(false))
+            ))
+        );
+    }
+
+    // Test assignment operator
+    #[test]
+    fn test_assignment_operator() {
+        assert_eq!(
+            parse_test!(expr(), "x = 42"),
+            Ok(Ast::binop(
+                Operator::Assign,
+                Ast::value(RuntimeValue::Ident("x".to_string())),
+                Ast::value(RuntimeValue::Int(42))
+            ))
+        );
+    }
+
+    // Test operator precedence
+    #[test]
+    fn test_operator_precedence() {
+        // Multiplication should have higher precedence than addition
+        assert_eq!(
+            parse_test!(expr(), "1 + 2 * 3"),
+            Ok(Ast::binop(
+                Operator::Plus,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::binop(
+                    Operator::Multiply,
+                    Ast::value(RuntimeValue::Int(2)),
+                    Ast::value(RuntimeValue::Int(3))
+                )
+            ))
+        );
+
+        // Equality should have lower precedence than addition
+        assert_eq!(
+            parse_test!(expr(), "1 + 2 == 3"),
+            Ok(Ast::binop(
+                Operator::Equals,
+                Ast::binop(
+                    Operator::Plus,
+                    Ast::value(RuntimeValue::Int(1)),
+                    Ast::value(RuntimeValue::Int(2))
+                ),
+                Ast::value(RuntimeValue::Int(3))
+            ))
+        );
+
+        // Assignment should have the lowest precedence
+        assert_eq!(
+            parse_test!(expr(), "x = 1 + 2 * 3"),
+            Ok(Ast::binop(
+                Operator::Assign,
+                Ast::value(RuntimeValue::Ident("x".to_string())),
+                Ast::binop(
+                    Operator::Plus,
+                    Ast::value(RuntimeValue::Int(1)),
+                    Ast::binop(
+                        Operator::Multiply,
+                        Ast::value(RuntimeValue::Int(2)),
+                        Ast::value(RuntimeValue::Int(3))
+                    )
+                )
+            ))
+        );
+    }
+
+    // Test associativity
+    #[test]
+    fn test_associativity() {
+        // Left associativity for addition
+        assert_eq!(
+            parse_test!(expr(), "1 - 2 - 3"),
+            Ok(Ast::binop(
+                Operator::Minus,
+                Ast::binop(
+                    Operator::Minus,
+                    Ast::value(RuntimeValue::Int(1)),
+                    Ast::value(RuntimeValue::Int(2))
+                ),
+                Ast::value(RuntimeValue::Int(3))
+            ))
+        );
+
+        // Right associativity for assignment
+        assert_eq!(
+            parse_test!(expr(), "x = y = 1"),
+            Ok(Ast::binop(
+                Operator::Assign,
+                Ast::value(RuntimeValue::Ident("x".to_string())),
+                Ast::binop(
+                    Operator::Assign,
+                    Ast::value(RuntimeValue::Ident("y".to_string())),
+                    Ast::value(RuntimeValue::Int(1))
+                )
+            ))
+        );
+    }
+
+    // Test complex expressions
+    #[test]
+    fn test_complex_expressions() {
+        // Nested expressions with mixed operators
+        assert_eq!(
+            parse_test!(expr(), "(1 + 2) * (3 - 4) / 5"),
+            Ok(Ast::binop(
+                Operator::Divide,
+                Ast::binop(
+                    Operator::Multiply,
+                    Ast::binop(
+                        Operator::Plus,
+                        Ast::value(RuntimeValue::Int(1)),
+                        Ast::value(RuntimeValue::Int(2))
+                    ),
+                    Ast::binop(
+                        Operator::Minus,
+                        Ast::value(RuntimeValue::Int(3)),
+                        Ast::value(RuntimeValue::Int(4))
+                    )
+                ),
+                Ast::value(RuntimeValue::Int(5))
+            ))
+        );
+
+        // Mixed logical and comparison operators
+        assert_eq!(
+            parse_test!(expr(), "1 < 2 and 3 > 4"),
+            Ok(Ast::binop(
+                Operator::And,
+                Ast::binop(
+                    Operator::LessThan,
+                    Ast::value(RuntimeValue::Int(1)),
+                    Ast::value(RuntimeValue::Int(2))
+                ),
+                Ast::binop(
+                    Operator::GreaterThan,
+                    Ast::value(RuntimeValue::Int(3)),
+                    Ast::value(RuntimeValue::Int(4))
+                )
+            ))
+        );
+
+        // Chained comparisons with logical operators
+        assert_eq!(
+            parse_test!(expr(), "1 < 2 == 2 < 3"),
+            Ok(Ast::binop(
+                Operator::Equals,
+                Ast::binop(
+                    Operator::LessThan,
+                    Ast::value(RuntimeValue::Int(1)),
+                    Ast::value(RuntimeValue::Int(2))
+                ),
+                Ast::binop(
+                    Operator::LessThan,
+                    Ast::value(RuntimeValue::Int(2)),
+                    Ast::value(RuntimeValue::Int(3))
+                )
+            ))
+        );
+    }
+
+    // Test error handling
+    #[test]
+    fn test_error_handling() {
+        // Incomplete expression
+        assert!(parse_test!(expr(), "1 +").is_err());
+
+        // Unbalanced parentheses
+        assert!(parse_test!(expr(), "(1 + 2").is_err());
+        assert!(parse_test!(expr(), "1 + 2)").is_err());
+
+        // Invalid operator sequence
+        assert!(parse_test!(expr(), "1 + + 2").is_err());
+
+        // Empty input
+        assert!(parse_test!(expr(), "").is_err());
     }
 }
