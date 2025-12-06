@@ -120,3 +120,20 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
     .boxed()
     .labelled("expression")
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        parse_test,
+        parser::{ast::Ast, expr::expr},
+        runtime::value::RuntimeValue,
+    };
+
+    #[test]
+    fn test_parse() {
+        assert_eq!(
+            parse_test!(expr(), "42"),
+            Ok(Ast::value(RuntimeValue::Int(42)))
+        )
+    }
+}
