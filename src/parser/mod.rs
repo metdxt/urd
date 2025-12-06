@@ -18,7 +18,13 @@ pub mod expr;
 
 use chumsky::{input::Stream, prelude::*};
 
-use crate::lexer::{Token, lex_src};
+use crate::{
+    lexer::{Token, lex_src},
+    parser::{
+        aliases::{UrdInput, UrdParser},
+        ast::Ast,
+    },
+};
 
 /// Parses a string of Urd source code and either returns a successful result or prints
 /// detailed error information.

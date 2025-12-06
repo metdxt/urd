@@ -15,13 +15,13 @@ use chumsky::pratt::*;
 use chumsky::prelude::*;
 use chumsky::{Parser, select};
 
-use super::aliases::{Input, UrdParser};
+use super::aliases::{UrdInput, UrdParser};
 use super::ast::Ast;
 use crate::lexer::Token;
 use crate::runtime::value::RuntimeValue;
 
 /// Represents a value
-pub fn atom<'tokens, I: Input<'tokens>>() -> impl UrdParser<'tokens, I> {
+pub fn atom<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
     select! {
         Token::Null => Ast::value(RuntimeValue::Null),
         Token::BoolLit(b) => Ast::value(RuntimeValue::Bool(b)),
@@ -39,7 +39,7 @@ pub fn atom<'tokens, I: Input<'tokens>>() -> impl UrdParser<'tokens, I> {
 /// The parser handles all literals, identifiers, unary operators, binary operators,
 /// and parenthesized expressions. Operator precedence is defined by the Pratt
 /// parser configuration with higher numbers indicating higher precedence.
-pub fn expr<'tokens, I: Input<'tokens>>() -> impl UrdParser<'tokens, I> {
+pub fn expr<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
     recursive(|expr| {
         let term = atom().or(expr.delimited_by(just(Token::LeftParen), just(Token::RightParen)));
 
