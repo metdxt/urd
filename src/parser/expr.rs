@@ -134,6 +134,7 @@ mod tests {
 
     // Test literals
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_literals() {
         assert_eq!(
             parse_test!(expr(), "42"),
