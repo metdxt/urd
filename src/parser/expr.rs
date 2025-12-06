@@ -31,6 +31,7 @@ pub fn atom<'tokens, I: Input<'tokens>>() -> impl UrdParser<'tokens, I> {
         Token::Dice((count, sides)) => Ast::value(RuntimeValue::Dice(count, sides)),
         Token::Ident(name) => Ast::value(RuntimeValue::Ident(name)),
     }
+    .labelled("value")
 }
 
 /// Creates a Pratt parser for parsing expressions in the Urd language.
@@ -117,4 +118,5 @@ pub fn expr<'tokens, I: Input<'tokens>>() -> impl UrdParser<'tokens, I> {
         ))
     })
     .boxed()
+    .labelled("expression")
 }
