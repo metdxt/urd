@@ -22,10 +22,10 @@ use crate::lexer::{Token, lex_src};
 
 /// Parses a string of Urd source code and either returns a successful result or prints
 /// detailed error information.
-pub fn parse_src(src: &str) -> Result<(), ()> {
+pub fn parse_src(src: &str) -> Result<(), Vec<Rich<'_, Token>>> {
     let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
         Ok(tok) => (tok, span.into()),
-        Err(_e) => (Token::Error, span.into()),
+        Err(e) => (Token::Error(e), span.into()),
     });
 
     let tok_stream =
@@ -38,7 +38,7 @@ pub fn parse_src(src: &str) -> Result<(), ()> {
         }
         Err(errs) => {
             println!("{:?}", errs);
-            Err(())
+            Err(errs)
         }
     }
 }
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_failure() {
-        let a = parse_src("");
+        let a = parse_src("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
         assert!(a.is_err());
     }
 }

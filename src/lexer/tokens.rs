@@ -21,7 +21,7 @@ use crate::erro::LexerError;
 pub enum Token {
     /// When error occurs on lexer level it is packed into Error kind token.
     /// We want parsing to be recoverable and not fail at the lexing stage.
-    Error,
+    Error(LexerError),
 
     // ---- Basic datatypes ----
     /// The null value
