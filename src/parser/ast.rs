@@ -75,6 +75,17 @@ pub enum UnaryOperator {
     Not,
 }
 
+/// Data declaration modes
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeclKind {
+    /// Globally available variable, typically represents the data game wants to preserve, global state.
+    Global,
+    /// Immutable data
+    Constant,
+    /// Scoped variable
+    Variable,
+}
+
 /// Represents the different types of content an AST node can contain.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstContent {
@@ -95,6 +106,16 @@ pub enum AstContent {
         op: UnaryOperator,
         /// The operand
         expr: Box<Ast>,
+    },
+
+    /// Variable/const declaration (global/let/const ... = ...)
+    Declaration {
+        /// Kind of declaration (const, global, let keywords)
+        kind: DeclKind,
+        /// Name(s) of variables/consts being declared, typically identifier(s)
+        decl_name: Box<Ast>,
+        /// Definitions. Typically expressions to be computed
+        decl_defs: Box<Ast>,
     },
 }
 
@@ -224,5 +245,13 @@ impl Ast {
     #[allow(missing_docs)]
     pub fn negate_op(expr: Ast) -> Self {
         Ast::unary(UnaryOperator::Negate, expr)
+    }
+
+    pub fn decl(kind: DeclKind, name: Ast, def: Ast) -> Self {
+        Ast::new(AstContent::Declaration {
+            kind,
+            decl_name: Box::new(name),
+            decl_defs: Box::new(def),
+        })
     }
 }

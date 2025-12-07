@@ -18,6 +18,7 @@ use chumsky::{Parser, select};
 use super::aliases::{UrdInput, UrdParser};
 use super::ast::Ast;
 use crate::lexer::Token;
+use crate::parser::ast::DeclKind;
 use crate::runtime::value::RuntimeValue;
 
 /// Represents a value
@@ -121,13 +122,39 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
     .labelled("expression")
 }
 
+/// Parser for variable/constant declarations. Parses:
+///
+/// - const ident = expr
+/// - let ident = expr
+/// - global ident = expr
+pub fn declaration<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    let decl_word = select! {
+        Token::Const => DeclKind::Constant,
+        Token::Let => DeclKind::Variable,
+        Token::Global => DeclKind::Global
+    };
+
+    let ident = select! {
+        Token::Ident(name) => Ast::value(RuntimeValue::Ident(name))
+    };
+
+    decl_word
+        .then(ident)
+        .then_ignore(just(Token::Assign))
+        .then(expr())
+        .map(|((decl, name), def)| Ast::decl(decl, name, def))
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use crate::{
+        lexer::strings::{ParsedString, StringPart},
         parse_test,
         parser::{
-            ast::{Ast, Operator, UnaryOperator},
-            expr::expr,
+            ast::{Ast, DeclKind, Operator, UnaryOperator},
+            expr::{declaration, expr},
         },
         runtime::value::RuntimeValue,
     };
@@ -584,5 +611,136 @@ mod tests {
 
         // Empty input
         assert!(parse_test!(expr(), "").is_err());
+    }
+
+    // Test declaration parser
+    #[test]
+    fn test_const_declarations() {
+        // Simple constant with integer literal
+        let expected = Ast::decl(
+            DeclKind::Constant,
+            Ast::value(RuntimeValue::Ident("x".to_string())),
+            Ast::value(RuntimeValue::Int(42)),
+        );
+        assert_eq!(
+            parse_test!(declaration(), "const x = 42").unwrap(),
+            expected
+        );
+
+        // Constant with expression (using integers)
+        // Build expected AST for "1 + 2 * 3" expression
+        let expr = Ast::binop(
+            Operator::Plus,
+            Ast::value(RuntimeValue::Int(1)),
+            Ast::binop(
+                Operator::Multiply,
+                Ast::value(RuntimeValue::Int(2)),
+                Ast::value(RuntimeValue::Int(3)),
+            ),
+        );
+        let expected = Ast::decl(
+            DeclKind::Constant,
+            Ast::value(RuntimeValue::Ident("result".to_string())),
+            expr,
+        );
+        assert_eq!(
+            parse_test!(declaration(), "const result = 1 + 2 * 3").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_let_declarations() {
+        // Simple variable with integer literal
+        let expected = Ast::decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::Ident("y".to_string())),
+            Ast::value(RuntimeValue::Int(42)),
+        );
+        assert_eq!(parse_test!(declaration(), "let y = 42").unwrap(), expected);
+
+        // Variable with string literal
+        let expected = Ast::decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::Ident("name".to_string())),
+            Ast::value(RuntimeValue::Str(ParsedString::new_from_parts(vec![
+                StringPart::Literal("test".to_string()),
+            ]))),
+        );
+        assert_eq!(
+            parse_test!(declaration(), "let name = \"test\"").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_global_declarations() {
+        // Simple global with literal
+        let expected = Ast::decl(
+            DeclKind::Global,
+            Ast::value(RuntimeValue::Ident("counter".to_string())),
+            Ast::value(RuntimeValue::Int(0)),
+        );
+        assert_eq!(
+            parse_test!(declaration(), "global counter = 0").unwrap(),
+            expected
+        );
+
+        // Global with complex expression
+        let expr = Ast::binop(
+            Operator::Plus,
+            Ast::value(RuntimeValue::Int(1)),
+            Ast::value(RuntimeValue::Int(2)),
+        );
+        let expected = Ast::decl(
+            DeclKind::Global,
+            Ast::value(RuntimeValue::Ident("config".to_string())),
+            expr,
+        );
+        assert_eq!(
+            parse_test!(declaration(), "global config = 1 + 2").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_declaration_with_parenthesized_expression() {
+        let inner_expr = Ast::binop(
+            Operator::Plus,
+            Ast::value(RuntimeValue::Int(1)),
+            Ast::value(RuntimeValue::Int(2)),
+        );
+        let expr = Ast::binop(
+            Operator::Multiply,
+            inner_expr,
+            Ast::value(RuntimeValue::Int(3)),
+        );
+        let expected = Ast::decl(
+            DeclKind::Constant,
+            Ast::value(RuntimeValue::Ident("value".to_string())),
+            expr,
+        );
+        assert_eq!(
+            parse_test!(declaration(), "const value = (1 + 2) * 3").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_declaration_error_handling() {
+        // Missing equals sign
+        assert!(parse_test!(declaration(), "const x 42").is_err());
+
+        // Missing expression
+        assert!(parse_test!(declaration(), "let x =").is_err());
+
+        // Invalid declaration keyword
+        assert!(parse_test!(declaration(), "var x = 1").is_err());
+
+        // Missing identifier
+        assert!(parse_test!(declaration(), "const = 1").is_err());
+
+        // Empty input
+        assert!(parse_test!(declaration(), "").is_err());
     }
 }
