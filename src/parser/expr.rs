@@ -143,6 +143,7 @@ pub fn declaration<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
         .then_ignore(just(Token::Assign))
         .then(expr())
         .map(|((decl, name), def)| Ast::decl(decl, name, def))
+        .labelled("declaration")
 }
 
 #[cfg(test)]

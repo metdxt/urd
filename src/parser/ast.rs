@@ -247,6 +247,7 @@ impl Ast {
         Ast::unary(UnaryOperator::Negate, expr)
     }
 
+    /// Create declaration type node
     pub fn decl(kind: DeclKind, name: Ast, def: Ast) -> Self {
         Ast::new(AstContent::Declaration {
             kind,
