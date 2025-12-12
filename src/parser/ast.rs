@@ -108,6 +108,9 @@ pub enum AstContent {
         expr: Box<Ast>,
     },
 
+    /// Comma separated list of expressions
+    ExprList(Vec<Ast>),
+
     /// Variable/const declaration (global/let/const ... = ...)
     Declaration {
         /// Kind of declaration (const, global, let keywords)
@@ -254,5 +257,10 @@ impl Ast {
             decl_name: Box::new(name),
             decl_defs: Box::new(def),
         })
+    }
+
+    /// Create comma-separated list of expressions
+    pub fn expr_list(exprs: Vec<Ast>) -> Self {
+        Self::new(AstContent::ExprList(exprs))
     }
 }

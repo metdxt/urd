@@ -122,6 +122,16 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
     .labelled("expression")
 }
 
+/// Parser for comma-separated list of expressions. Typically used for list construction and
+/// function calls.
+pub fn comma_separated_exprs<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    expr()
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .map(Ast::expr_list)
+}
+
 /// Parser for variable/constant declarations. Parses:
 ///
 /// - const ident = expr
@@ -155,7 +165,7 @@ mod tests {
         parse_test,
         parser::{
             ast::{Ast, DeclKind, Operator, UnaryOperator},
-            expr::{declaration, expr},
+            expr::{comma_separated_exprs, declaration, expr},
         },
         runtime::value::RuntimeValue,
     };
@@ -743,5 +753,104 @@ mod tests {
 
         // Empty input
         assert!(parse_test!(declaration(), "").is_err());
+    }
+
+    // Test comma_separated_exprs
+    #[test]
+    fn test_comma_separated_exprs() {
+        // Test single expression
+        assert_eq!(
+            parse_test!(comma_separated_exprs(), "42"),
+            Ok(Ast::expr_list(vec![Ast::value(RuntimeValue::Int(42))]))
+        );
+
+        // Test multiple expressions
+        assert_eq!(
+            parse_test!(comma_separated_exprs(), "1, 2, 3"),
+            Ok(Ast::expr_list(vec![
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2)),
+                Ast::value(RuntimeValue::Int(3))
+            ]))
+        );
+
+        // Test with trailing comma
+        assert_eq!(
+            parse_test!(comma_separated_exprs(), "4, 5, 6,"),
+            Ok(Ast::expr_list(vec![
+                Ast::value(RuntimeValue::Int(4)),
+                Ast::value(RuntimeValue::Int(5)),
+                Ast::value(RuntimeValue::Int(6))
+            ]))
+        );
+
+        // Test with mixed types
+        assert_eq!(
+            parse_test!(comma_separated_exprs(), "42, \"hello\", true"),
+            Ok(Ast::expr_list(vec![
+                Ast::value(RuntimeValue::Int(42)),
+                Ast::value(RuntimeValue::Str(
+                    crate::lexer::strings::ParsedString::new_plain("hello")
+                )),
+                Ast::value(RuntimeValue::Bool(true))
+            ]))
+        );
+
+        // Test with expressions
+        assert_eq!(
+            parse_test!(comma_separated_exprs(), "1 + 2, x * y"),
+            Ok(Ast::expr_list(vec![
+                Ast::binop(
+                    Operator::Plus,
+                    Ast::value(RuntimeValue::Int(1)),
+                    Ast::value(RuntimeValue::Int(2))
+                ),
+                Ast::binop(
+                    Operator::Multiply,
+                    Ast::value(RuntimeValue::Ident("x".to_string())),
+                    Ast::value(RuntimeValue::Ident("y".to_string()))
+                )
+            ]))
+        );
+
+        // Test with parentheses and nested expressions
+        assert_eq!(
+            parse_test!(comma_separated_exprs(), "(1 + 2), (x * (y + z))"),
+            Ok(Ast::expr_list(vec![
+                Ast::binop(
+                    Operator::Plus,
+                    Ast::value(RuntimeValue::Int(1)),
+                    Ast::value(RuntimeValue::Int(2))
+                ),
+                Ast::binop(
+                    Operator::Multiply,
+                    Ast::value(RuntimeValue::Ident("x".to_string())),
+                    Ast::binop(
+                        Operator::Plus,
+                        Ast::value(RuntimeValue::Ident("y".to_string())),
+                        Ast::value(RuntimeValue::Ident("z".to_string()))
+                    )
+                )
+            ]))
+        );
+
+        // Test with unary operators
+        assert_eq!(
+            parse_test!(comma_separated_exprs(), "-1, !true, !0b1010"),
+            Ok(Ast::expr_list(vec![
+                Ast::unary(UnaryOperator::Negate, Ast::value(RuntimeValue::Int(1))),
+                Ast::unary(
+                    UnaryOperator::BitwiseNot,
+                    Ast::value(RuntimeValue::Bool(true))
+                ),
+                Ast::unary(UnaryOperator::BitwiseNot, Ast::value(RuntimeValue::Int(10)))
+            ]))
+        );
+
+        // Test empty string returns an empty expression list
+        assert_eq!(
+            parse_test!(comma_separated_exprs(), ""),
+            Ok(Ast::expr_list(vec![]))
+        );
     }
 }
