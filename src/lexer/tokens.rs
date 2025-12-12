@@ -15,6 +15,7 @@ use super::strings::{ParsedString, string_parsing_callback};
 use crate::erro::LexerError;
 
 /// Main token enum for Urd
+#[allow(missing_docs)] // most tokens are self-explanatory
 #[derive(Logos, Display, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
 #[logos(skip r"[ \t\n\r]+")] // Skip whitespace
@@ -66,105 +67,81 @@ pub enum Token {
     Ident(String),
 
     // ---- Operators ----
-    #[allow(missing_docs)]
     #[token("+")]
     Plus,
 
-    #[allow(missing_docs)]
     #[token("-")]
     Minus,
 
-    #[allow(missing_docs)]
     #[token("*")]
     Star,
 
-    #[allow(missing_docs)]
     #[token("/")]
     Slash,
 
-    #[allow(missing_docs)]
     #[token("//")]
     DoubleSlash,
 
-    #[allow(missing_docs)]
     #[token("%")]
     Percent,
 
-    #[allow(missing_docs)]
     #[token("=")]
     Assign,
 
     // ---- Parentheses ----
-    #[allow(missing_docs)]
     #[token("(")]
     LeftParen,
 
-    #[allow(missing_docs)]
     #[token(")")]
     RightParen,
 
     // ---- Comparison operators ----
-    #[allow(missing_docs)]
     #[token("==")]
     Equals,
 
-    #[allow(missing_docs)]
     #[token("!=")]
     NotEquals,
 
-    #[allow(missing_docs)]
     #[token(">")]
     GreaterThan,
 
-    #[allow(missing_docs)]
     #[token("<")]
     LessThan,
 
-    #[allow(missing_docs)]
     #[token(">=")]
     GreaterThanOrEquals,
 
-    #[allow(missing_docs)]
     #[token("<=")]
     LessThanOrEquals,
 
     // ---- Bitwise operators ----
-    #[allow(missing_docs)]
     #[token("&")]
     BitwiseAnd,
 
-    #[allow(missing_docs)]
     #[token("|")]
     BitwiseOr,
 
-    #[allow(missing_docs)]
     #[token("^")]
     BitwiseXor,
 
-    #[allow(missing_docs)]
     #[token("!")]
     BitwiseNot,
 
-    #[allow(missing_docs)]
     #[token("<<")]
     LeftShift,
 
-    #[allow(missing_docs)]
     #[token(">>")]
     RightShift,
 
     // ---- Logical operators ----
-    #[allow(missing_docs)]
     #[token("and")]
     #[token("&&")]
     And,
 
-    #[allow(missing_docs)]
     #[token("or")]
     #[token("||")]
     Or,
 
-    #[allow(missing_docs)]
     #[token("not")]
     Not,
 
