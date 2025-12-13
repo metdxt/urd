@@ -63,8 +63,8 @@ pub enum Token {
     /// Identifier
     /// Identifier must start with ascii letter, optionally prefixed with any number of `_`.
     /// Then it can contain any number of letters, digits or `_`
-    #[regex(r#"_*[a-zA-Z][_a-zA-Z\d]*"#, |lex| lex.slice().to_string())]
-    Ident(String),
+    #[regex(r#"(_*[a-zA-Z][_a-zA-Z\d]*)(\._*[a-zA-Z][_a-zA-Z\d]*)*"#, |lex| lex.slice().split(".").map(|s| s.to_string()).collect::<Vec<String>>())]
+    IdentPath(Vec<String>),
 
     // ---- Operators ----
     #[token("+")]
@@ -272,9 +272,9 @@ mod tests {
 
     #[test]
     fn identifiers() {
-        assert!(matches!(lex("foo"), Token::Ident(s) if s == "foo"));
-        assert!(matches!(lex("_bar"), Token::Ident(s) if s == "_bar"));
-        assert!(matches!(lex("baz_123"), Token::Ident(s) if s == "baz_123"));
+        assert!(matches!(lex("foo"), Token::IdentPath(s) if s == vec!["foo"]));
+        assert!(matches!(lex("_bar"), Token::IdentPath(s) if s == vec!["_bar"]));
+        assert!(matches!(lex("baz_123"), Token::IdentPath(s) if s == vec!["baz_123"]));
     }
 
     #[test]
