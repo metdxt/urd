@@ -121,6 +121,7 @@ pub enum AstContent {
         decl_defs: Box<Ast>,
     },
 
+    /// A call to function
     Call {
         /// Function to call, typically Value with identifier node
         func_path: Box<Ast>,
@@ -271,6 +272,9 @@ impl Ast {
         Self::new(AstContent::ExprList(exprs))
     }
 
+    /// Create function call node, accept two AST nodes,
+    /// one for function path (typically Value(RuntimeValue::IdentPath) node),
+    /// other for params (usually, comma-separated list of expressions, ExprList)
     pub fn call(func_path: Ast, params: Ast) -> Self {
         Self::new(AstContent::Call {
             func_path: Box::new(func_path),
