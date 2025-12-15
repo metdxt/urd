@@ -30,7 +30,7 @@ pub fn atom<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
         Token::FloatLit(f) => Ast::value(RuntimeValue::Float(f)),
         Token::StrLit(s) => Ast::value(RuntimeValue::Str(s)),
         Token::Dice((count, sides)) => Ast::value(RuntimeValue::Dice(count, sides)),
-        Token::IdentPath(path) => Ast::value(RuntimeValue::Ident(path)),
+        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path)),
     }
     .labelled("value")
 }
@@ -145,7 +145,7 @@ pub fn declaration<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     };
 
     let ident = select! {
-        Token::IdentPath(path) => Ast::value(RuntimeValue::Ident(path))
+        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
     };
 
     decl_word
@@ -213,7 +213,7 @@ mod tests {
 
         assert_eq!(
             parse_test!(expr(), "x"),
-            Ok(Ast::value(RuntimeValue::Ident(vec!["x".to_string()])))
+            Ok(Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])))
         );
     }
 
@@ -457,7 +457,7 @@ mod tests {
             parse_test!(expr(), "x = 42"),
             Ok(Ast::binop(
                 Operator::Assign,
-                Ast::value(RuntimeValue::Ident(vec!["x".to_string()])),
+                Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
                 Ast::value(RuntimeValue::Int(42))
             ))
         );
@@ -499,7 +499,7 @@ mod tests {
             parse_test!(expr(), "x = 1 + 2 * 3"),
             Ok(Ast::binop(
                 Operator::Assign,
-                Ast::value(RuntimeValue::Ident(vec!["x".to_string()])),
+                Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
                 Ast::binop(
                     Operator::Plus,
                     Ast::value(RuntimeValue::Int(1)),
@@ -535,10 +535,10 @@ mod tests {
             parse_test!(expr(), "x = y = 1"),
             Ok(Ast::binop(
                 Operator::Assign,
-                Ast::value(RuntimeValue::Ident(vec!["x".to_string()])),
+                Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
                 Ast::binop(
                     Operator::Assign,
-                    Ast::value(RuntimeValue::Ident(vec!["y".to_string()])),
+                    Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()])),
                     Ast::value(RuntimeValue::Int(1))
                 )
             ))
@@ -630,7 +630,7 @@ mod tests {
         // Simple constant with integer literal
         let expected = Ast::decl(
             DeclKind::Constant,
-            Ast::value(RuntimeValue::Ident(vec!["x".to_string()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
             Ast::value(RuntimeValue::Int(42)),
         );
         assert_eq!(
@@ -651,7 +651,7 @@ mod tests {
         );
         let expected = Ast::decl(
             DeclKind::Constant,
-            Ast::value(RuntimeValue::Ident(vec!["result".to_string()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["result".to_string()])),
             expr,
         );
         assert_eq!(
@@ -665,7 +665,7 @@ mod tests {
         // Simple variable with integer literal
         let expected = Ast::decl(
             DeclKind::Variable,
-            Ast::value(RuntimeValue::Ident(vec!["y".to_string()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()])),
             Ast::value(RuntimeValue::Int(42)),
         );
         assert_eq!(parse_test!(declaration(), "let y = 42").unwrap(), expected);
@@ -673,7 +673,7 @@ mod tests {
         // Variable with string literal
         let expected = Ast::decl(
             DeclKind::Variable,
-            Ast::value(RuntimeValue::Ident(vec!["name".to_string()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["name".to_string()])),
             Ast::value(RuntimeValue::Str(ParsedString::new_from_parts(vec![
                 StringPart::Literal("test".to_string()),
             ]))),
@@ -689,7 +689,7 @@ mod tests {
         // Simple global with literal
         let expected = Ast::decl(
             DeclKind::Global,
-            Ast::value(RuntimeValue::Ident(vec!["counter".to_string()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["counter".to_string()])),
             Ast::value(RuntimeValue::Int(0)),
         );
         assert_eq!(
@@ -705,7 +705,7 @@ mod tests {
         );
         let expected = Ast::decl(
             DeclKind::Global,
-            Ast::value(RuntimeValue::Ident(vec!["config".to_string()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["config".to_string()])),
             expr,
         );
         assert_eq!(
@@ -728,7 +728,7 @@ mod tests {
         );
         let expected = Ast::decl(
             DeclKind::Constant,
-            Ast::value(RuntimeValue::Ident(vec!["value".to_string()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["value".to_string()])),
             expr,
         );
         assert_eq!(
@@ -807,8 +807,8 @@ mod tests {
                 ),
                 Ast::binop(
                     Operator::Multiply,
-                    Ast::value(RuntimeValue::Ident(vec!["x".to_string()])),
-                    Ast::value(RuntimeValue::Ident(vec!["y".to_string()]))
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()]))
                 )
             ]))
         );
@@ -824,11 +824,11 @@ mod tests {
                 ),
                 Ast::binop(
                     Operator::Multiply,
-                    Ast::value(RuntimeValue::Ident(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
                     Ast::binop(
                         Operator::Plus,
-                        Ast::value(RuntimeValue::Ident(vec!["y".to_string()])),
-                        Ast::value(RuntimeValue::Ident(vec!["z".to_string()]))
+                        Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()])),
+                        Ast::value(RuntimeValue::IdentPath(vec!["z".to_string()]))
                     )
                 )
             ]))

@@ -25,7 +25,7 @@ pub enum RuntimeValue {
     /// Dice roll value (count, sides)
     Dice(u8, u8),
     /// Identifier representing a variable or property path
-    Ident(Vec<String>),
+    IdentPath(Vec<String>),
 }
 
 #[allow(missing_docs)]
@@ -39,7 +39,7 @@ impl TryFrom<Token> for RuntimeValue {
             Token::IntLit(i) => Ok(Self::Int(i)),
             Token::StrLit(s) => Ok(Self::Str(s)),
             Token::Dice((count, sides)) => Ok(Self::Dice(count, sides)),
-            Token::IdentPath(path) => Ok(Self::Ident(path)),
+            Token::IdentPath(path) => Ok(Self::IdentPath(path)),
             _ => Err(()),
         }
     }
