@@ -23,6 +23,18 @@ use crate::runtime::value::RuntimeValue;
 
 /// Represents a value
 pub fn atom<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
+    atom_internal(expr())
+}
+
+/// Internal helper for `atom` that accepts a recursive expression parser.
+///
+/// This is necessary to prevent infinite recursion during parser construction.
+/// If `atom` called `expr()` directly, and `expr()` calls `atom()`, it would cause
+/// a stack overflow when building the parser. By passing the recursive parser
+/// reference, we defer the recursion until parsing time.
+fn atom_internal<'tokens, I: UrdInput<'tokens>>(
+    expr: impl UrdParser<'tokens, I> + 'tokens,
+) -> impl UrdParser<'tokens, I> {
     select! {
         Token::Null => Ast::value(RuntimeValue::Null),
         Token::BoolLit(b) => Ast::value(RuntimeValue::Bool(b)),
@@ -30,9 +42,21 @@ pub fn atom<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
         Token::FloatLit(f) => Ast::value(RuntimeValue::Float(f)),
         Token::StrLit(s) => Ast::value(RuntimeValue::Str(s)),
         Token::Dice((count, sides)) => Ast::value(RuntimeValue::Dice(count, sides)),
-        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path)),
     }
     .labelled("value")
+    .or(select! {
+        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
+    }
+    .then(
+        comma_separated_exprs_internal(expr)
+            .boxed()
+            .delimited_by(just(Token::LeftParen), just(Token::RightParen))
+            .or_not(),
+    )
+    .map(|(ident, maybe_params)| match maybe_params {
+        Some(params) => Ast::call(ident, params),
+        None => ident,
+    }))
 }
 
 /// Creates a Pratt parser for parsing expressions in the Urd language.
@@ -42,7 +66,8 @@ pub fn atom<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
 /// parser configuration with higher numbers indicating higher precedence.
 pub fn expr<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
     recursive(|expr| {
-        let term = atom().or(expr.delimited_by(just(Token::LeftParen), just(Token::RightParen)));
+        let term = atom_internal(expr.clone())
+            .or(expr.delimited_by(just(Token::LeftParen), just(Token::RightParen)));
 
         term.pratt((
             // Unary operators (precedence 11)
@@ -125,8 +150,16 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
 /// Parser for comma-separated list of expressions. Typically used for list construction and
 /// function calls.
 pub fn comma_separated_exprs<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
-    expr()
-        .separated_by(just(Token::Comma))
+    comma_separated_exprs_internal(expr())
+}
+
+/// Internal helper for `comma_separated_exprs` that accepts a recursive expression parser.
+///
+/// See `atom_internal` for details on why this is needed to prevent stack overflow.
+fn comma_separated_exprs_internal<'tok, I: UrdInput<'tok>>(
+    expr: impl UrdParser<'tok, I> + 'tok,
+) -> impl UrdParser<'tok, I> {
+    expr.separated_by(just(Token::Comma))
         .allow_trailing()
         .collect::<Vec<_>>()
         .map(Ast::expr_list)
@@ -851,6 +884,42 @@ mod tests {
         assert_eq!(
             parse_test!(comma_separated_exprs(), ""),
             Ok(Ast::expr_list(vec![]))
+        );
+    }
+
+    #[test]
+    fn test_function_calls() {
+        assert_eq!(
+            parse_test!(expr(), "foo()"),
+            Ok(Ast::call(
+                Ast::value(RuntimeValue::IdentPath(vec!["foo".to_string()])),
+                Ast::expr_list(vec![])
+            ))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "bar(1, 2)"),
+            Ok(Ast::call(
+                Ast::value(RuntimeValue::IdentPath(vec!["bar".to_string()])),
+                Ast::expr_list(vec![
+                    Ast::value(RuntimeValue::Int(1)),
+                    Ast::value(RuntimeValue::Int(2))
+                ])
+            ))
+        );
+
+        // Nested calls
+        assert_eq!(
+            parse_test!(expr(), "f(g(x))"),
+            Ok(Ast::call(
+                Ast::value(RuntimeValue::IdentPath(vec!["f".to_string()])),
+                Ast::expr_list(vec![Ast::call(
+                    Ast::value(RuntimeValue::IdentPath(vec!["g".to_string()])),
+                    Ast::expr_list(vec![Ast::value(RuntimeValue::IdentPath(vec![
+                        "x".to_string()
+                    ]))])
+                )])
+            ))
         );
     }
 }

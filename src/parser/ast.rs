@@ -120,6 +120,13 @@ pub enum AstContent {
         /// Definitions. Typically expressions to be computed
         decl_defs: Box<Ast>,
     },
+
+    Call {
+        /// Function to call, typically Value with identifier node
+        func_path: Box<Ast>,
+        /// Parameters for the function, ExprList
+        params: Box<Ast>,
+    },
 }
 
 impl Ast {
@@ -262,5 +269,12 @@ impl Ast {
     /// Create comma-separated list of expressions
     pub fn expr_list(exprs: Vec<Ast>) -> Self {
         Self::new(AstContent::ExprList(exprs))
+    }
+
+    pub fn call(func_path: Ast, params: Ast) -> Self {
+        Self::new(AstContent::Call {
+            func_path: Box::new(func_path),
+            params: Box::new(params),
+        })
     }
 }
