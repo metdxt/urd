@@ -18,7 +18,7 @@ use crate::erro::LexerError;
 #[allow(missing_docs)] // most tokens are self-explanatory
 #[derive(Logos, Display, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
-#[logos(skip r"[ \t\n\r]+")] // Skip whitespace
+#[logos(skip r"[ \t\r]+")] // Skip whitespace
 pub enum Token {
     /// When error occurs on lexer level it is packed into Error kind token.
     /// We want parsing to be recoverable and not fail at the lexing stage.
@@ -162,6 +162,12 @@ pub enum Token {
     // ---- Other ----
     #[token(",")]
     Comma,
+
+    #[token(";")]
+    Semicolon,
+
+    #[token("\n")]
+    Newline,
 }
 
 /// Parses ints, captured by `(0x[0-9a-fA-F_]+)|(0b[01_]+)|(0o[0-7_]+)|([0-9][0-9_]*)` regex
