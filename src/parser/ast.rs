@@ -128,6 +128,9 @@ pub enum AstContent {
         /// Parameters for the function, ExprList
         params: Box<Ast>,
     },
+
+    /// Block of code. Contains statements following one each other in chronological order
+    Block(Vec<Ast>),
 }
 
 impl Ast {
@@ -280,5 +283,10 @@ impl Ast {
             func_path: Box::new(func_path),
             params: Box::new(params),
         })
+    }
+
+    /// Create block of code from statements
+    pub fn block(statements: Vec<Ast>) -> Self {
+        Self::new(AstContent::Block(statements))
     }
 }

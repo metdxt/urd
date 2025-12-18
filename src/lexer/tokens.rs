@@ -95,6 +95,12 @@ pub enum Token {
     #[token(")")]
     RightParen,
 
+    #[token("{")]
+    LeftCurly,
+
+    #[token("}")]
+    RightCurly,
+
     // ---- Comparison operators ----
     #[token("==")]
     Equals,
