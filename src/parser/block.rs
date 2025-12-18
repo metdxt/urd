@@ -13,19 +13,25 @@ use crate::{
 use super::aliases::{UrdInput, UrdParser};
 
 /// Parser for a single statement.
-/// Currently only supports declarations.
 pub fn statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
-    declaration()
+    declaration().or(code_block())
 }
 
 /// Parser for a code block delimited by curly braces.
 /// Contains a list of statements.
 pub fn code_block<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
-    statement()
-        .repeated()
-        .collect::<Vec<_>>()
-        .delimited_by(just(Token::LeftCurly), just(Token::RightCurly))
-        .map(Ast::block)
+    recursive(|block| {
+        let stmt = declaration().or(block);
+
+        let separator = just(Token::Newline).or(just(Token::Semicolon));
+
+        stmt.separated_by(separator.repeated().at_least(1))
+            .allow_leading()
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LeftCurly), just(Token::RightCurly))
+            .map(Ast::block)
+    })
 }
 
 #[cfg(test)]
@@ -91,5 +97,56 @@ mod tests {
         }";
         let result = parse_test!(code_block(), src);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nested_block() {
+        let src = "{
+            let x = 1
+            {
+                let y = 2
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![
+                Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                ),
+                Ast::block(vec![Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()])),
+                    Ast::value(RuntimeValue::Int(2))
+                )])
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_block_semicolon_separator() {
+        let src = "{
+            let x = 1; let y = 2
+        }";
+        let result = parse_test!(code_block(), src);
+
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![
+                Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                ),
+                Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()])),
+                    Ast::value(RuntimeValue::Int(2))
+                )
+            ]))
+        );
     }
 }
