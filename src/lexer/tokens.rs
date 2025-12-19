@@ -168,6 +168,13 @@ pub enum Token {
     #[token("global")]
     Global,
 
+    #[token("if")]
+    If,
+    #[token("else")]
+    Else,
+    #[token("elif")]
+    Elif,
+
     // ---- Other ----
     #[token(":")]
     Colon,

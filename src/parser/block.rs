@@ -7,21 +7,51 @@ use chumsky::prelude::*;
 
 use crate::{
     lexer::Token,
-    parser::{ast::Ast, expr::declaration},
+    parser::{
+        ast::Ast,
+        expr::{declaration, expr},
+    },
 };
 
 use super::aliases::{UrdInput, UrdParser};
 
 /// Parser for a single statement.
 pub fn statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
-    declaration().or(code_block())
+    declaration().or(if_statement()).or(code_block())
+}
+
+/// Parser for if/elif/else statement
+pub fn if_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    if_parser(code_block())
+}
+
+fn if_parser<'tok, I: UrdInput<'tok>>(
+    block: impl UrdParser<'tok, I> + Clone + 'tok,
+) -> impl UrdParser<'tok, I> {
+    let condition = expr();
+
+    let else_block = just(Token::Else).ignore_then(block.clone()).map(Some);
+
+    let elif_chain = recursive(|chain| {
+        just(Token::Elif)
+            .ignore_then(condition.clone())
+            .then(block.clone())
+            .then(chain.or(else_block.clone()).or(empty().to(None)))
+            .map(|((cond, body), else_b)| Some(Ast::if_stmt(cond, body, else_b)))
+    });
+
+    just(Token::If)
+        .ignore_then(condition)
+        .then(block)
+        .then(elif_chain.or(else_block).or(empty().to(None)))
+        .map(|((cond, body), else_b)| Ast::if_stmt(cond, body, else_b))
 }
 
 /// Parser for a code block delimited by curly braces.
 /// Contains a list of statements.
 pub fn code_block<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     recursive(|block| {
-        let stmt = declaration().or(block);
+        let stmt = declaration().or(if_parser(block.clone())).or(block);
 
         let separator = just(Token::Newline).or(just(Token::Semicolon));
 
@@ -147,6 +177,130 @@ mod tests {
                     Ast::value(RuntimeValue::Int(2))
                 )
             ]))
+        );
+    }
+
+    #[test]
+    fn test_if_statement() {
+        let src = "{
+            if true {
+                let x = 1
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![Ast::if_stmt(
+                Ast::value(RuntimeValue::Bool(true)),
+                Ast::block(vec![Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                )]),
+                None
+            )]))
+        );
+    }
+
+    #[test]
+    fn test_if_else_statement() {
+        let src = "{
+            if true {
+                let x = 1
+            } else {
+                let x = 2
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![Ast::if_stmt(
+                Ast::value(RuntimeValue::Bool(true)),
+                Ast::block(vec![Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                )]),
+                Some(Ast::block(vec![Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(2))
+                )]))
+            )]))
+        );
+    }
+
+    #[test]
+    fn test_if_elif_statement() {
+        let src = "{
+            if true {
+                let x = 1
+            } elif false {
+                let x = 2
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![Ast::if_stmt(
+                Ast::value(RuntimeValue::Bool(true)),
+                Ast::block(vec![Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                )]),
+                Some(Ast::if_stmt(
+                    Ast::value(RuntimeValue::Bool(false)),
+                    Ast::block(vec![Ast::decl(
+                        DeclKind::Variable,
+                        Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                        Ast::value(RuntimeValue::Int(2))
+                    )]),
+                    None
+                ))
+            )]))
+        );
+    }
+
+    #[test]
+    fn test_if_elif_else_statement() {
+        let src = "{
+            if true {
+                let x = 1
+            } elif false {
+                let x = 2
+            } else {
+                let x = 3
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![Ast::if_stmt(
+                Ast::value(RuntimeValue::Bool(true)),
+                Ast::block(vec![Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                )]),
+                Some(Ast::if_stmt(
+                    Ast::value(RuntimeValue::Bool(false)),
+                    Ast::block(vec![Ast::decl(
+                        DeclKind::Variable,
+                        Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                        Ast::value(RuntimeValue::Int(2))
+                    )]),
+                    Some(Ast::block(vec![Ast::decl(
+                        DeclKind::Variable,
+                        Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                        Ast::value(RuntimeValue::Int(3))
+                    )]))
+                ))
+            )]))
         );
     }
 }

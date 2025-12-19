@@ -137,6 +137,16 @@ pub enum AstContent {
 
     /// Map construction :{ key: value, key2: value2 }
     Map(Vec<(Ast, Ast)>),
+
+    /// If statement
+    If {
+        /// Condition expression
+        condition: Box<Ast>,
+        /// Block to execute if condition is true
+        then_block: Box<Ast>,
+        /// Optional else block (or elif chain)
+        else_block: Option<Box<Ast>>,
+    },
 }
 
 impl Ast {
@@ -304,5 +314,14 @@ impl Ast {
     /// Create map
     pub fn map(items: Vec<(Ast, Ast)>) -> Self {
         Self::new(AstContent::Map(items))
+    }
+
+    /// Create if statement
+    pub fn if_stmt(condition: Ast, then_block: Ast, else_block: Option<Ast>) -> Self {
+        Self::new(AstContent::If {
+            condition: Box::new(condition),
+            then_block: Box::new(then_block),
+            else_block: else_block.map(Box::new),
+        })
     }
 }
