@@ -33,8 +33,18 @@ pub fn atom<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
 /// a stack overflow when building the parser. By passing the recursive parser
 /// reference, we defer the recursion until parsing time.
 fn atom_internal<'tokens, I: UrdInput<'tokens>>(
-    expr: impl UrdParser<'tokens, I> + 'tokens,
+    expr: impl UrdParser<'tokens, I> + Clone + 'tokens,
 ) -> impl UrdParser<'tokens, I> {
+    let list = expr.clone()
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LeftBracket), just(Token::RightBracket))
+        .map(Ast::list);
+
+    let map = comma_separated_kv_pairs_internal(expr.clone())
+        .delimited_by(just(Token::DictStart), just(Token::RightCurly));
+
     select! {
         Token::Null => Ast::value(RuntimeValue::Null),
         Token::BoolLit(b) => Ast::value(RuntimeValue::Bool(b)),
@@ -44,6 +54,8 @@ fn atom_internal<'tokens, I: UrdInput<'tokens>>(
         Token::Dice((count, sides)) => Ast::value(RuntimeValue::Dice(count, sides)),
     }
     .labelled("value")
+    .or(list)
+    .or(map)
     .or(select! {
         Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
     }
@@ -163,6 +175,18 @@ fn comma_separated_exprs_internal<'tok, I: UrdInput<'tok>>(
         .allow_trailing()
         .collect::<Vec<_>>()
         .map(Ast::expr_list)
+}
+
+fn comma_separated_kv_pairs_internal<'tok, I: UrdInput<'tok>>(
+    expr: impl UrdParser<'tok, I> + Clone + 'tok,
+) -> impl UrdParser<'tok, I> {
+    expr.clone()
+        .then_ignore(just(Token::Colon))
+        .then(expr)
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .map(Ast::map)
 }
 
 /// Parser for variable/constant declarations. Parses:
@@ -920,6 +944,42 @@ mod tests {
                     ]))])
                 )])
             ))
+        );
+    }
+
+    #[test]
+    fn test_collections() {
+        assert_eq!(
+            parse_test!(expr(), "[1, 2, 3]"),
+            Ok(Ast::list(vec![
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2)),
+                Ast::value(RuntimeValue::Int(3)),
+            ]))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), ":{ \"a\": 1, \"b\": 2 }"),
+            Ok(Ast::map(vec![
+                (
+                    Ast::value(RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain("a"))),
+                    Ast::value(RuntimeValue::Int(1))
+                ),
+                (
+                    Ast::value(RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain("b"))),
+                    Ast::value(RuntimeValue::Int(2))
+                ),
+            ]))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), "[]"),
+            Ok(Ast::list(vec![]))
+        );
+
+        assert_eq!(
+            parse_test!(expr(), ":{}"),
+            Ok(Ast::map(vec![]))
         );
     }
 }

@@ -131,6 +131,12 @@ pub enum AstContent {
 
     /// Block of code. Contains statements following one each other in chronological order
     Block(Vec<Ast>),
+
+    /// List construction [a, b, c]
+    List(Vec<Ast>),
+
+    /// Map construction :{ key: value, key2: value2 }
+    Map(Vec<(Ast, Ast)>),
 }
 
 impl Ast {
@@ -288,5 +294,15 @@ impl Ast {
     /// Create block of code from statements
     pub fn block(statements: Vec<Ast>) -> Self {
         Self::new(AstContent::Block(statements))
+    }
+
+    /// Create list
+    pub fn list(items: Vec<Ast>) -> Self {
+        Self::new(AstContent::List(items))
+    }
+
+    /// Create map
+    pub fn map(items: Vec<(Ast, Ast)>) -> Self {
+        Self::new(AstContent::Map(items))
     }
 }

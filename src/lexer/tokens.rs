@@ -101,6 +101,15 @@ pub enum Token {
     #[token("}")]
     RightCurly,
 
+    #[token("[")]
+    LeftBracket,
+
+    #[token("]")]
+    RightBracket,
+
+    #[token(":{")]
+    DictStart,
+
     // ---- Comparison operators ----
     #[token("==")]
     Equals,
@@ -160,6 +169,9 @@ pub enum Token {
     Global,
 
     // ---- Other ----
+    #[token(":")]
+    Colon,
+
     #[token(",")]
     Comma,
 
