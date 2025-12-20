@@ -26,7 +26,7 @@ pub fn if_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
 }
 
 fn if_parser<'tok, I: UrdInput<'tok>>(
-    block: impl UrdParser<'tok, I> + Clone + 'tok,
+    block: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
     let condition = expr();
 

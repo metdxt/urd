@@ -33,9 +33,10 @@ pub fn atom<'tokens, I: UrdInput<'tokens>>() -> impl UrdParser<'tokens, I> {
 /// a stack overflow when building the parser. By passing the recursive parser
 /// reference, we defer the recursion until parsing time.
 fn atom_internal<'tokens, I: UrdInput<'tokens>>(
-    expr: impl UrdParser<'tokens, I> + Clone + 'tokens,
+    expr: impl UrdParser<'tokens, I> + 'tokens,
 ) -> impl UrdParser<'tokens, I> {
-    let list = expr.clone()
+    let list = expr
+        .clone()
         .separated_by(just(Token::Comma))
         .allow_trailing()
         .collect::<Vec<_>>()
@@ -178,7 +179,7 @@ fn comma_separated_exprs_internal<'tok, I: UrdInput<'tok>>(
 }
 
 fn comma_separated_kv_pairs_internal<'tok, I: UrdInput<'tok>>(
-    expr: impl UrdParser<'tok, I> + Clone + 'tok,
+    expr: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
     expr.clone()
         .then_ignore(just(Token::Colon))
@@ -962,24 +963,22 @@ mod tests {
             parse_test!(expr(), ":{ \"a\": 1, \"b\": 2 }"),
             Ok(Ast::map(vec![
                 (
-                    Ast::value(RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain("a"))),
+                    Ast::value(RuntimeValue::Str(
+                        crate::lexer::strings::ParsedString::new_plain("a")
+                    )),
                     Ast::value(RuntimeValue::Int(1))
                 ),
                 (
-                    Ast::value(RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain("b"))),
+                    Ast::value(RuntimeValue::Str(
+                        crate::lexer::strings::ParsedString::new_plain("b")
+                    )),
                     Ast::value(RuntimeValue::Int(2))
                 ),
             ]))
         );
 
-        assert_eq!(
-            parse_test!(expr(), "[]"),
-            Ok(Ast::list(vec![]))
-        );
+        assert_eq!(parse_test!(expr(), "[]"), Ok(Ast::list(vec![])));
 
-        assert_eq!(
-            parse_test!(expr(), ":{}"),
-            Ok(Ast::map(vec![]))
-        );
+        assert_eq!(parse_test!(expr(), ":{}"), Ok(Ast::map(vec![])));
     }
 }
