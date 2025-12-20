@@ -30,7 +30,7 @@ fn if_parser<'tok, I: UrdInput<'tok>>(
 ) -> impl UrdParser<'tok, I> {
     let condition = expr();
 
-    let else_block = just(Token::Else).ignore_then(block.clone()).map(Some);
+    let else_block = just(Token::Else).ignore_then(block.clone());
 
     let elif = just(Token::Elif)
         .ignore_then(condition.clone())
@@ -40,7 +40,7 @@ fn if_parser<'tok, I: UrdInput<'tok>>(
         .ignore_then(condition)
         .then(block)
         .then(elif.repeated().collect::<Vec<_>>())
-        .then(else_block.or(empty().to(None)))
+        .then(else_block.or_not())
         .map(|(((cond, body), elifs), else_b)| {
             let else_part = elifs
                 .into_iter()
