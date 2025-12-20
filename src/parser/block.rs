@@ -32,19 +32,21 @@ fn if_parser<'tok, I: UrdInput<'tok>>(
 
     let else_block = just(Token::Else).ignore_then(block.clone()).map(Some);
 
-    let elif_chain = recursive(|chain| {
-        just(Token::Elif)
-            .ignore_then(condition.clone())
-            .then(block.clone())
-            .then(chain.or(else_block.clone()).or(empty().to(None)))
-            .map(|((cond, body), else_b)| Some(Ast::if_stmt(cond, body, else_b)))
-    });
+    let elif = just(Token::Elif)
+        .ignore_then(condition.clone())
+        .then(block.clone());
 
     just(Token::If)
         .ignore_then(condition)
         .then(block)
-        .then(elif_chain.or(else_block).or(empty().to(None)))
-        .map(|((cond, body), else_b)| Ast::if_stmt(cond, body, else_b))
+        .then(elif.repeated().collect::<Vec<_>>())
+        .then(else_block.or(empty().to(None)))
+        .map(|(((cond, body), elifs), else_b)| {
+            let else_part = elifs
+                .into_iter()
+                .rfold(else_b, |acc, (c, b)| Some(Ast::if_stmt(c, b, acc)));
+            Ast::if_stmt(cond, body, else_part)
+        })
 }
 
 /// Parser for a code block delimited by curly braces.
@@ -62,6 +64,7 @@ pub fn code_block<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
             .delimited_by(just(Token::LeftCurly), just(Token::RightCurly))
             .map(Ast::block)
     })
+    .boxed()
 }
 
 #[cfg(test)]
