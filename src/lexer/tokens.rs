@@ -175,6 +175,9 @@ pub enum Token {
     #[token("elif")]
     Elif,
 
+    #[token("label")]
+    Label,
+
     // ---- Other ----
     #[token(":")]
     Colon,

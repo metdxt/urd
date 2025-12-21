@@ -147,6 +147,14 @@ pub enum AstContent {
         /// Optional else block (or elif chain)
         else_block: Option<Box<Ast>>,
     },
+
+    /// Labeled block: label ident { ... }
+    LabeledBlock {
+        /// Label identifier
+        label: String,
+        /// The block of code
+        block: Box<Ast>,
+    },
 }
 
 impl Ast {
@@ -322,6 +330,14 @@ impl Ast {
             condition: Box::new(condition),
             then_block: Box::new(then_block),
             else_block: else_block.map(Box::new),
+        })
+    }
+
+    /// Create labeled block
+    pub fn labeled_block(label: String, block: Ast) -> Self {
+        Self::new(AstContent::LabeledBlock {
+            label,
+            block: Box::new(block),
         })
     }
 }

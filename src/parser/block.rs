@@ -17,12 +17,34 @@ use super::aliases::{UrdInput, UrdParser};
 
 /// Parser for a single statement.
 pub fn statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
-    declaration().or(if_statement()).or(code_block())
+    declaration()
+        .or(if_statement())
+        .or(labeled_block())
+        .or(code_block())
 }
 
 /// Parser for if/elif/else statement
 pub fn if_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     if_parser(code_block())
+}
+
+/// Parser for labeled block
+pub fn labeled_block<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    labeled_block_parser(code_block())
+}
+
+fn labeled_block_parser<'tok, I: UrdInput<'tok>>(
+    block: impl UrdParser<'tok, I> + 'tok,
+) -> impl UrdParser<'tok, I> {
+    let ident = select! {
+        Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
+    }
+    .labelled("identifier");
+
+    just(Token::Label)
+        .ignore_then(ident)
+        .then(block)
+        .map(|(label, body)| Ast::labeled_block(label, body))
 }
 
 fn if_parser<'tok, I: UrdInput<'tok>>(
@@ -53,7 +75,10 @@ fn if_parser<'tok, I: UrdInput<'tok>>(
 /// Contains a list of statements.
 pub fn code_block<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     recursive(|block| {
-        let stmt = declaration().or(if_parser(block.clone())).or(block);
+        let stmt = declaration()
+            .or(if_parser(block.clone()))
+            .or(labeled_block_parser(block.clone()))
+            .or(block);
 
         let separator = just(Token::Newline).or(just(Token::Semicolon));
 
@@ -303,6 +328,55 @@ mod tests {
                         Ast::value(RuntimeValue::Int(3))
                     )]))
                 ))
+            )]))
+        );
+    }
+
+    #[test]
+    fn test_labeled_block() {
+        let src = "{
+            label my_label {
+                let x = 1
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![Ast::labeled_block(
+                "my_label".to_string(),
+                Ast::block(vec![Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                )])
+            )]))
+        );
+    }
+
+    #[test]
+    fn test_nested_labeled_blocks() {
+        let src = "{
+            label outer {
+                label inner {
+                    let x = 1
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![Ast::labeled_block(
+                "outer".to_string(),
+                Ast::block(vec![Ast::labeled_block(
+                    "inner".to_string(),
+                    Ast::block(vec![Ast::decl(
+                        DeclKind::Variable,
+                        Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                        Ast::value(RuntimeValue::Int(1))
+                    )])
+                )])
             )]))
         );
     }
