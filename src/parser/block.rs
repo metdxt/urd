@@ -9,8 +9,9 @@ use crate::{
     lexer::Token,
     parser::{
         ast::Ast,
-        expr::{declaration, expr},
+        expr::{comma_separated_exprs, declaration, expr},
     },
+    runtime::value::RuntimeValue,
 };
 
 use super::aliases::{UrdInput, UrdParser};
@@ -20,7 +21,32 @@ pub fn statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     declaration()
         .or(if_statement())
         .or(labeled_block())
+        .or(dialogue())
         .or(code_block())
+}
+
+/// Parser for dialogue lines
+pub fn dialogue<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    let content = select! {
+        Token::StrLit(s) => Ast::value(RuntimeValue::Str(s)),
+    }
+    .or(expr()
+        .separated_by(
+            just(Token::Comma)
+                .ignored()
+                .or(just(Token::Newline).repeated().at_least(1).ignored()),
+        )
+        .allow_leading()
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LeftCurly), just(Token::RightCurly))
+        .map(Ast::expr_list));
+
+    comma_separated_exprs()
+        .then_ignore(just(Token::Colon))
+        .then(content)
+        .map(|(speakers, content)| Ast::dialogue(speakers, content))
+        .boxed()
 }
 
 /// Parser for if/elif/else statement
@@ -78,6 +104,7 @@ pub fn code_block<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
         let stmt = declaration()
             .or(if_parser(block.clone()))
             .or(labeled_block_parser(block.clone()))
+            .or(dialogue())
             .or(block);
 
         let separator = just(Token::Newline).or(just(Token::Semicolon));
@@ -379,5 +406,38 @@ mod tests {
                 )])
             )]))
         );
+    }
+
+    #[test]
+    fn test_dialogue_single_line() {
+        let src = "{ Alice: \"Hello!\" }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_dialogue_monologue() {
+        let src = "{ Alice: { \"Line 1\", \"Line 2\" } }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_dialogue_monologue_with_newlines() {
+        let src = "{
+            Alice: {
+                \"Line 1\"
+                \"Line 2\"
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_dialogue_multiple_speakers() {
+        let src = "{ Alice, Bob: \"Hello both!\" }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
     }
 }

@@ -155,6 +155,14 @@ pub enum AstContent {
         /// The block of code
         block: Box<Ast>,
     },
+
+    /// Dialogue line(s)
+    Dialogue {
+        /// Character(s) speaking, usually an ExprList of identifiers or expressions
+        speakers: Box<Ast>,
+        /// The content being said, usually an ExprList of strings or a single string
+        content: Box<Ast>,
+    },
 }
 
 impl Ast {
@@ -338,6 +346,14 @@ impl Ast {
         Self::new(AstContent::LabeledBlock {
             label,
             block: Box::new(block),
+        })
+    }
+
+    /// Create dialogue node
+    pub fn dialogue(speakers: Ast, content: Ast) -> Self {
+        Self::new(AstContent::Dialogue {
+            speakers: Box::new(speakers),
+            content: Box::new(content),
         })
     }
 }
