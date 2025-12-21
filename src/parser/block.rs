@@ -18,11 +18,18 @@ use super::aliases::{UrdInput, UrdParser};
 
 /// Parser for a single statement.
 pub fn statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    statement_inner(code_block())
+}
+
+/// Helper for statement parsing, allowing recursion injection.
+fn statement_inner<'tok, I: UrdInput<'tok>>(
+    block: impl UrdParser<'tok, I> + 'tok,
+) -> impl UrdParser<'tok, I> {
     declaration()
-        .or(if_statement())
-        .or(labeled_block())
+        .or(if_parser(block.clone()))
+        .or(labeled_block_parser(block.clone()))
         .or(dialogue())
-        .or(code_block())
+        .or(block)
 }
 
 /// Parser for dialogue lines
@@ -101,15 +108,10 @@ fn if_parser<'tok, I: UrdInput<'tok>>(
 /// Contains a list of statements.
 pub fn code_block<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     recursive(|block| {
-        let stmt = declaration()
-            .or(if_parser(block.clone()))
-            .or(labeled_block_parser(block.clone()))
-            .or(dialogue())
-            .or(block);
-
         let separator = just(Token::Newline).or(just(Token::Semicolon));
 
-        stmt.separated_by(separator.repeated().at_least(1))
+        statement_inner(block)
+            .separated_by(separator.repeated().at_least(1))
             .allow_leading()
             .allow_trailing()
             .collect::<Vec<_>>()
@@ -119,10 +121,50 @@ pub fn code_block<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     .boxed()
 }
 
+/// Parser for a bare script body (list of statements without braces).
+pub fn script<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    let separator = just(Token::Newline).or(just(Token::Semicolon));
+
+    statement()
+        .separated_by(separator.repeated().at_least(1))
+        .allow_leading()
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .map(Ast::block)
+        .boxed()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{parse_test, parser::ast::DeclKind, runtime::value::RuntimeValue};
+
+    #[test]
+    fn test_script_bare() {
+        let src = "
+            let x = 1
+            Alice: \"Hello\"
+        ";
+        let result = parse_test!(script(), src);
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![
+                Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                ),
+                Ast::dialogue(
+                    Ast::expr_list(vec![Ast::value(RuntimeValue::IdentPath(vec![
+                        "Alice".to_string()
+                    ]))]),
+                    Ast::value(RuntimeValue::Str(
+                        crate::lexer::strings::ParsedString::new_plain("Hello")
+                    ))
+                )
+            ]))
+        );
+    }
 
     #[test]
     fn test_empty_block() {
