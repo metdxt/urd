@@ -163,6 +163,12 @@ pub enum AstContent {
         /// The content being said, usually an ExprList of strings or a single string
         content: Box<Ast>,
     },
+
+    /// Menu with options for user selection
+    Menu {
+        /// List of menu options, each with a label and an associated code block
+        options: Vec<(String, Ast)>,
+    },
 }
 
 impl Ast {
@@ -355,5 +361,10 @@ impl Ast {
             speakers: Box::new(speakers),
             content: Box::new(content),
         })
+    }
+
+    /// Create menu node
+    pub fn menu(options: Vec<(String, Ast)>) -> Self {
+        Self::new(AstContent::Menu { options })
     }
 }

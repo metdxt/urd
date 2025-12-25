@@ -28,6 +28,7 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
     declaration()
         .or(if_parser(block.clone()))
         .or(labeled_block_parser(block.clone()))
+        .or(menu_parser(block.clone()))
         .or(dialogue())
         .or(block)
 }
@@ -120,6 +121,35 @@ pub fn code_block<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
             .map(Ast::block)
     })
     .boxed()
+}
+
+/// Parser for menu statement
+pub fn menu<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    menu_parser(code_block())
+}
+
+fn menu_parser<'tok, I: UrdInput<'tok>>(
+    block: impl UrdParser<'tok, I> + 'tok,
+) -> impl UrdParser<'tok, I> {
+    let option_label = select! {
+        Token::StrLit(s) => s,
+    };
+
+    let option = option_label.then(block).map(|(label, code_block)| {
+        // Use Display trait to convert ParsedString to String
+        (format!("{}", label), code_block)
+    });
+
+    let options = option
+        .separated_by(just(Token::Newline).repeated().at_least(1))
+        .allow_leading()
+        .allow_trailing()
+        .collect::<Vec<_>>();
+
+    just(Token::Menu)
+        .ignore_then(options.delimited_by(just(Token::LeftCurly), just(Token::RightCurly)))
+        .map(Ast::menu)
+        .boxed()
 }
 
 /// Parser for a bare script body (list of statements without braces).
@@ -480,6 +510,212 @@ mod tests {
     #[test]
     fn test_dialogue_multiple_speakers() {
         let src = "{ <Alice, Bob>: \"Hello both!\" }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_menu_empty() {
+        let src = "{ menu { } }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_menu_with_escaped_characters() {
+        let src = "{
+            menu {
+                \"Option \\\"quoted\\\"\" {
+                    let x = 1
+                }
+                \"Tab\\there\" {
+                    let y = 2
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_menu_complex_expressions() {
+        let src = "{
+            menu {
+                \"Add\" {
+                    let result = 5 + 3
+                }
+                \"Multiply\" {
+                    let result = 5 * 3
+                }
+                \"Simple action\" {
+                    let done = true
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_multiple_menus() {
+        let src = "{
+            menu {
+                \"Choice 1\" {
+                    let x = 1
+                }
+                \"Choice 2\" {
+                    let x = 2
+                }
+            }
+            menu {
+                \"Next\" {
+                    let y = 3
+                }
+                \"Back\" {
+                    let y = 4
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_menu_with_dialogue() {
+        let src = "{
+            menu {
+                \"Talk to Alice\" {
+                    <Alice>: \"Hello there!\"
+                }
+                \"Talk to Bob\" {
+                    <Bob>: \"Hi!\"
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_menu_with_if_else() {
+        let src = "{
+            menu {
+                \"Check condition\" {
+                    if true {
+                        let x = 1
+                    } else {
+                        let x = 2
+                    }
+                }
+                \"Nested menu\" {
+                    menu {
+                        \"Sub-option 1\" {
+                            let y = 3
+                        }
+                    }
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_menu_ast_structure() {
+        let src = "{
+            menu {
+                \"Option 1\" {
+                    let x = 1
+                }
+                \"Option 2\" {
+                    let y = 2
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![Ast::menu(vec![
+                (
+                    "Option 1".to_string(),
+                    Ast::block(vec![Ast::decl(
+                        DeclKind::Variable,
+                        Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                        Ast::value(RuntimeValue::Int(1))
+                    )])
+                ),
+                (
+                    "Option 2".to_string(),
+                    Ast::block(vec![Ast::decl(
+                        DeclKind::Variable,
+                        Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()])),
+                        Ast::value(RuntimeValue::Int(2))
+                    )])
+                )
+            ])]))
+        );
+    }
+
+    #[test]
+    fn test_menu_basic() {
+        let src = "{
+            menu {
+                \"Option 1\" {
+                    let x = 1
+                }
+                \"Option 2\" {
+                    let y = 2
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_menu_real_world_example() {
+        let src = "{
+            menu {
+                \"Start Game\" {
+                    let health = 100
+                    <Narrator>: \"Your adventure begins!\"
+                }
+                \"Load Game\" {
+                    <Narrator>: \"No save files found.\"
+                }
+                \"Exit\" {
+                    <Narrator>: \"Goodbye!\"
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_menu_single_option() {
+        let src = "{ menu { \"Only option\" { let x = 1 } } }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_menu_nested_blocks() {
+        let src = "{
+            menu {
+                \"Option 1\" {
+                    {
+                        let x = 1
+                    }
+                }
+                \"Option 2\" {
+                    if true {
+                        let y = 2
+                    }
+                }
+            }
+        }";
         let result = parse_test!(code_block(), src);
         assert!(result.is_ok());
     }

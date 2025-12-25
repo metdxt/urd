@@ -98,6 +98,31 @@ where
     Ok(ParsedString::new_from_parts(tokens))
 }
 
+impl std::fmt::Display for ParsedString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for part in &self.0 {
+            match part {
+                StringPart::Literal(s) => write!(f, "{}", s)?,
+                StringPart::EscapedChar(s) => write!(f, "{}", s)?,
+                StringPart::Interpolation(interp) => {
+                    write!(
+                        f,
+                        "{{{}{}}}",
+                        interp.path,
+                        interp
+                            .format
+                            .as_deref()
+                            .map(|fmt| format!(":{}", fmt))
+                            .unwrap_or_else(String::new)
+                    )?;
+                }
+                StringPart::ExitString => {}
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Callback for logos to parse escaped characters.
 /// Parses \n, \r, \t, \", \\, \{, \}, \xHH, \uHHHH and \u{HHHH}
 fn escape_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result<String> {

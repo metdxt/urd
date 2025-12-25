@@ -178,6 +178,9 @@ pub enum Token {
     #[token("label")]
     Label,
 
+    #[token("menu")]
+    Menu,
+
     // ---- Other ----
     #[token(":")]
     Colon,
