@@ -50,6 +50,7 @@ pub fn dialogue<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
         .map(Ast::expr_list));
 
     comma_separated_exprs()
+        .delimited_by(just(Token::LessThan), just(Token::GreaterThan))
         .then_ignore(just(Token::Colon))
         .then(content)
         .map(|(speakers, content)| Ast::dialogue(speakers, content))
@@ -143,7 +144,7 @@ mod tests {
     fn test_script_bare() {
         let src = "
             let x = 1
-            Alice: \"Hello\"
+            <Alice>: \"Hello\"
         ";
         let result = parse_test!(script(), src);
         assert_eq!(
@@ -452,14 +453,14 @@ mod tests {
 
     #[test]
     fn test_dialogue_single_line() {
-        let src = "{ Alice: \"Hello!\" }";
+        let src = "{ <Alice>: \"Hello!\" }";
         let result = parse_test!(code_block(), src);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_dialogue_monologue() {
-        let src = "{ Alice: { \"Line 1\", \"Line 2\" } }";
+        let src = "{ <Alice>: { \"Line 1\", \"Line 2\" } }";
         let result = parse_test!(code_block(), src);
         assert!(result.is_ok());
     }
@@ -467,7 +468,7 @@ mod tests {
     #[test]
     fn test_dialogue_monologue_with_newlines() {
         let src = "{
-            Alice: {
+            <Alice>: {
                 \"Line 1\"
                 \"Line 2\"
             }
@@ -478,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_dialogue_multiple_speakers() {
-        let src = "{ Alice, Bob: \"Hello both!\" }";
+        let src = "{ <Alice, Bob>: \"Hello both!\" }";
         let result = parse_test!(code_block(), src);
         assert!(result.is_ok());
     }
