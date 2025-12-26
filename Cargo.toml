@@ -13,6 +13,9 @@ logos = "0.15.1"
 logos-display = "0.1.3"
 thiserror = "2.0.17"
 
+[profile.dev]
+incremental=true
+
 [lints]
 clippy.unwrap_used = "deny"
 clippy.expect_used = "deny"
