@@ -25,12 +25,25 @@ pub fn statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
 fn statement_inner<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
-    declaration()
+    assignment()
+        .or(declaration())
         .or(if_parser(block.clone()))
         .or(labeled_block_parser(block.clone()))
         .or(menu_parser(block.clone()))
         .or(dialogue())
         .or(block)
+}
+
+/// Parser for assignment statements (ident = expr)
+/// This allows mutating previously declared variables.
+pub fn assignment<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    select! {
+        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
+    }
+    .then_ignore(just(Token::Assign))
+    .then(expr())
+    .map(|(ident, value)| Ast::assign_op(ident, value))
+    .boxed()
 }
 
 /// Parser for dialogue lines
@@ -716,6 +729,185 @@ mod tests {
                 }
             }
         }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_assignment_basic() {
+        let src = "{ x = 1 }";
+        let result = parse_test!(code_block(), src);
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![Ast::assign_op(
+                Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                Ast::value(RuntimeValue::Int(1))
+            )]))
+        );
+    }
+
+    #[test]
+    fn test_assignment_with_expression() {
+        let src = "{ x = 1 + 2 }";
+        let result = parse_test!(code_block(), src);
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![Ast::assign_op(
+                Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                Ast::add_op(
+                    Ast::value(RuntimeValue::Int(1)),
+                    Ast::value(RuntimeValue::Int(2))
+                )
+            )]))
+        );
+    }
+
+    #[test]
+    fn test_assignment_after_declaration() {
+        let src = "{
+            let x = 1
+            x = 2
+        }";
+        let result = parse_test!(code_block(), src);
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![
+                Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                ),
+                Ast::assign_op(
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(2))
+                )
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_multiple_assignments() {
+        let src = "{
+            let x = 0
+            x = 1
+            x = 2
+            x = 3
+        }";
+        let result = parse_test!(code_block(), src);
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![
+                Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(0))
+                ),
+                Ast::assign_op(
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(1))
+                ),
+                Ast::assign_op(
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(2))
+                ),
+                Ast::assign_op(
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(3))
+                )
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_assignment_in_nested_block() {
+        let src = "{
+            let x = 1
+            {
+                x = 2
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_assignment_in_if_statement() {
+        let src = "{
+            let x = 1
+            if true {
+                x = 2
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_assignment_in_menu_option() {
+        let src = "{
+            let x = 1
+            menu {
+                \"Option 1\" {
+                    x = 2
+                }
+                \"Option 2\" {
+                    x = 3
+                }
+            }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_assignment_with_complex_expression() {
+        let src = "{ x = (1 + 2) * 3 }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_assignment_with_variable() {
+        let src = "{
+            let y = 10
+            let x = 5
+            x = y
+        }";
+        let result = parse_test!(code_block(), src);
+        assert_eq!(
+            result,
+            Ok(Ast::block(vec![
+                Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()])),
+                    Ast::value(RuntimeValue::Int(10))
+                ),
+                Ast::decl(
+                    DeclKind::Variable,
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::Int(5))
+                ),
+                Ast::assign_op(
+                    Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+                    Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()]))
+                )
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_assignment_in_script() {
+        let src = "
+            let x = 1
+            x = 2
+        ";
+        let result = parse_test!(script(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_assignment_with_semicolon() {
+        let src = "{ x = 1; y = 2 }";
         let result = parse_test!(code_block(), src);
         assert!(result.is_ok());
     }
