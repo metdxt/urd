@@ -29,6 +29,16 @@ pub fn return_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
         .boxed()
 }
 
+/// Parser for jump statement (jump ident)
+pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    just(Token::Jump)
+        .ignore_then(select! {
+            Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
+        })
+        .map(Ast::jump_stmt)
+        .boxed()
+}
+
 /// Helper for statement parsing, allowing recursion injection.
 fn statement_inner<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
@@ -39,6 +49,7 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
         .or(labeled_block_parser(block.clone()))
         .or(menu_parser(block.clone()))
         .or(return_statement())
+        .or(jump_statement())
         .or(dialogue())
         .or(block)
 }
@@ -102,6 +113,7 @@ fn labeled_block_parser<'tok, I: UrdInput<'tok>>(
         .ignore_then(ident)
         .then(block)
         .map(|(label, body)| Ast::labeled_block(label, body))
+        .boxed()
 }
 
 fn if_parser<'tok, I: UrdInput<'tok>>(
@@ -126,6 +138,7 @@ fn if_parser<'tok, I: UrdInput<'tok>>(
                 .rfold(else_b, |acc, (c, b)| Some(Ast::if_stmt(c, b, acc)));
             Ast::if_stmt(cond, body, else_part)
         })
+        .boxed()
 }
 
 /// Parser for a code block delimited by curly braces.
@@ -984,6 +997,52 @@ mod tests {
     fn test_return_in_menu_option() {
         let src = "menu { \"Option 1\" { return 1 } }";
         let result = parse_test!(menu(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jump_basic() {
+        let src = "jump my_label";
+        let result = parse_test!(jump_statement(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jump_in_block() {
+        let src = "{ jump my_label }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jump_in_if_statement() {
+        let src = "if x > 10 { jump target } else { jump other }";
+        let result = parse_test!(if_statement(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jump_in_menu_option() {
+        let src = "menu { \"Option 1\" { jump scene_a }
+            \"Option 2\" { jump scene_b } }";
+        let result = parse_test!(menu(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jump_in_script() {
+        let src = "
+            let x = 10
+            jump start_label
+        ";
+        let result = parse_test!(script(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_jump_with_multiple_jumps() {
+        let src = "{ jump a; jump b; jump c }";
+        let result = parse_test!(code_block(), src);
         assert!(result.is_ok());
     }
 }

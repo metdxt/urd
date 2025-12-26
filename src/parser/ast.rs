@@ -175,6 +175,12 @@ pub enum AstContent {
         /// Optional expression to return
         value: Option<Box<Ast>>,
     },
+
+    /// Jump statement to transfer control to a labeled block
+    Jump {
+        /// Label identifier to jump to
+        label: String,
+    },
 }
 
 impl Ast {
@@ -379,5 +385,10 @@ impl Ast {
         Self::new(AstContent::Return {
             value: value.map(Box::new),
         })
+    }
+
+    /// Create jump statement node
+    pub fn jump_stmt(label: String) -> Self {
+        Self::new(AstContent::Jump { label })
     }
 }

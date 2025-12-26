@@ -184,6 +184,9 @@ pub enum Token {
     #[token("return")]
     Return,
 
+    #[token("jump")]
+    Jump,
+
     // ---- Other ----
     #[token(":")]
     Colon,
