@@ -21,6 +21,14 @@ pub fn statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     statement_inner(code_block())
 }
 
+/// Parser for return statement (return expr)
+pub fn return_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    just(Token::Return)
+        .ignore_then(expr().or_not())
+        .map(Ast::return_stmt)
+        .boxed()
+}
+
 /// Helper for statement parsing, allowing recursion injection.
 fn statement_inner<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
@@ -30,6 +38,7 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
         .or(if_parser(block.clone()))
         .or(labeled_block_parser(block.clone()))
         .or(menu_parser(block.clone()))
+        .or(return_statement())
         .or(dialogue())
         .or(block)
 }
@@ -909,6 +918,72 @@ mod tests {
     fn test_assignment_with_semicolon() {
         let src = "{ x = 1; y = 2 }";
         let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_return_basic() {
+        let src = "return 42";
+        let result = parse_test!(return_statement(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_return_with_expression() {
+        let src = "return x + 5";
+        let result = parse_test!(return_statement(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_return_without_value() {
+        let src = "return";
+        let result = parse_test!(return_statement(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_return_in_block() {
+        let src = "{ return 100 }";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_return_in_if_statement() {
+        let src = "if true { return 1 } else { return 2 }";
+        let result = parse_test!(if_statement(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_return_in_script() {
+        let src = "
+            let x = 10
+            return x
+        ";
+        let result = parse_test!(script(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_return_with_function_call() {
+        let src = "return foo(1, 2)";
+        let result = parse_test!(return_statement(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_return_complex_expression() {
+        let src = "return (x + y) * 2";
+        let result = parse_test!(return_statement(), src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_return_in_menu_option() {
+        let src = "menu { \"Option 1\" { return 1 } }";
+        let result = parse_test!(menu(), src);
         assert!(result.is_ok());
     }
 }

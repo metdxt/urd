@@ -181,6 +181,9 @@ pub enum Token {
     #[token("menu")]
     Menu,
 
+    #[token("return")]
+    Return,
+
     // ---- Other ----
     #[token(":")]
     Colon,

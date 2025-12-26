@@ -169,6 +169,12 @@ pub enum AstContent {
         /// List of menu options, each with a label and an associated code block
         options: Vec<(String, Ast)>,
     },
+
+    /// Return statement with optional value to return
+    Return {
+        /// Optional expression to return
+        value: Option<Box<Ast>>,
+    },
 }
 
 impl Ast {
@@ -366,5 +372,12 @@ impl Ast {
     /// Create menu node
     pub fn menu(options: Vec<(String, Ast)>) -> Self {
         Self::new(AstContent::Menu { options })
+    }
+
+    /// Create return statement node
+    pub fn return_stmt(value: Option<Ast>) -> Self {
+        Self::new(AstContent::Return {
+            value: value.map(Box::new),
+        })
     }
 }
