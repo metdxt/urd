@@ -15,8 +15,45 @@ use crate::runtime::value::RuntimeValue;
 /// Represents a node in the Abstract Syntax Tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ast {
+    /// A list of decorators for event. Only makes sense for Block, LabeledBlock, Dialogue, Menu, MenuOption. Ignored otherwise.
+    decorators: Vec<Decorator>,
     /// The content of this AST node
     content: AstContent,
+}
+
+/// A decorator applied to an AST node, using Python-like `@name` or `@name(args)` syntax.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Decorator {
+    /// The decorator's name (a single-segment identifier).
+    name: String,
+    /// The argument list passed to the decorator. Always an [`AstContent::ExprList`] node,
+    /// which is empty when the decorator is written without parentheses.
+    args: Ast,
+}
+
+impl Decorator {
+    /// Creates a new decorator with a name and an argument list (ExprList node).
+    pub fn new(name: String, args: Ast) -> Self {
+        Decorator { name, args }
+    }
+
+    /// Creates a new decorator with no arguments.
+    pub fn bare(name: String) -> Self {
+        Decorator {
+            name,
+            args: Ast::expr_list(vec![]),
+        }
+    }
+
+    /// Returns the decorator's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the decorator's argument list (an ExprList node).
+    pub fn args(&self) -> &Ast {
+        &self.args
+    }
 }
 
 /// Represents binary operators in the Urd language.
@@ -167,7 +204,15 @@ pub enum AstContent {
     /// Menu with options for user selection
     Menu {
         /// List of menu options, each with a label and an associated code block
-        options: Vec<(String, Ast)>,
+        options: Vec<Ast>,
+    },
+
+    /// A single selectable option within a [`AstContent::Menu`].
+    MenuOption {
+        /// The display label shown to the user for this option.
+        label: String,
+        /// The block of code executed when this option is chosen.
+        content: Box<Ast>,
     },
 
     /// Return statement with optional value to return
@@ -186,7 +231,29 @@ pub enum AstContent {
 impl Ast {
     /// Creates a new AST node with the given content.
     pub fn new(content: AstContent) -> Self {
-        Ast { content }
+        Ast {
+            content,
+            decorators: vec![],
+        }
+    }
+
+    /// Creates a new AST node with the given content and decorators.
+    pub fn new_decorated(content: AstContent, decorators: Vec<Decorator>) -> Self {
+        Ast {
+            content,
+            decorators,
+        }
+    }
+
+    /// Attaches decorators to this AST node, replacing any existing ones.
+    pub fn with_decorators(mut self, decorators: Vec<Decorator>) -> Self {
+        self.decorators = decorators;
+        self
+    }
+
+    /// Returns the decorators attached to this AST node.
+    pub fn decorators(&self) -> &[Decorator] {
+        &self.decorators
     }
 
     /// Creates a new value AST node.
@@ -376,8 +443,16 @@ impl Ast {
     }
 
     /// Create menu node
-    pub fn menu(options: Vec<(String, Ast)>) -> Self {
+    pub fn menu(options: Vec<Ast>) -> Self {
         Self::new(AstContent::Menu { options })
+    }
+
+    /// Create a single menu option node
+    pub fn menu_option(label: String, content: Ast) -> Self {
+        Self::new(AstContent::MenuOption {
+            label,
+            content: Box::new(content),
+        })
     }
 
     /// Create return statement node

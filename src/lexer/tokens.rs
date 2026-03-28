@@ -197,6 +197,9 @@ pub enum Token {
     #[token(";")]
     Semicolon,
 
+    #[token("@")]
+    At,
+
     #[token("\n")]
     Newline,
 }

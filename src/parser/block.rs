@@ -8,7 +8,7 @@ use chumsky::prelude::*;
 use crate::{
     lexer::Token,
     parser::{
-        ast::Ast,
+        ast::{Ast, Decorator},
         expr::{comma_separated_exprs, declaration, expr},
     },
     runtime::value::RuntimeValue,
@@ -39,19 +39,68 @@ pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
         .boxed()
 }
 
+/// Parser for a single decorator: `@name` or `@name(arg1, arg2, ...)`
+fn decorator_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
+    'tok,
+    I,
+    Decorator,
+    chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
+> + Clone {
+    let name = select! {
+        Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
+    }
+    .labelled("decorator name");
+
+    let args =
+        comma_separated_exprs().delimited_by(just(Token::LeftParen), just(Token::RightParen));
+
+    just(Token::At)
+        .ignore_then(name)
+        .then(args.or_not())
+        .map(|(name, maybe_args)| match maybe_args {
+            Some(args) => Decorator::new(name, args),
+            None => Decorator::bare(name),
+        })
+        .boxed()
+}
+
+/// Parser for a sequence of decorators, each on its own line, ending with at least one newline
+/// before the decorated statement.
+fn decorators_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
+    'tok,
+    I,
+    Vec<Decorator>,
+    chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
+> + Clone {
+    decorator_parser()
+        .separated_by(just(Token::Newline).repeated().at_least(1))
+        .at_least(1)
+        .allow_leading()
+        .collect::<Vec<_>>()
+        .then_ignore(just(Token::Newline).repeated().at_least(1))
+}
+
 /// Helper for statement parsing, allowing recursion injection.
 fn statement_inner<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
+    // Decoratable constructs: labeled_block, dialogue, menu, bare block
+    let decoratable = labeled_block_parser(block.clone())
+        .or(menu_parser(block.clone()))
+        .or(dialogue())
+        .or(block.clone());
+
+    let decorated = decorators_parser()
+        .then(decoratable.clone())
+        .map(|(decorators, node)| node.with_decorators(decorators));
+
     assignment()
         .or(declaration())
-        .or(if_parser(block.clone()))
-        .or(labeled_block_parser(block.clone()))
-        .or(menu_parser(block.clone()))
+        .or(if_parser(block))
         .or(return_statement())
         .or(jump_statement())
-        .or(dialogue())
-        .or(block)
+        .or(decorated)
+        .or(decoratable)
 }
 
 /// Parser for assignment statements (ident = expr)
@@ -172,7 +221,7 @@ fn menu_parser<'tok, I: UrdInput<'tok>>(
 
     let option = option_label.then(block).map(|(label, code_block)| {
         // Use Display trait to convert ParsedString to String
-        (format!("{}", label), code_block)
+        Ast::menu_option(format!("{}", label), code_block)
     });
 
     let options = option
@@ -203,7 +252,186 @@ pub fn script<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_test, parser::ast::DeclKind, runtime::value::RuntimeValue};
+    use crate::{
+        parse_test,
+        parser::ast::{AstContent, DeclKind, Decorator},
+        runtime::value::RuntimeValue,
+    };
+
+    // ---- Decorator tests ----
+
+    #[test]
+    fn test_decorator_bare_on_labeled_block() {
+        let src = "
+            @on_enter
+            label my_scene { let x = 1 }
+        ";
+        let result = parse_test!(script(), src);
+        assert!(
+            result.is_ok(),
+            "bare decorator on labeled block should parse: {result:?}"
+        );
+        let Ok(block) = result else { return };
+        let AstContent::Block(stmts) = block.content() else {
+            panic!("expected Block");
+        };
+        assert_eq!(stmts.len(), 1);
+        let decorated = &stmts[0];
+        assert_eq!(decorated.decorators().len(), 1);
+        assert_eq!(decorated.decorators()[0].name(), "on_enter");
+        assert_eq!(
+            decorated.decorators()[0].args().content(),
+            &AstContent::ExprList(vec![])
+        );
+    }
+
+    #[test]
+    fn test_decorator_with_args_on_labeled_block() {
+        let src = "
+            @event(\"start\", 42)
+            label my_scene { let x = 1 }
+        ";
+        let result = parse_test!(script(), src);
+        assert!(
+            result.is_ok(),
+            "decorator with args on labeled block should parse: {result:?}"
+        );
+        let Ok(block) = result else { return };
+        let AstContent::Block(stmts) = block.content() else {
+            panic!("expected Block");
+        };
+        let decorated = &stmts[0];
+        assert_eq!(decorated.decorators().len(), 1);
+        assert_eq!(decorated.decorators()[0].name(), "event");
+        let AstContent::ExprList(args) = decorated.decorators()[0].args().content() else {
+            panic!("expected ExprList for decorator args");
+        };
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn test_multiple_decorators_on_labeled_block() {
+        let src = "
+            @foo
+            @bar(1)
+            label my_scene { let x = 1 }
+        ";
+        let result = parse_test!(script(), src);
+        assert!(
+            result.is_ok(),
+            "multiple decorators should parse: {result:?}"
+        );
+        let Ok(block) = result else { return };
+        let AstContent::Block(stmts) = block.content() else {
+            panic!("expected Block");
+        };
+        let decorated = &stmts[0];
+        assert_eq!(decorated.decorators().len(), 2);
+        assert_eq!(decorated.decorators()[0].name(), "foo");
+        assert_eq!(decorated.decorators()[1].name(), "bar");
+    }
+
+    #[test]
+    fn test_decorator_on_dialogue() {
+        let src = "
+            @voiced
+            <Alice>: \"Hello!\"
+        ";
+        let result = parse_test!(script(), src);
+        assert!(
+            result.is_ok(),
+            "decorator on dialogue should parse: {result:?}"
+        );
+        let Ok(block) = result else { return };
+        let AstContent::Block(stmts) = block.content() else {
+            panic!("expected Block");
+        };
+        let decorated = &stmts[0];
+        assert_eq!(decorated.decorators().len(), 1);
+        assert_eq!(decorated.decorators()[0].name(), "voiced");
+    }
+
+    #[test]
+    fn test_decorator_on_menu() {
+        let src = "
+            @important
+            menu {
+                \"Yes\" { jump yes }
+                \"No\" { jump no }
+            }
+        ";
+        let result = parse_test!(script(), src);
+        assert!(result.is_ok(), "decorator on menu should parse: {result:?}");
+        let Ok(block) = result else { return };
+        let AstContent::Block(stmts) = block.content() else {
+            panic!("expected Block");
+        };
+        let decorated = &stmts[0];
+        assert_eq!(decorated.decorators().len(), 1);
+        assert_eq!(decorated.decorators()[0].name(), "important");
+    }
+
+    #[test]
+    fn test_undecorated_statement_still_has_no_decorators() {
+        let src = "label plain { let x = 1 }";
+        let result = parse_test!(script(), src);
+        assert!(result.is_ok());
+        let Ok(block) = result else { return };
+        let AstContent::Block(stmts) = block.content() else {
+            panic!("expected Block");
+        };
+        assert_eq!(stmts[0].decorators().len(), 0);
+    }
+
+    #[test]
+    fn test_decorator_with_expression_arg() {
+        let src = "
+            @weight(1 + 2)
+            label scene { let x = 1 }
+        ";
+        let result = parse_test!(script(), src);
+        assert!(
+            result.is_ok(),
+            "decorator with expression arg should parse: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_decorator_inside_code_block() {
+        let src = "{
+            @on_enter
+            label inner { let x = 1 }
+        }";
+        let result = parse_test!(code_block(), src);
+        assert!(
+            result.is_ok(),
+            "decorator inside code block should parse: {result:?}"
+        );
+        let Ok(block) = result else { return };
+        let AstContent::Block(stmts) = block.content() else {
+            panic!("expected Block");
+        };
+        assert_eq!(stmts[0].decorators().len(), 1);
+    }
+
+    #[test]
+    fn test_decorator_constructs() {
+        let bare = Decorator::bare("test".to_string());
+        assert_eq!(bare.name(), "test");
+        assert_eq!(bare.args().content(), &AstContent::ExprList(vec![]));
+
+        let with_args = Decorator::new(
+            "event".to_string(),
+            Ast::expr_list(vec![Ast::value(crate::runtime::value::RuntimeValue::Int(
+                1,
+            ))]),
+        );
+        assert_eq!(with_args.name(), "event");
+        let AstContent::ExprList(args) = with_args.args().content() else {
+            panic!("expected ExprList");
+        };
+        assert_eq!(args.len(), 1);
+    }
 
     #[test]
     fn test_script_bare() {
@@ -672,7 +900,7 @@ mod tests {
         assert_eq!(
             result,
             Ok(Ast::block(vec![Ast::menu(vec![
-                (
+                Ast::menu_option(
                     "Option 1".to_string(),
                     Ast::block(vec![Ast::decl(
                         DeclKind::Variable,
@@ -680,14 +908,14 @@ mod tests {
                         Ast::value(RuntimeValue::Int(1))
                     )])
                 ),
-                (
+                Ast::menu_option(
                     "Option 2".to_string(),
                     Ast::block(vec![Ast::decl(
                         DeclKind::Variable,
                         Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()])),
                         Ast::value(RuntimeValue::Int(2))
                     )])
-                )
+                ),
             ])]))
         );
     }
