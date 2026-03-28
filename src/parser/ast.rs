@@ -123,6 +123,32 @@ pub enum DeclKind {
     Variable,
 }
 
+/// A pattern in a match arm.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchPattern {
+    /// The `_` wildcard — matches anything
+    Wildcard,
+    /// A literal or identifier path — matches by value equality.
+    /// Covers: IntLit, FloatLit, BoolLit, StrLit, Null, IdentPath (enum variant or variable)
+    Value(Ast),
+}
+
+/// A single arm in a match statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    /// The pattern to match against
+    pub pattern: MatchPattern,
+    /// The block to execute when matched (always AstContent::Block)
+    pub body: Ast,
+}
+
+impl MatchArm {
+    /// Creates a new match arm.
+    pub fn new(pattern: MatchPattern, body: Ast) -> Self {
+        MatchArm { pattern, body }
+    }
+}
+
 /// Represents the different types of content an AST node can contain.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstContent {
@@ -225,6 +251,22 @@ pub enum AstContent {
     Jump {
         /// Label identifier to jump to
         label: String,
+    },
+
+    /// Enum declaration: enum Foo { A, B, C }
+    EnumDecl {
+        /// The enum's name (e.g. "Direction")
+        name: String,
+        /// Ordered list of variant names (e.g. ["North", "South", "East", "West"])
+        variants: Vec<String>,
+    },
+
+    /// Match statement: match expr { pattern { ... } ... }
+    Match {
+        /// The expression being matched
+        scrutinee: Box<Ast>,
+        /// Ordered list of match arms
+        arms: Vec<MatchArm>,
     },
 }
 
@@ -465,5 +507,18 @@ impl Ast {
     /// Create jump statement node
     pub fn jump_stmt(label: String) -> Self {
         Self::new(AstContent::Jump { label })
+    }
+
+    /// Create an enum declaration node
+    pub fn enum_decl(name: String, variants: Vec<String>) -> Self {
+        Self::new(AstContent::EnumDecl { name, variants })
+    }
+
+    /// Create a match statement node
+    pub fn match_stmt(scrutinee: Ast, arms: Vec<MatchArm>) -> Self {
+        Self::new(AstContent::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+        })
     }
 }

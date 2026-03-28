@@ -187,6 +187,15 @@ pub enum Token {
     #[token("jump")]
     Jump,
 
+    #[token("enum")]
+    Enum,
+
+    #[token("match")]
+    Match,
+
+    #[token("_")]
+    Wildcard,
+
     // ---- Other ----
     #[token(":")]
     Colon,
@@ -321,6 +330,15 @@ mod tests {
         assert!(matches!(lex("foo"), Token::IdentPath(s) if s == vec!["foo"]));
         assert!(matches!(lex("_bar"), Token::IdentPath(s) if s == vec!["_bar"]));
         assert!(matches!(lex("baz_123"), Token::IdentPath(s) if s == vec!["baz_123"]));
+    }
+
+    #[test]
+    fn keywords() {
+        assert!(matches!(lex("return"), Token::Return));
+        assert!(matches!(lex("jump"), Token::Jump));
+        assert!(matches!(lex("enum"), Token::Enum));
+        assert!(matches!(lex("match"), Token::Match));
+        assert!(matches!(lex("_"), Token::Wildcard));
     }
 
     #[test]

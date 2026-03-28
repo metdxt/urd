@@ -8,7 +8,7 @@ use chumsky::prelude::*;
 use crate::{
     lexer::Token,
     parser::{
-        ast::{Ast, Decorator},
+        ast::{Ast, Decorator, MatchArm, MatchPattern},
         expr::{comma_separated_exprs, declaration, expr},
     },
     runtime::value::RuntimeValue,
@@ -96,9 +96,11 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
 
     assignment()
         .or(declaration())
-        .or(if_parser(block))
+        .or(if_parser(block.clone()))
         .or(return_statement())
         .or(jump_statement())
+        .or(enum_decl_parser())
+        .or(match_parser(block))
         .or(decorated)
         .or(decoratable)
 }
@@ -212,6 +214,16 @@ pub fn menu<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     menu_parser(code_block())
 }
 
+/// Parser for enum declarations: `enum Foo { A, B, C }`
+pub fn enum_decl<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    enum_decl_parser()
+}
+
+/// Parser for match statements: `match expr { pattern { ... } ... }`
+pub fn match_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    match_parser(code_block())
+}
+
 fn menu_parser<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
@@ -236,6 +248,75 @@ fn menu_parser<'tok, I: UrdInput<'tok>>(
         .boxed()
 }
 
+/// Parses an enum declaration: `enum Name { Variant1, Variant2, ... }`
+///
+/// Variants can be separated by commas, newlines, or a mix of both.
+/// Trailing separators are allowed.
+fn enum_decl_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    // Separator: comma or newline, at least one, trailing allowed
+    let sep = just(Token::Comma)
+        .or(just(Token::Newline))
+        .repeated()
+        .at_least(1);
+
+    let variant = select! {
+        Token::IdentPath(path) if path.len() == 1 => path[0].clone()
+    }
+    .labelled("enum variant");
+
+    let variants = variant
+        .separated_by(sep)
+        .allow_leading()
+        .allow_trailing()
+        .collect::<Vec<_>>();
+
+    let name = select! {
+        Token::IdentPath(path) if path.len() == 1 => path[0].clone()
+    }
+    .labelled("enum name");
+
+    just(Token::Enum)
+        .ignore_then(name)
+        .then(variants.delimited_by(just(Token::LeftCurly), just(Token::RightCurly)))
+        .map(|(name, variants)| Ast::enum_decl(name, variants))
+        .boxed()
+}
+
+/// Parses a match statement: `match expr { pattern { ... } ... }`
+///
+/// Each arm is `pattern block`. Patterns are separated by newlines.
+/// Supported patterns: `_` wildcard, literals (bool/int/float/str/null), and identifier paths.
+fn match_parser<'tok, I: UrdInput<'tok>>(
+    block: impl UrdParser<'tok, I> + 'tok,
+) -> impl UrdParser<'tok, I> {
+    let pattern = select! { Token::Wildcard => MatchPattern::Wildcard }
+        .or(select! {
+            Token::Null => MatchPattern::Value(Ast::value(RuntimeValue::Null)),
+            Token::BoolLit(b) => MatchPattern::Value(Ast::value(RuntimeValue::Bool(b))),
+            Token::IntLit(i) => MatchPattern::Value(Ast::value(RuntimeValue::Int(i))),
+            Token::FloatLit(f) => MatchPattern::Value(Ast::value(RuntimeValue::Float(f))),
+            Token::StrLit(s) => MatchPattern::Value(Ast::value(RuntimeValue::Str(s))),
+            Token::IdentPath(p) => MatchPattern::Value(Ast::value(RuntimeValue::IdentPath(p))),
+        })
+        .labelled("match pattern");
+
+    let arm = pattern
+        .then(block)
+        .map(|(pattern, body)| MatchArm::new(pattern, body));
+
+    let arms = arm
+        .separated_by(just(Token::Newline).repeated().at_least(1))
+        .allow_leading()
+        .allow_trailing()
+        .collect::<Vec<_>>();
+
+    just(Token::Match)
+        .ignore_then(expr())
+        .then(arms.delimited_by(just(Token::LeftCurly), just(Token::RightCurly)))
+        .map(|(scrutinee, arms)| Ast::match_stmt(scrutinee, arms))
+        .boxed()
+}
+
 /// Parser for a bare script body (list of statements without braces).
 pub fn script<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     let separator = just(Token::Newline).or(just(Token::Semicolon));
@@ -254,7 +335,7 @@ mod tests {
     use super::*;
     use crate::{
         parse_test,
-        parser::ast::{AstContent, DeclKind, Decorator},
+        parser::ast::{AstContent, DeclKind, Decorator, MatchPattern},
         runtime::value::RuntimeValue,
     };
 
@@ -1272,5 +1353,318 @@ mod tests {
         let src = "{ jump a; jump b; jump c }";
         let result = parse_test!(code_block(), src);
         assert!(result.is_ok());
+    }
+
+    // ---- Enum declaration tests ----
+
+    #[test]
+    fn test_enum_single_line() {
+        let src = "enum Direction { North, South, East, West }";
+        let result = parse_test!(enum_decl(), src);
+        assert!(result.is_ok(), "single-line enum should parse: {result:?}");
+        let Ok(node) = result else { return };
+        let AstContent::EnumDecl { name, variants } = node.content() else {
+            panic!("expected EnumDecl, got {:?}", node.content());
+        };
+        assert_eq!(name, "Direction");
+        assert_eq!(variants, &["North", "South", "East", "West"]);
+    }
+
+    #[test]
+    fn test_enum_multiline() {
+        let src = "enum Direction {
+            North
+            South
+            East
+            West
+        }";
+        let result = parse_test!(enum_decl(), src);
+        assert!(result.is_ok(), "multiline enum should parse: {result:?}");
+        let Ok(node) = result else { return };
+        let AstContent::EnumDecl { name, variants } = node.content() else {
+            panic!("expected EnumDecl, got {:?}", node.content());
+        };
+        assert_eq!(name, "Direction");
+        assert_eq!(variants, &["North", "South", "East", "West"]);
+    }
+
+    #[test]
+    fn test_enum_mixed_separators() {
+        let src = "enum Direction {
+            North, South
+            East, West
+        }";
+        let result = parse_test!(enum_decl(), src);
+        assert!(
+            result.is_ok(),
+            "enum with mixed separators should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::EnumDecl { variants, .. } = node.content() else {
+            panic!("expected EnumDecl, got {:?}", node.content());
+        };
+        assert_eq!(variants, &["North", "South", "East", "West"]);
+    }
+
+    #[test]
+    fn test_enum_single_variant() {
+        let src = "enum Coin { Heads }";
+        let result = parse_test!(enum_decl(), src);
+        assert!(
+            result.is_ok(),
+            "single-variant enum should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::EnumDecl { name, variants } = node.content() else {
+            panic!("expected EnumDecl, got {:?}", node.content());
+        };
+        assert_eq!(name, "Coin");
+        assert_eq!(variants, &["Heads"]);
+    }
+
+    #[test]
+    fn test_enum_trailing_comma() {
+        let src = "enum X { A, B, }";
+        let result = parse_test!(enum_decl(), src);
+        assert!(
+            result.is_ok(),
+            "enum with trailing comma should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::EnumDecl { variants, .. } = node.content() else {
+            panic!("expected EnumDecl, got {:?}", node.content());
+        };
+        assert_eq!(variants, &["A", "B"]);
+    }
+
+    #[test]
+    fn test_enum_in_script() {
+        let src = "
+            enum Color { Red, Green, Blue }
+            let c = Color.Red
+        ";
+        let result = parse_test!(script(), src);
+        assert!(
+            result.is_ok(),
+            "enum in script should parse: {result:?}"
+        );
+        let Ok(block) = result else { return };
+        let AstContent::Block(stmts) = block.content() else {
+            panic!("expected Block");
+        };
+        assert_eq!(stmts.len(), 2);
+        assert!(matches!(stmts[0].content(), AstContent::EnumDecl { .. }));
+    }
+
+    // ---- Match statement tests ----
+
+    #[test]
+    fn test_match_enum_variants() {
+        let src = "match dir {
+            Direction.North { let x = 1 }
+            Direction.South { let x = 2 }
+            _ { let x = 0 }
+        }";
+        let result = parse_test!(match_statement(), src);
+        assert!(
+            result.is_ok(),
+            "match on enum variants should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::Match { scrutinee: _, arms } = node.content() else {
+            panic!("expected Match, got {:?}", node.content());
+        };
+        assert_eq!(arms.len(), 3);
+        assert!(matches!(arms[0].pattern, MatchPattern::Value(_)));
+        assert!(matches!(arms[1].pattern, MatchPattern::Value(_)));
+        assert!(matches!(arms[2].pattern, MatchPattern::Wildcard));
+    }
+
+    #[test]
+    fn test_match_literal_int() {
+        let src = "match score {
+            1 { let grade = \"A\" }
+            2 { let grade = \"B\" }
+            _ { let grade = \"F\" }
+        }";
+        let result = parse_test!(match_statement(), src);
+        assert!(
+            result.is_ok(),
+            "match on integer literals should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::Match { scrutinee: _, arms } = node.content() else {
+            panic!("expected Match, got {:?}", node.content());
+        };
+        assert_eq!(arms.len(), 3);
+        assert!(matches!(
+            &arms[0].pattern,
+            MatchPattern::Value(ast) if matches!(ast.content(), AstContent::Value(RuntimeValue::Int(1)))
+        ));
+        assert!(matches!(
+            &arms[1].pattern,
+            MatchPattern::Value(ast) if matches!(ast.content(), AstContent::Value(RuntimeValue::Int(2)))
+        ));
+        assert!(matches!(arms[2].pattern, MatchPattern::Wildcard));
+    }
+
+    #[test]
+    fn test_match_literal_bool() {
+        let src = "match flag {
+            true { let x = 1 }
+            false { let x = 0 }
+        }";
+        let result = parse_test!(match_statement(), src);
+        assert!(
+            result.is_ok(),
+            "match on bool literals should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::Match { scrutinee: _, arms } = node.content() else {
+            panic!("expected Match, got {:?}", node.content());
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(
+            &arms[0].pattern,
+            MatchPattern::Value(ast) if matches!(ast.content(), AstContent::Value(RuntimeValue::Bool(true)))
+        ));
+        assert!(matches!(
+            &arms[1].pattern,
+            MatchPattern::Value(ast) if matches!(ast.content(), AstContent::Value(RuntimeValue::Bool(false)))
+        ));
+    }
+
+    #[test]
+    fn test_match_wildcard_only() {
+        let src = "match x {
+            _ { let y = 42 }
+        }";
+        let result = parse_test!(match_statement(), src);
+        assert!(
+            result.is_ok(),
+            "match with only wildcard arm should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::Match { arms, .. } = node.content() else {
+            panic!("expected Match, got {:?}", node.content());
+        };
+        assert_eq!(arms.len(), 1);
+        assert!(matches!(arms[0].pattern, MatchPattern::Wildcard));
+    }
+
+    #[test]
+    fn test_match_no_wildcard() {
+        let src = "match phase {
+            1 { jump intro }
+            2 { jump middle }
+            3 { jump outro }
+        }";
+        let result = parse_test!(match_statement(), src);
+        assert!(
+            result.is_ok(),
+            "match with no wildcard arm should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::Match { arms, .. } = node.content() else {
+            panic!("expected Match, got {:?}", node.content());
+        };
+        assert_eq!(arms.len(), 3);
+        for arm in arms {
+            assert!(
+                matches!(arm.pattern, MatchPattern::Value(_)),
+                "expected Value pattern, got {:?}",
+                arm.pattern
+            );
+        }
+    }
+
+    #[test]
+    fn test_match_nested() {
+        let src = "match outer {
+            1 {
+                match inner {
+                    true { let z = 1 }
+                    _ { let z = 0 }
+                }
+            }
+            _ { let z = 99 }
+        }";
+        let result = parse_test!(match_statement(), src);
+        assert!(
+            result.is_ok(),
+            "nested match should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::Match { arms, .. } = node.content() else {
+            panic!("expected outer Match, got {:?}", node.content());
+        };
+        assert_eq!(arms.len(), 2);
+        // The body of the first arm should be a Block containing a Match
+        let AstContent::Block(inner_stmts) = arms[0].body.content() else {
+            panic!("expected Block in first arm body");
+        };
+        assert_eq!(inner_stmts.len(), 1);
+        assert!(
+            matches!(inner_stmts[0].content(), AstContent::Match { .. }),
+            "expected inner Match node"
+        );
+    }
+
+    #[test]
+    fn test_match_in_script() {
+        let src = "
+            enum Dir { North, South }
+            match dir {
+                Dir.North { jump north_scene }
+                Dir.South { jump south_scene }
+                _ { jump default_scene }
+            }
+        ";
+        let result = parse_test!(script(), src);
+        assert!(
+            result.is_ok(),
+            "enum + match in script should parse: {result:?}"
+        );
+        let Ok(block) = result else { return };
+        let AstContent::Block(stmts) = block.content() else {
+            panic!("expected Block");
+        };
+        assert_eq!(stmts.len(), 2);
+        assert!(matches!(stmts[0].content(), AstContent::EnumDecl { .. }));
+        assert!(matches!(stmts[1].content(), AstContent::Match { .. }));
+    }
+
+    #[test]
+    fn test_match_null_pattern() {
+        let src = "match val {
+            null { let x = 0 }
+            _ { let x = 1 }
+        }";
+        let result = parse_test!(match_statement(), src);
+        assert!(
+            result.is_ok(),
+            "match on null pattern should parse: {result:?}"
+        );
+        let Ok(node) = result else { return };
+        let AstContent::Match { arms, .. } = node.content() else {
+            panic!("expected Match");
+        };
+        assert!(matches!(
+            &arms[0].pattern,
+            MatchPattern::Value(ast) if matches!(ast.content(), AstContent::Value(RuntimeValue::Null))
+        ));
+    }
+
+    #[test]
+    fn test_match_scrutinee_expression() {
+        let src = "match x + 1 {
+            2 { let r = \"two\" }
+            _ { let r = \"other\" }
+        }";
+        let result = parse_test!(match_statement(), src);
+        assert!(
+            result.is_ok(),
+            "match with expression scrutinee should parse: {result:?}"
+        );
     }
 }
