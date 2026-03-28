@@ -1,0 +1,7 @@
+{
+  "name": "Rust Development",
+  "image": "mcr.microsoft.com/devcontainers/rust:1",
+  "customizations": {},
+  "postCreateCommand": "rustup component add rustfmt clippy",
+  "remoteUser": "vscode",
+}
