@@ -1,7 +1,10 @@
 {
-  "name": "Rust Development",
-  "image": "mcr.microsoft.com/devcontainers/rust:1",
-  "customizations": {},
-  "postCreateCommand": "rustup component add rustfmt clippy",
-  "remoteUser": "vscode",
+    "name": "Rust Development",
+    "image": "mcr.microsoft.com/devcontainers/rust:1",
+    "customizations": {},
+    "postCreateCommand": "rustup component add rustfmt clippy",
+    "remoteUser": "vscode",
+    "mounts": [
+        "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"
+    ]
 }
