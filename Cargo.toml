@@ -19,6 +19,7 @@ incremental=true
 [profile.test]
 opt-level=1
 incremental=true
+debug = 0
 
 [lints]
 clippy.unwrap_used = "deny"

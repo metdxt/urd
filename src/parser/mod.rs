@@ -19,7 +19,6 @@ pub mod expr;
 
 /// Helper macro to generate boilerplate for parsing text using Urd lexer
 /// To use with any UrdParser.
-#[cfg(test)]
 #[macro_export]
 macro_rules! parse_test {
     ($parser:expr, $src:expr) => {{

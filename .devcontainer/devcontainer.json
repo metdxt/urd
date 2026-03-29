@@ -2,10 +2,10 @@
     "name": "Rust Development",
     "image": "mcr.microsoft.com/devcontainers/rust:1",
     "customizations": {},
-    "postCreateCommand": "rustup component add rustfmt clippy",
+    "postCreateCommand": "rustup component add rustfmt clippy;apt update; apt install clang mold",
     "remoteUser": "vscode",
     "mounts": [
         "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"
     ],
-    "runArgs": ["--memory=10g"]
+    "runArgs": ["--memory=10g", "--memory-swap=10g"]
 }
