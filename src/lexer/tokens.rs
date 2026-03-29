@@ -196,6 +196,12 @@ pub enum Token {
     #[token("decorator")]
     DecoratorKw,
 
+    #[token("import")]
+    Import,
+
+    #[token("as")]
+    As,
+
     #[token("_")]
     Wildcard,
 
@@ -349,6 +355,20 @@ mod tests {
         assert!(matches!(lex("decorator"), Token::DecoratorKw));
         // "decorators" (with extra chars) must still lex as IdentPath
         assert!(matches!(lex("decorators"), Token::IdentPath(_)));
+    }
+
+    #[test]
+    fn import_keyword() {
+        assert!(matches!(lex("import"), Token::Import));
+        // "imports" (with extra chars) must still lex as IdentPath
+        assert!(matches!(lex("imports"), Token::IdentPath(_)));
+    }
+
+    #[test]
+    fn as_keyword() {
+        assert!(matches!(lex("as"), Token::As));
+        // "asset" (with extra chars) must still lex as IdentPath
+        assert!(matches!(lex("asset"), Token::IdentPath(_)));
     }
 
     #[test]

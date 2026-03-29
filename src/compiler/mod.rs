@@ -12,7 +12,7 @@
 //!    [`NodeId`] of the sub-graph it just emitted; callers thread a `next` continuation
 //!    through every call so that every chain is fully linked on the first pass.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -33,6 +33,19 @@ pub enum CompilerError {
     /// An AST node appeared at statement level where it is not permitted.
     #[error("invalid statement: {0}")]
     InvalidStatement(String),
+
+    /// Failed to load a module during import resolution.
+    #[error("module load error for '{path}': {message}")]
+    ModuleLoadError {
+        /// The import path that failed to load.
+        path: String,
+        /// Human-readable description of the failure.
+        message: String,
+    },
+
+    /// A circular import was detected.
+    #[error("circular import detected for '{0}'")]
+    CircularImport(String),
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -63,6 +76,27 @@ impl Compiler {
         state.graph.entry = entry;
 
         Ok(state.graph)
+    }
+
+    /// Compile `ast` with access to a [`FileLoader`] for resolving `import` statements.
+    ///
+    /// This is the multi-file variant of [`Compiler::compile`]. When an
+    /// `import "path" as alias` statement is encountered, the loader is called
+    /// to fetch the source, which is then parsed and compiled recursively
+    /// before being merged into the main graph.
+    ///
+    /// Circular imports are detected via a `visited` set of paths.
+    pub fn compile_with_loader(
+        ast: &Ast,
+        loader: &dyn crate::vm::loader::FileLoader,
+    ) -> Result<IrGraph, CompilerError> {
+        // `in_progress` tracks modules currently on the recursion stack so we
+        // can detect true import cycles (A→B→A).  `completed` tracks modules
+        // that have already been fully compiled so we can skip them on
+        // subsequent imports of the same path (diamond dependencies).
+        let mut in_progress = HashSet::new();
+        let mut completed = HashSet::new();
+        compile_recursive(ast, loader, &mut in_progress, &mut completed)
     }
 }
 
@@ -177,10 +211,19 @@ impl CompilerState {
 
             // ── Assignment BinOp (x = expr) ──────────────────────────────────
             AstContent::BinOp { op, left, right } if *op == Operator::Assign => {
-                let var = extract_name(left)?;
+                // Detect cross-module assignment: `alias.var = value` → store as "alias::var"
+                // with Global scope so it persists in the module's namespace.
+                let (var, scope) = match left.content() {
+                    AstContent::Value(crate::runtime::value::RuntimeValue::IdentPath(path))
+                        if path.len() == 2 =>
+                    {
+                        (format!("{}::{}", path[0], path[1]), DeclKind::Global)
+                    }
+                    _ => (extract_name(left)?, DeclKind::Variable),
+                };
                 let id = self.graph.push(IrNodeKind::Assign {
                     var,
-                    scope: DeclKind::Variable,
+                    scope,
                     expr: *right.clone(),
                     next,
                 });
@@ -251,11 +294,24 @@ impl CompilerState {
 
             // ── Jump ─────────────────────────────────────────────────────────
             AstContent::Jump { label } => {
-                let target = self
-                    .label_placeholders
-                    .get(label)
-                    .copied()
-                    .ok_or_else(|| CompilerError::UnknownLabel(label.clone()))?;
+                // Check for cross-module dot-notation: "alias.label_name"
+                let target = if let Some(dot_pos) = label.find('.') {
+                    let alias = &label[..dot_pos];
+                    let label_name = &label[dot_pos + 1..];
+                    let namespaced = format!("{}::{}", alias, label_name);
+                    // Cross-module labels are in the graph's labels map (merged in pass 0).
+                    self.graph
+                        .labels
+                        .get(&namespaced)
+                        .copied()
+                        .ok_or_else(|| CompilerError::UnknownLabel(label.clone()))?
+                } else {
+                    // Local jump: use label_placeholders (from pass 1 scan).
+                    self.label_placeholders
+                        .get(label)
+                        .copied()
+                        .ok_or_else(|| CompilerError::UnknownLabel(label.clone()))?
+                };
 
                 let id = self.graph.push(IrNodeKind::Jump { target });
                 Ok(id)
@@ -412,6 +468,11 @@ impl CompilerState {
                 });
                 Ok(id)
             }
+
+            // ── Import ───────────────────────────────────────────────────────
+            // Import nodes are fully resolved during pass 0 (collect_imports).
+            // At compile-node time they are no-ops that simply fall through.
+            AstContent::Import { .. } => Ok(self.graph.push(IrNodeKind::Nop { next })),
         }
     }
 }
@@ -422,16 +483,24 @@ impl CompilerState {
 ///
 /// Accepts:
 /// - `Value(IdentPath([name]))` — a simple single-segment identifier
-/// - `Value(IdentPath([...]))` — a path; uses the last segment as the name
+/// - `Value(IdentPath([alias, var]))` — a 2-segment cross-module path; encoded
+///   as `"alias::var"` for storage in the globals map.
 ///
 /// # Errors
 /// Returns [`CompilerError::InvalidStatement`] for any other node shape.
 fn extract_name(ast: &Ast) -> Result<String, CompilerError> {
     match ast.content() {
-        AstContent::Value(crate::runtime::value::RuntimeValue::IdentPath(path)) => path
-            .last()
-            .cloned()
-            .ok_or_else(|| CompilerError::InvalidStatement("empty identifier path".to_string())),
+        AstContent::Value(crate::runtime::value::RuntimeValue::IdentPath(path))
+            if path.len() == 1 =>
+        {
+            Ok(path[0].clone())
+        }
+        // Cross-module assignment: `alias.var = value` → store as "alias::var"
+        AstContent::Value(crate::runtime::value::RuntimeValue::IdentPath(path))
+            if path.len() == 2 =>
+        {
+            Ok(format!("{}::{}", path[0], path[1]))
+        }
         other => Err(CompilerError::InvalidStatement(format!(
             "expected an identifier for variable name, got {:?}",
             other
@@ -439,16 +508,179 @@ fn extract_name(ast: &Ast) -> Result<String, CompilerError> {
     }
 }
 
+// ─── Multi-file compilation helpers ──────────────────────────────────────────
+
+/// Compile `ast` recursively, resolving `import` statements via `loader`.
+///
+/// A fresh [`CompilerState`] is created for each module. Pass 0 merges all
+/// imported modules before the label-scan and emit passes so that cross-module
+/// labels are visible throughout.
+fn compile_recursive(
+    ast: &Ast,
+    loader: &dyn crate::vm::loader::FileLoader,
+    in_progress: &mut HashSet<String>,
+    completed: &mut HashSet<String>,
+) -> Result<IrGraph, CompilerError> {
+    let mut state = CompilerState::new();
+
+    // Pass 0: collect all imports and pre-merge them into the graph BEFORE
+    // the label scan pass. This ensures cross-module labels are in the graph's
+    // labels map before pass 2 tries to resolve jumps to them.
+    collect_imports(ast, &mut state, loader, in_progress, completed)?;
+
+    // Pass 1: scan local labels (imports are already merged).
+    state.scan_labels(ast);
+
+    // Pass 2: emit IR nodes.
+    let entry = state.compile_node(ast, NODE_END)?;
+    state.graph.entry = entry;
+
+    Ok(state.graph)
+}
+
+/// Pass 0: walk the AST looking for `Import` nodes. For each one, load, parse,
+/// and compile the imported module, then merge it into `state.graph`.
+fn collect_imports(
+    ast: &Ast,
+    state: &mut CompilerState,
+    loader: &dyn crate::vm::loader::FileLoader,
+    in_progress: &mut HashSet<String>,
+    completed: &mut HashSet<String>,
+) -> Result<(), CompilerError> {
+    match ast.content() {
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                collect_imports(stmt, state, loader, in_progress, completed)?;
+            }
+        }
+        AstContent::Import { path, alias } => {
+            // True cycle: this module is already on the current call stack.
+            if in_progress.contains(path.as_str()) {
+                return Err(CompilerError::CircularImport(path.clone()));
+            }
+            // Diamond / repeated import: already compiled successfully, skip.
+            // The caller can still merge it under a different alias if needed,
+            // but we don't re-compile it.  For now we treat a repeated import
+            // under the same or a different alias as a no-op on the second
+            // encounter (the labels were already merged the first time under
+            // the first alias; a second merge under the same alias is fine too,
+            // but the most common case is simply "both A and B import C").
+            if completed.contains(path.as_str()) {
+                // Re-load and re-merge so the alias mapping is registered even
+                // for the second importer, but don't recurse into it again.
+                let src = loader
+                    .load(path)
+                    .map_err(|msg| CompilerError::ModuleLoadError {
+                        path: path.clone(),
+                        message: msg,
+                    })?;
+                let module_ast =
+                    parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
+                        path: path.clone(),
+                        message: msg,
+                    })?;
+                // Compile without recursion (no imports re-processed).
+                let mut inner = CompilerState::new();
+                inner.scan_labels(&module_ast);
+                let entry = inner.compile_node(&module_ast, NODE_END)?;
+                inner.graph.entry = entry;
+                state.graph.merge(inner.graph, alias);
+                return Ok(());
+            }
+
+            // Mark as in-progress before descending.
+            in_progress.insert(path.clone());
+
+            // Load the source text.
+            let src = loader
+                .load(path)
+                .map_err(|msg| CompilerError::ModuleLoadError {
+                    path: path.clone(),
+                    message: msg,
+                })?;
+
+            // Parse the source into an AST.
+            let module_ast = parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
+                path: path.clone(),
+                message: msg,
+            })?;
+
+            // Compile the module recursively (handles transitive imports).
+            let module_graph = compile_recursive(&module_ast, loader, in_progress, completed)?;
+
+            // Pop from in-progress and mark as completed.
+            in_progress.remove(path.as_str());
+            completed.insert(path.clone());
+
+            // Merge into our graph, namespacing all labels as "alias::label".
+            state.graph.merge(module_graph, alias);
+        }
+        // Recurse into other block-like constructs so that nested imports are found.
+        AstContent::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            collect_imports(then_block, state, loader, in_progress, completed)?;
+            if let Some(eb) = else_block {
+                collect_imports(eb, state, loader, in_progress, completed)?;
+            }
+        }
+        AstContent::Menu { options } => {
+            for opt in options {
+                if let AstContent::MenuOption { content, .. } = opt.content() {
+                    collect_imports(content, state, loader, in_progress, completed)?;
+                }
+            }
+        }
+        AstContent::Match { arms, .. } => {
+            for arm in arms {
+                collect_imports(&arm.body, state, loader, in_progress, completed)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Parse a raw Urd source string into an [`Ast`]. Returns `Err(message)` on
+/// parse failure, collecting all parse errors into a single semicolon-separated
+/// string.
+fn parse_source(src: &str) -> Result<Ast, String> {
+    use chumsky::input::Stream;
+    use chumsky::prelude::*;
+    use chumsky::span::SimpleSpan;
+
+    use crate::lexer::{Token, lex_src};
+    use crate::parser::block::script;
+
+    let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
+        Ok(tok) => (tok, span.into()),
+        Err(e) => (Token::Error(e), span.into()),
+    });
+
+    let stream =
+        Stream::from_iter(lexer).map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
+
+    script().parse(stream).into_result().map_err(|errs| {
+        errs.iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
+}
+
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{
         ir::{IrNodeKind, NODE_END},
         parser::ast::{Ast, AstContent, DeclKind, MatchArm, MatchPattern},
         runtime::value::RuntimeValue,
+        vm::loader::MemLoader,
     };
 
     // ── decorator tests ───────────────────────────────────────────────────────
@@ -847,5 +1079,159 @@ mod tests {
             "expected UnknownLabel error, got {:?}",
             result,
         );
+    }
+
+    // ── import / compile_with_loader tests ───────────────────────────────────
+
+    /// compile_with_loader resolves a simple import: the merged graph contains
+    /// the module's label under "alias::label_name".
+    #[test]
+    fn test_compile_with_loader_resolves_import() {
+        let mut loader = MemLoader::new();
+        loader.add("lib.urd", "label greet { let msg = \"hello\" }");
+
+        let main_ast = Ast::block(vec![Ast::import("lib.urd".to_string(), "lib".to_string())]);
+
+        let graph =
+            Compiler::compile_with_loader(&main_ast, &loader).expect("compile_with_loader failed");
+
+        assert!(
+            graph.labels.contains_key("lib::greet"),
+            "expected 'lib::greet' in graph.labels, got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// The same module imported from two different places (diamond dependency)
+    /// does not trigger a CircularImport error.
+    #[test]
+    fn test_diamond_import_does_not_error() {
+        let mut loader = MemLoader::new();
+        // base.urd is imported by both mid.urd and directly by main
+        loader.add("base.urd", "label entry { let x = 1 }");
+        loader.add("mid.urd", "import \"base.urd\" as base");
+
+        let main_ast = Ast::block(vec![
+            Ast::import("mid.urd".to_string(), "mid".to_string()),
+            Ast::import("base.urd".to_string(), "base".to_string()),
+        ]);
+
+        let result = Compiler::compile_with_loader(&main_ast, &loader);
+        assert!(
+            result.is_ok(),
+            "diamond import should not produce a circular error, got: {:?}",
+            result
+        );
+        let graph = result.unwrap();
+        assert!(
+            graph.labels.contains_key("base::entry"),
+            "'base::entry' must be in graph.labels, got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// A `jump alias.label` resolves to the correct (merged) NodeId.
+    #[test]
+    fn test_cross_module_jump_resolves_to_merged_node_id() {
+        let mut loader = MemLoader::new();
+        loader.add("scenes.urd", "label intro { let x = 1 }");
+
+        let import_node = Ast::import("scenes.urd".to_string(), "scenes".to_string());
+        // jump scenes.intro  → stored as Jump { label: "scenes.intro" }
+        let jump_node = Ast::jump_stmt("scenes.intro".to_string());
+        let main_ast = Ast::block(vec![import_node, jump_node]);
+
+        let graph =
+            Compiler::compile_with_loader(&main_ast, &loader).expect("compile_with_loader failed");
+
+        // The merged label must exist.
+        let enter_id = *graph
+            .labels
+            .get("scenes::intro")
+            .expect("'scenes::intro' not in graph.labels");
+
+        // Find the Jump node and verify its target.
+        let jump_node = graph
+            .nodes
+            .iter()
+            .find(|n| matches!(n.kind, IrNodeKind::Jump { .. }))
+            .expect("no Jump node in graph");
+
+        match &jump_node.kind {
+            IrNodeKind::Jump { target } => {
+                assert_eq!(
+                    *target, enter_id,
+                    "Jump.target must equal the merged EnterScope NodeId"
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Circular imports produce CompilerError::CircularImport.
+    #[test]
+    fn test_circular_import_returns_error() {
+        // a.urd imports b.urd, b.urd imports a.urd  → circular
+        let mut loader = MemLoader::new();
+        loader.add("a.urd", "import \"b.urd\" as b");
+        loader.add("b.urd", "import \"a.urd\" as a");
+
+        let main_ast = Ast::block(vec![Ast::import("a.urd".to_string(), "a".to_string())]);
+
+        let result = Compiler::compile_with_loader(&main_ast, &loader);
+        assert!(
+            matches!(result, Err(CompilerError::CircularImport(ref p)) if p == "a.urd"),
+            "expected CircularImport(\"a.urd\"), got {:?}",
+            result
+        );
+    }
+
+    /// A missing module produces CompilerError::ModuleLoadError.
+    #[test]
+    fn test_missing_module_returns_load_error() {
+        let loader = MemLoader::new(); // empty — no files registered
+
+        let main_ast = Ast::block(vec![Ast::import(
+            "missing.urd".to_string(),
+            "missing".to_string(),
+        )]);
+
+        let result = Compiler::compile_with_loader(&main_ast, &loader);
+        assert!(
+            matches!(
+                result,
+                Err(CompilerError::ModuleLoadError { ref path, .. }) if path == "missing.urd"
+            ),
+            "expected ModuleLoadError for 'missing.urd', got {:?}",
+            result
+        );
+    }
+
+    /// Cross-module assignment `alias.var = value` compiles to an Assign node
+    /// with Global scope and a namespaced key "alias::var".
+    #[test]
+    fn test_cross_module_assignment_compiles_to_global_scope() {
+        // Build AST for: `mod.counter = 42`
+        let lhs = Ast::value(RuntimeValue::IdentPath(vec![
+            "mod".to_string(),
+            "counter".to_string(),
+        ]));
+        let rhs = int(42);
+        let assign = Ast::assign_op(lhs, rhs);
+        let ast = Ast::block(vec![assign]);
+
+        let graph = Compiler::compile(&ast).expect("compile failed");
+
+        match node_kind(&graph, graph.entry) {
+            IrNodeKind::Assign { var, scope, .. } => {
+                assert_eq!(var, "mod::counter", "variable name must be namespaced");
+                assert_eq!(
+                    *scope,
+                    DeclKind::Global,
+                    "cross-module assignment must use Global scope"
+                );
+            }
+            other => panic!("expected Assign, got {:?}", other),
+        }
     }
 }

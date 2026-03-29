@@ -17,3 +17,6 @@ mod parser_expr;
 
 #[path = "integration/parser_decorator_def.rs"]
 mod parser_decorator_def;
+
+#[path = "integration/import.rs"]
+mod import;

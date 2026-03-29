@@ -19,6 +19,8 @@
 //! The caller drives the loop by repeatedly calling [`Vm::next`], supplying
 //! `choice: Some(idx)` only when responding to a [`Event::Choice`].
 
+pub mod loader;
+
 use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
@@ -534,6 +536,11 @@ pub fn eval_expr(
         AstContent::SubscriptAssign { .. } => Err(VmError::InvalidExpression(
             "SubscriptAssign must be used as a statement, not in expression context".to_string(),
         )),
+
+        // Import is a top-level directive, not an evaluable expression.
+        AstContent::Import { .. } => Err(VmError::InvalidExpression(
+            "Import is not allowed in expression context".to_string(),
+        )),
     }
 }
 
@@ -586,10 +593,20 @@ fn eval_runtime_value(rv: &RuntimeValue, env: &Environment) -> Result<RuntimeVal
                 }
             }
             2 => {
-                // Two-segment: try `EnumName.Variant` first, then fall back to
-                // plain variable lookup of the first segment.
-                env.get_enum_variant(&path[0], &path[1])
-                    .or_else(|_| env.get(&path[0]))
+                // Two-segment: try `EnumName.Variant` first, then try
+                // module-namespaced variable "alias::var_name", then fall back
+                // to plain variable lookup of the first segment.
+                if let Ok(variant) = env.get_enum_variant(&path[0], &path[1]) {
+                    return Ok(variant);
+                }
+                // Try module-namespaced variable: `alias.var` → `alias::var`
+                let namespaced = format!("{}::{}", path[0], path[1]);
+                if let Ok(v) = env.get(&namespaced) {
+                    return Ok(v);
+                }
+                // Fallback: plain first-segment lookup (legacy behaviour).
+                env.get(&path[0])
+                    .map_err(|_| VmError::UndefinedVariable(format!("{}.{}", path[0], path[1])))
             }
             _ => {
                 // Multi-segment: treat first two as enum name + variant.
@@ -1540,7 +1557,8 @@ fn exec_block_sync(ast: &crate::parser::ast::Ast, env: &mut Environment) -> Resu
         | AC::Return { .. }
         | AC::DecoratorDef { .. }
         | AC::Match { .. }
-        | AC::EnumDecl { .. } => Err(VmError::InvalidExpression(format!(
+        | AC::EnumDecl { .. }
+        | AC::Import { .. } => Err(VmError::InvalidExpression(format!(
             "{:?} is not allowed inside a decorator body",
             std::mem::discriminant(ast.content())
         ))),

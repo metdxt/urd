@@ -352,6 +352,16 @@ pub enum AstContent {
         /// The value to assign
         value: Box<Ast>,
     },
+
+    /// Import another script file as a module namespace.
+    ///
+    /// `import "path/to/file" as module_name`
+    Import {
+        /// The raw file path string as written in source.
+        path: String,
+        /// The local alias used to reference the module.
+        alias: String,
+    },
 }
 
 impl Ast {
@@ -647,5 +657,12 @@ impl Ast {
             key: Box::new(key),
             value: Box::new(value),
         })
+    }
+
+    /// Creates an `Import` node.
+    ///
+    /// `import "path/to/file" as module_name`
+    pub fn import(path: String, alias: String) -> Self {
+        Self::new(AstContent::Import { path, alias })
     }
 }

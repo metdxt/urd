@@ -29,13 +29,35 @@ pub fn return_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         .boxed()
 }
 
-/// Parser for jump statement (jump ident)
+/// Parser for jump statement (jump ident or jump module.label)
 pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     just(Token::Jump)
         .ignore_then(select! {
+            // Local jump: `jump label_name`
             Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
+            // Cross-module jump: `jump module_name.label_name`
+            // Encoded as "module_name.label_name" — the compiler detects the dot.
+            Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
         })
         .map(Ast::jump_stmt)
+        .boxed()
+}
+
+/// Parser for import statements: `import "path" as alias`
+pub fn import_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
+    import_statement_parser().boxed()
+}
+
+fn import_statement_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    just(Token::Import)
+        .ignore_then(select! {
+            Token::StrLit(s) => s.to_string(),
+        })
+        .then_ignore(just(Token::As))
+        .then(select! {
+            Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
+        })
+        .map(|(path, alias)| Ast::import(path, alias))
         .boxed()
 }
 
@@ -99,6 +121,7 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
         .or(if_parser(block.clone()))
         .or(return_statement())
         .or(jump_statement())
+        .or(import_statement())
         .or(enum_decl_parser())
         .or(match_parser(block.clone()))
         .or(decorator_def_parser(block))
@@ -400,6 +423,64 @@ fn match_parser<'tok, I: UrdInput<'tok>>(
         .then(arms.delimited_by(just(Token::LeftCurly), just(Token::RightCurly)))
         .map(|(scrutinee, arms)| Ast::match_stmt(scrutinee, arms))
         .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+    use crate::{parse_test, parser::ast::AstContent};
+
+    #[test]
+    fn import_statement_parses() {
+        let result = parse_test!(import_statement(), r#"import "foo.urd" as foo"#);
+        let ast = result.expect("import statement should parse");
+        if let AstContent::Import { path, alias } = ast.content() {
+            assert_eq!(path, "foo.urd");
+            assert_eq!(alias, "foo");
+        } else {
+            panic!("Expected AstContent::Import, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn import_statement_nested_path() {
+        let result = parse_test!(
+            import_statement(),
+            r#"import "path/to/module.urd" as mymod"#
+        );
+        let ast = result.expect("import with path separators should parse");
+        if let AstContent::Import { path, alias } = ast.content() {
+            assert_eq!(path, "path/to/module.urd");
+            assert_eq!(alias, "mymod");
+        } else {
+            panic!("Expected AstContent::Import, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn jump_local_label_parses() {
+        let result = parse_test!(jump_statement(), "jump my_label");
+        let ast = result.expect("local jump should parse");
+        if let AstContent::Jump { label } = ast.content() {
+            assert_eq!(label, "my_label");
+        } else {
+            panic!("Expected AstContent::Jump, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn jump_cross_module_encodes_dot_notation() {
+        let result = parse_test!(jump_statement(), "jump mymod.scene_start");
+        let ast = result.expect("cross-module jump should parse");
+        if let AstContent::Jump { label } = ast.content() {
+            // Dot-notation is the convention for cross-module jumps; the compiler splits on '.'
+            assert_eq!(label, "mymod.scene_start");
+        } else {
+            panic!("Expected AstContent::Jump, got {:?}", ast.content());
+        }
+    }
 }
 
 /// Parser for a bare script body (list of statements without braces).

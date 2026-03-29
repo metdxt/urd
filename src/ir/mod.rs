@@ -79,6 +79,37 @@ impl IrGraph {
     pub(crate) fn node_mut(&mut self, id: NodeId) -> &mut IrNode {
         &mut self.nodes[id.0 as usize]
     }
+
+    /// Merge `other` into `self`, renumbering all `NodeId`s in `other` by an
+    /// offset of `self.nodes.len()` so they remain unique.
+    ///
+    /// All nodes from `other` are appended to `self.nodes`. Labels from `other`
+    /// are added to `self.labels` prefixed with `"alias::"` so they don't
+    /// conflict with local labels.
+    ///
+    /// # Label namespacing
+    /// A label `"start"` from a module imported as `"foo"` becomes `"foo::start"`.
+    ///
+    /// Returns the `offset` that was applied to all incoming NodeIds (useful for
+    /// callers that need to translate the imported module's `entry` NodeId).
+    pub fn merge(&mut self, other: IrGraph, alias: &str) -> u32 {
+        let offset = self.nodes.len() as u32;
+
+        // Append the renumbered nodes from `other`.
+        for mut node in other.nodes {
+            node.id = NodeId(node.id.0 + offset);
+            remap_node_kind(&mut node.kind, offset);
+            self.nodes.push(node);
+        }
+
+        // Insert all of other's labels under "alias::label_name".
+        for (label_name, node_id) in other.labels {
+            let namespaced = format!("{}::{}", alias, label_name);
+            self.labels.insert(namespaced, NodeId(node_id.0 + offset));
+        }
+
+        offset
+    }
 }
 
 // ─── IrNode ──────────────────────────────────────────────────────────────────
@@ -294,4 +325,216 @@ pub struct ChoiceEvent {
     pub label: String,
     /// Evaluated decorator fields for this option.
     pub fields: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
+}
+
+// ─── NodeId remapping helper ─────────────────────────────────────────────────
+
+/// Adds `offset` to every [`NodeId`] embedded inside `kind`.
+///
+/// The [`NODE_END`] sentinel is never shifted — it must always retain its
+/// "no successor" meaning regardless of the offset applied to real node ids.
+fn remap_node_kind(kind: &mut IrNodeKind, offset: u32) {
+    /// Offset a single [`NodeId`], leaving the [`NODE_END`] sentinel unchanged.
+    fn shift(id: NodeId, offset: u32) -> NodeId {
+        if id == NODE_END {
+            NODE_END
+        } else {
+            NodeId(id.0 + offset)
+        }
+    }
+
+    match kind {
+        IrNodeKind::Assign { next, .. } => *next = shift(*next, offset),
+        IrNodeKind::Eval { next, .. } => *next = shift(*next, offset),
+        IrNodeKind::Branch {
+            then_node,
+            else_node,
+            ..
+        } => {
+            *then_node = shift(*then_node, offset);
+            *else_node = shift(*else_node, offset);
+        }
+        IrNodeKind::Switch { arms, default, .. } => {
+            for arm in arms.iter_mut() {
+                arm.target = shift(arm.target, offset);
+            }
+            *default = default.map(|id| shift(id, offset));
+        }
+        IrNodeKind::Jump { target } => *target = shift(*target, offset),
+        IrNodeKind::Return { .. } => {}
+        IrNodeKind::EnterScope { next, .. } => *next = shift(*next, offset),
+        IrNodeKind::ExitScope { next, .. } => *next = shift(*next, offset),
+        IrNodeKind::DefineEnum { next, .. } => *next = shift(*next, offset),
+        IrNodeKind::DefineScriptDecorator { next, .. } => *next = shift(*next, offset),
+        IrNodeKind::Nop { next } => *next = shift(*next, offset),
+        IrNodeKind::End => {}
+        IrNodeKind::Dialogue { next, .. } => *next = shift(*next, offset),
+        IrNodeKind::Choice { options, .. } => {
+            for opt in options.iter_mut() {
+                opt.entry = shift(opt.entry, offset);
+            }
+        }
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a trivial one-node graph (just an End node) with a given entry.
+    fn single_end_graph() -> IrGraph {
+        let mut g = IrGraph::new();
+        let e = g.push(IrNodeKind::End);
+        g.entry = e;
+        g
+    }
+
+    #[test]
+    fn merge_offsets_node_ids() {
+        // base: one End node (id=0)
+        let mut base = single_end_graph();
+        // module: one End node (id=0 in isolation)
+        let module = single_end_graph();
+
+        let offset = base.merge(module, "foo");
+        // base originally had 1 node, so offset must be 1
+        assert_eq!(offset, 1);
+        // After merge, base should have 2 nodes
+        assert_eq!(base.nodes.len(), 2);
+        // The merged node's id should have been renumbered to 1
+        assert_eq!(base.nodes[1].id, NodeId(1));
+    }
+
+    #[test]
+    fn merge_namespaces_labels() {
+        let mut base = IrGraph::new();
+        let e = base.push(IrNodeKind::End);
+        base.entry = e;
+
+        let mut module = IrGraph::new();
+        let start = module.push(IrNodeKind::End);
+        module.entry = start;
+        module.labels.insert("start".to_string(), start);
+
+        base.merge(module, "mymod");
+
+        // Label must be namespaced as "mymod::start"
+        assert!(base.labels.contains_key("mymod::start"));
+        // The NodeId must be offset by 1 (base had 1 node)
+        assert_eq!(base.labels["mymod::start"], NodeId(1));
+    }
+
+    #[test]
+    fn merge_jump_target_remapped() {
+        // Build a module with a Jump pointing at node 0
+        let mut module = IrGraph::new();
+        let target = module.push(IrNodeKind::End); // NodeId(0)
+        let jump = module.push(IrNodeKind::Jump { target }); // NodeId(1)
+        module.entry = jump;
+
+        // Base has 2 nodes first
+        let mut base = IrGraph::new();
+        base.push(IrNodeKind::End); // NodeId(0)
+        base.push(IrNodeKind::End); // NodeId(1)
+        base.entry = NodeId(0);
+
+        base.merge(module, "mod");
+
+        // After merge, offset = 2. The jump's target was 0, now must be 2.
+        if let IrNodeKind::Jump { target } = &base.nodes[3].kind {
+            assert_eq!(*target, NodeId(2));
+        } else {
+            panic!("expected Jump node");
+        }
+    }
+
+    #[test]
+    fn merge_node_end_sentinel_preserved() {
+        // Nodes with NODE_END next-links must NOT have offset added.
+        let mut module = IrGraph::new();
+        let nop = module.push(IrNodeKind::Nop { next: NODE_END });
+        module.entry = nop;
+
+        let mut base = IrGraph::new();
+        base.push(IrNodeKind::End); // offset will be 1
+        base.entry = NodeId(0);
+
+        base.merge(module, "m");
+
+        if let IrNodeKind::Nop { next } = &base.nodes[1].kind {
+            assert_eq!(*next, NODE_END, "NODE_END sentinel must not be offset");
+        } else {
+            panic!("expected Nop");
+        }
+    }
+
+    #[test]
+    fn merge_empty_other_is_noop() {
+        let mut base = single_end_graph();
+        let original_len = base.nodes.len();
+
+        let empty = IrGraph::new(); // no nodes pushed
+        let offset = base.merge(empty, "empty");
+
+        assert_eq!(offset, original_len as u32);
+        assert_eq!(base.nodes.len(), original_len);
+    }
+
+    #[test]
+    fn merge_multiple_labels_all_namespaced() {
+        let mut base = IrGraph::new();
+        base.push(IrNodeKind::End);
+        base.entry = NodeId(0);
+
+        let mut module = IrGraph::new();
+        let a = module.push(IrNodeKind::End); // NodeId(0)
+        let b = module.push(IrNodeKind::End); // NodeId(1)
+        module.entry = a;
+        module.labels.insert("alpha".to_string(), a);
+        module.labels.insert("beta".to_string(), b);
+
+        base.merge(module, "lib");
+
+        assert!(base.labels.contains_key("lib::alpha"));
+        assert!(base.labels.contains_key("lib::beta"));
+        assert_eq!(base.labels["lib::alpha"], NodeId(1)); // 0 + offset(1)
+        assert_eq!(base.labels["lib::beta"], NodeId(2)); // 1 + offset(1)
+    }
+
+    #[test]
+    fn merge_branch_targets_remapped() {
+        let mut base = IrGraph::new();
+        base.push(IrNodeKind::End); // NodeId(0) — offset will be 1
+        base.entry = NodeId(0);
+
+        let mut module = IrGraph::new();
+        let then_end = module.push(IrNodeKind::End); // NodeId(0)
+        let else_end = module.push(IrNodeKind::End); // NodeId(1)
+        use crate::parser::ast::{Ast, AstContent};
+        use crate::runtime::value::RuntimeValue;
+        let cond = Ast::new(AstContent::Value(RuntimeValue::Bool(true)));
+        module.push(IrNodeKind::Branch {
+            condition: cond,
+            then_node: then_end,
+            else_node: else_end,
+        }); // NodeId(2)
+        module.entry = NodeId(2);
+
+        base.merge(module, "br");
+
+        // The branch node is at index 3 (base had 1 node, module had 3).
+        if let IrNodeKind::Branch {
+            then_node,
+            else_node,
+            ..
+        } = &base.nodes[3].kind
+        {
+            assert_eq!(*then_node, NodeId(1), "then_node should be offset by 1");
+            assert_eq!(*else_node, NodeId(2), "else_node should be offset by 1");
+        } else {
+            panic!("expected Branch node at index 3");
+        }
+    }
 }
