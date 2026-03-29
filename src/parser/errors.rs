@@ -60,6 +60,8 @@ fn format_token(token: &Token) -> String {
         Token::Menu           => "'menu'".to_owned(),
         Token::Return         => "'return'".to_owned(),
         Token::Jump           => "'jump'".to_owned(),
+        Token::EndBang        => "'end!'".to_owned(),
+        Token::TodoBang       => "'todo!'".to_owned(),
         Token::Enum           => "'enum'".to_owned(),
         Token::Match          => "'match'".to_owned(),
         Token::DecoratorKw    => "'decorator'".to_owned(),

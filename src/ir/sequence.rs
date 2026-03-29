@@ -305,6 +305,8 @@ fn decode_node(
         // ── Terminal ──────────────────────────────────────────────────────
         IrNodeKind::End => Action::Done,
 
+        IrNodeKind::Todo => Action::Done,
+
         IrNodeKind::Return { value } => {
             let text = match value {
                 Some(ast) => format!("return {}", truncate(&ast_short(ast), 48)),

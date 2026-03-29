@@ -132,6 +132,28 @@ fn decorators_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
         .then_ignore(just(Token::Newline).repeated().at_least(1))
 }
 
+/// Parser for built-in terminator calls: `end!`, `end!()`, `todo!`, `todo!()`.
+///
+/// Both the bare form (no parentheses) and the call form (with `()`) are
+/// accepted and produce an identical `Call` AST node so that the dead-end
+/// pass and compiler can treat them uniformly.
+fn terminator_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    select! {
+        Token::EndBang  => "end!",
+        Token::TodoBang => "todo!",
+    }
+    .then_ignore(
+        just(Token::LeftParen)
+            .then_ignore(just(Token::RightParen))
+            .or_not(),
+    )
+    .map_with(|name, extra| {
+        let span = extra.span();
+        let func = Ast::value(RuntimeValue::IdentPath(vec![name.to_owned()]));
+        Ast::call(func, Ast::expr_list(vec![])).with_span(span)
+    })
+}
+
 /// Helper for statement parsing, allowing recursion injection.
 fn statement_inner<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
@@ -150,7 +172,10 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
 
     // let_call_statement must come FIRST (before declaration) because it also
     // starts with `let` but is a statement form that must not yield mid-expression.
-    let_call_statement()
+    // terminator_statement comes early to claim EndBang/TodoBang before the
+    // generic expression fallback can consume them.
+    terminator_statement()
+        .or(let_call_statement())
         .or(assignment())
         .or(declaration())
         .or(if_parser(block.clone()))
@@ -587,6 +612,120 @@ mod tests {
             }
             other => panic!("expected Jump, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn end_bang_with_parens_parses_as_call() {
+        let result = parse_test!(statement(), "end!()");
+        let ast = result.expect("end!() should parse as a statement");
+        assert!(
+            matches!(ast.content(), AstContent::Call { .. }),
+            "expected AstContent::Call, got {:?}",
+            ast.content()
+        );
+    }
+
+    #[test]
+    fn end_bang_bare_parses_as_call() {
+        let result = parse_test!(statement(), "end!");
+        let ast = result.expect("bare end! should parse as a statement");
+        assert!(
+            matches!(ast.content(), AstContent::Call { .. }),
+            "expected AstContent::Call, got {:?}",
+            ast.content()
+        );
+    }
+
+    #[test]
+    fn todo_bang_with_parens_parses_as_call() {
+        let result = parse_test!(statement(), "todo!()");
+        let ast = result.expect("todo!() should parse as a statement");
+        assert!(
+            matches!(ast.content(), AstContent::Call { .. }),
+            "expected AstContent::Call, got {:?}",
+            ast.content()
+        );
+    }
+
+    #[test]
+    fn todo_bang_bare_parses_as_call() {
+        let result = parse_test!(statement(), "todo!");
+        let ast = result.expect("bare todo! should parse as a statement");
+        assert!(
+            matches!(ast.content(), AstContent::Call { .. }),
+            "expected AstContent::Call, got {:?}",
+            ast.content()
+        );
+    }
+
+    #[test]
+    fn end_bang_in_script_produces_call_node() {
+        use crate::runtime::value::RuntimeValue;
+        let result = parse_test!(super::script(), "end!()\n");
+        let ast = result.expect("end!() in script should parse");
+        // The root is a Block; first statement should be a Call with func "end!"
+        if let AstContent::Block(stmts) = ast.content() {
+            assert_eq!(stmts.len(), 1, "expected 1 statement");
+            assert!(
+                matches!(stmts[0].content(), AstContent::Call { .. }),
+                "expected Call, got {:?}",
+                stmts[0].content()
+            );
+            if let AstContent::Call { func_path, .. } = stmts[0].content() {
+                assert!(
+                    matches!(
+                        func_path.content(),
+                        AstContent::Value(RuntimeValue::IdentPath(p)) if p == &["end!"]
+                    ),
+                    "expected IdentPath([\"end!\"]), got {:?}",
+                    func_path.content()
+                );
+            }
+        } else {
+            panic!("expected Block root, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn todo_bang_in_labeled_block_parses() {
+        let result = parse_test!(super::script(), "label stub {\n    todo!\n}\n");
+        assert!(
+            result.is_ok(),
+            "todo! inside a labeled block should parse: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn end_bang_and_todo_bang_produce_same_call_shape() {
+        use crate::runtime::value::RuntimeValue;
+        let end_result = parse_test!(statement(), "end!()").expect("end!() should parse");
+        let todo_result = parse_test!(statement(), "todo!()").expect("todo!() should parse");
+
+        // Both should be Call nodes.
+        assert!(matches!(end_result.content(),  AstContent::Call { .. }));
+        assert!(matches!(todo_result.content(), AstContent::Call { .. }));
+
+        // The func_path of each should be a single-segment IdentPath.
+        let end_name = if let AstContent::Call { func_path, .. } = end_result.content() {
+            match func_path.content() {
+                AstContent::Value(RuntimeValue::IdentPath(p)) => p[0].clone(),
+                other => panic!("unexpected func_path: {other:?}"),
+            }
+        } else {
+            unreachable!()
+        };
+        let todo_name = if let AstContent::Call { func_path, .. } = todo_result.content() {
+            match func_path.content() {
+                AstContent::Value(RuntimeValue::IdentPath(p)) => p[0].clone(),
+                other => panic!("unexpected func_path: {other:?}"),
+            }
+        } else {
+            unreachable!()
+        };
+
+        assert_eq!(end_name,  "end!");
+        assert_eq!(todo_name, "todo!");
     }
 }
 

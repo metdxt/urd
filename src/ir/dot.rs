@@ -374,6 +374,9 @@ pub fn render_dot(graph: &IrGraph) -> String {
             // ── Terminals with no outgoing edges ──────────────────────────
             IrNodeKind::End => {}
 
+            // todo!() is a placeholder terminator — no outgoing edges.
+            IrNodeKind::Todo => {}
+
             // Nop is handled at the top of the loop (skipped entirely).
             IrNodeKind::Nop { .. } => unreachable!("Nop should have been skipped"),
         }
@@ -480,6 +483,8 @@ fn node_attrs(
         }
 
         IrNodeKind::End => ("doublecircle", "tomato", "end".into()),
+
+        IrNodeKind::Todo => ("doublecircle", "orange", "todo!".into()),
 
         IrNodeKind::Dialogue {
             speakers,

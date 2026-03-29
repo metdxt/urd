@@ -231,12 +231,34 @@ impl CompilerState {
             }
 
             // ── Call (side-effecting) ────────────────────────────────────────
-            AstContent::Call { .. } => {
-                let id = self.graph.push(IrNodeKind::Eval {
-                    expr: ast.clone(),
-                    next,
-                });
-                Ok(id)
+            AstContent::Call { func_path, .. } => {
+                // Detect built-in terminators by their canonical name.
+                let call_name = match func_path.content() {
+                    AstContent::Value(crate::runtime::value::RuntimeValue::IdentPath(p))
+                        if p.len() == 1 =>
+                    {
+                        Some(p[0].as_str())
+                    }
+                    _ => None,
+                };
+
+                match call_name {
+                    Some("end!") => {
+                        let id = self.graph.push(IrNodeKind::End);
+                        Ok(id)
+                    }
+                    Some("todo!") => {
+                        let id = self.graph.push(IrNodeKind::Todo);
+                        Ok(id)
+                    }
+                    _ => {
+                        let id = self.graph.push(IrNodeKind::Eval {
+                            expr: ast.clone(),
+                            next,
+                        });
+                        Ok(id)
+                    }
+                }
             }
 
             // ── If / else ────────────────────────────────────────────────────
@@ -1245,6 +1267,40 @@ mod tests {
             ),
             "expected ModuleLoadError for 'missing.urd', got {:?}",
             result
+        );
+    }
+
+    /// `end!()` call compiles to an `IrNodeKind::End` terminal node.
+    #[test]
+    fn test_end_bang_compiles_to_end_node() {
+        // Build a Call AST node with func_path = IdentPath(["end!"]) manually,
+        // without relying on the lexer/parser.
+        let func_path = Ast::value(RuntimeValue::IdentPath(vec!["end!".to_string()]));
+        let params = Ast::block(vec![]);
+        let call_ast = Ast::call(func_path, params);
+        let script_ast = Ast::block(vec![call_ast]);
+
+        let graph = Compiler::compile(&script_ast).expect("compile failed");
+        assert!(
+            graph.nodes.iter().any(|n| matches!(n.kind, IrNodeKind::End)),
+            "expected an End node in the graph, got: {:?}",
+            graph.nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_todo_bang_compiles_to_todo_node() {
+        // Build a Call AST node with func_path = IdentPath(["todo!"]) manually.
+        let func_path = Ast::value(RuntimeValue::IdentPath(vec!["todo!".to_string()]));
+        let params = Ast::block(vec![]);
+        let call_ast = Ast::call(func_path, params);
+        let script_ast = Ast::block(vec![call_ast]);
+
+        let graph = Compiler::compile(&script_ast).expect("compile failed");
+        assert!(
+            graph.nodes.iter().any(|n| matches!(n.kind, IrNodeKind::Todo)),
+            "expected a Todo node in the graph, got: {:?}",
+            graph.nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
         );
     }
 

@@ -74,7 +74,27 @@ fn atom_internal<'tokens, I: UrdInput<'tokens>>(
             Some(params) => Ast::call(ident, params).with_span(span),
             None => ident,
         }
-    }));
+    }))
+    .or(
+        // `end!` and `todo!` are keyword-like terminators that look like macro
+        // calls.  The lexer emits them as single tokens (EndBang / TodoBang),
+        // so we handle them here and produce a Call AST node directly.
+        // Both bare form (`end!`) and parenthesised form (`end!()`) are accepted.
+        select! {
+            Token::EndBang  => "end!",
+            Token::TodoBang => "todo!",
+        }
+        .then_ignore(
+            just(Token::LeftParen)
+                .then_ignore(just(Token::RightParen))
+                .or_not(),
+        )
+        .map_with(|name, extra| {
+            let span = extra.span();
+            let func = Ast::value(RuntimeValue::IdentPath(vec![name.to_owned()]));
+            Ast::call(func, Ast::expr_list(vec![])).with_span(span)
+        }),
+    );
 
     // Postfix subscript: zero or more `[key]` suffixes, left-associative.
     // e.g. `obj[a][b]` → Subscript(Subscript(obj, a), b)
@@ -360,6 +380,51 @@ mod tests {
                 "Color".to_string()
             ]))
         );
+    }
+
+    #[test]
+    fn test_end_bang_parses() {
+        use crate::parser::ast::AstContent;
+        let result = parse_test!(expr(), "end!()");
+        assert!(result.is_ok(), "end!() should parse: {:?}", result);
+        let ast = result.unwrap();
+        assert!(
+            matches!(ast.content(), AstContent::Call { .. }),
+            "expected Call node, got {:?}",
+            ast.content()
+        );
+    }
+
+    #[test]
+    fn test_end_bang_bare_parses() {
+        use crate::parser::ast::AstContent;
+        let result = parse_test!(expr(), "end!");
+        assert!(result.is_ok(), "end! (bare) should parse: {:?}", result);
+        let ast = result.unwrap();
+        assert!(
+            matches!(ast.content(), AstContent::Call { .. }),
+            "expected Call node, got {:?}",
+            ast.content()
+        );
+    }
+
+    #[test]
+    fn test_todo_bang_parses() {
+        use crate::parser::ast::AstContent;
+        let result = parse_test!(expr(), "todo!()");
+        assert!(result.is_ok(), "todo!() should parse: {:?}", result);
+        let ast = result.unwrap();
+        assert!(
+            matches!(ast.content(), AstContent::Call { .. }),
+            "expected Call node, got {:?}",
+            ast.content()
+        );
+    }
+
+    #[test]
+    fn test_todo_bang_bare_parses() {
+        let result = parse_test!(expr(), "todo!");
+        assert!(result.is_ok(), "todo! (bare) should parse: {:?}", result);
     }
 
     #[test]

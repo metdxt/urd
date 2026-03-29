@@ -60,6 +60,17 @@ pub enum Token {
     #[regex(r#"\d{1,3}[dD]\d{1,3}"#, dice_parsing_callback)]
     Dice((u8, u8)),
 
+    /// `end!` — unconditional script terminator.
+    /// Must appear before `IdentPath` so Logos matches the longer `end!` literal
+    /// rather than lexing `end` as an identifier followed by `!`.
+    #[token("end!")]
+    EndBang,
+
+    /// `todo!` — placeholder terminator (logs a warning, then ends).
+    /// Must appear before `IdentPath` for the same reason as `EndBang`.
+    #[token("todo!")]
+    TodoBang,
+
     /// Identifier
     /// Identifier must start with ascii letter, optionally prefixed with any number of `_`.
     /// Then it can contain any number of letters, digits or `_`
@@ -348,6 +359,19 @@ mod tests {
         assert!(matches!(lex("enum"), Token::Enum));
         assert!(matches!(lex("match"), Token::Match));
         assert!(matches!(lex("_"), Token::Wildcard));
+    }
+
+    #[test]
+    fn end_bang_token() {
+        assert!(matches!(lex("end!"), Token::EndBang));
+        // Make sure "end" alone is still an IdentPath
+        assert!(matches!(lex("end"), Token::IdentPath(_)));
+    }
+
+    #[test]
+    fn todo_bang_token() {
+        assert!(matches!(lex("todo!"), Token::TodoBang));
+        assert!(matches!(lex("todo"), Token::IdentPath(_)));
     }
 
     #[test]

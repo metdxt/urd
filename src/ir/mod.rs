@@ -286,6 +286,12 @@ pub enum IrNodeKind {
     /// Terminal node — execution ends here.
     End,
 
+    /// `todo!()` — a placeholder terminator.
+    ///
+    /// Signals that the author has not yet written this path. The VM logs a
+    /// warning and terminates execution cleanly, just like `End`.
+    Todo,
+
     // ── Output-event nodes ──────────────────────────────────────────────────
     /// Emit a [`Event::Dialogue`] event and then continue.
     Dialogue {
@@ -391,6 +397,7 @@ fn remap_node_kind(kind: &mut IrNodeKind, offset: u32) {
         IrNodeKind::DefineScriptDecorator { next, .. } => *next = shift(*next, offset),
         IrNodeKind::Nop { next } => *next = shift(*next, offset),
         IrNodeKind::End => {}
+        IrNodeKind::Todo => {}
         IrNodeKind::Dialogue { next, .. } => *next = shift(*next, offset),
         IrNodeKind::Choice { options, .. } => {
             for opt in options.iter_mut() {
@@ -405,6 +412,13 @@ fn remap_node_kind(kind: &mut IrNodeKind, offset: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn todo_node_has_no_successors() {
+        let mut graph = IrGraph::new();
+        let id = graph.push(IrNodeKind::Todo);
+        assert!(matches!(graph.nodes[id.0 as usize].kind, IrNodeKind::Todo));
+    }
 
     /// Build a trivial one-node graph (just an End node) with a given entry.
     fn single_end_graph() -> IrGraph {

@@ -50,7 +50,7 @@ pub fn reachable_nodes(graph: &IrGraph) -> HashSet<NodeId> {
 
         match &graph.nodes[id.0 as usize].kind {
             // True terminals — no successors to enqueue.
-            IrNodeKind::End | IrNodeKind::Return { .. } => {}
+            IrNodeKind::End | IrNodeKind::Todo | IrNodeKind::Return { .. } => {}
 
             IrNodeKind::Jump { target } => {
                 queue.push_back(*target);
@@ -181,7 +181,10 @@ pub fn compute_clusters(
 
             match &node.kind {
                 // True terminals — no successors within this cluster.
-                IrNodeKind::Jump { .. } | IrNodeKind::Return { .. } | IrNodeKind::End => {}
+                IrNodeKind::Jump { .. }
+                | IrNodeKind::Return { .. }
+                | IrNodeKind::End
+                | IrNodeKind::Todo => {}
 
                 // LetCall: the callee belongs to another cluster (guarded by
                 // all_entries above), but the continuation (next) stays in

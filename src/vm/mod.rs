@@ -1107,6 +1107,11 @@ impl Vm {
                 // ── Terminal ─────────────────────────────────────────────────
                 IrNodeKind::End => return None,
 
+                IrNodeKind::Todo => {
+                    log::warn!("todo!() reached — this execution path is not yet implemented");
+                    return None;
+                }
+
                 // ── Nop / merge point ────────────────────────────────────────
                 IrNodeKind::Nop { next } => {
                     self.cursor = *next;
@@ -2762,6 +2767,32 @@ mod tests {
     ///
     /// This is the compiler-level invariant that guarantees no LetCall frame
     /// is ever pushed at runtime for a plain unconditional jump.
+    #[test]
+    fn test_todo_bang_ends_script() {
+        // A script consisting of only `todo!()` should terminate immediately
+        // (return None from next()) without error.
+        use crate::ir::{IrGraph, IrNodeKind, NODE_END};
+        let mut graph = IrGraph::new();
+        let todo_id = graph.push(IrNodeKind::Todo);
+        graph.entry = todo_id;
+        let registry = DecoratorRegistry::new();
+        let mut vm = Vm::new(graph, registry).unwrap();
+        let result = vm.next(None);
+        assert!(result.is_none(), "todo!() should end the script, got: {result:?}");
+    }
+
+    #[test]
+    fn test_end_bang_ends_script() {
+        use crate::ir::{IrGraph, IrNodeKind, NODE_END};
+        let mut graph = IrGraph::new();
+        let end_id = graph.push(IrNodeKind::End);
+        graph.entry = end_id;
+        let registry = DecoratorRegistry::new();
+        let mut vm = Vm::new(graph, registry).unwrap();
+        let result = vm.next(None);
+        assert!(result.is_none(), "end!() should end the script, got: {result:?}");
+    }
+
     #[test]
     fn test_jump_without_return_does_not_push_frame() {
         // label dest { }

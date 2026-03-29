@@ -324,7 +324,7 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             }
 
             // ── Terminals with no outgoing edges ───────────────────────────
-            IrNodeKind::End => {}
+            IrNodeKind::End | IrNodeKind::Todo => {}
 
             // Nop is skipped at the top of the loop.
             IrNodeKind::Nop { .. } => unreachable!("Nop should have been skipped"),
@@ -447,6 +447,11 @@ fn mermaid_node_def(
         // ── End ────────────────────────────────────────────────────────────
         IrNodeKind::End => {
             format!("{n}(((\"end\"))):::endNode")
+        }
+
+        // ── Todo ───────────────────────────────────────────────────────────
+        IrNodeKind::Todo => {
+            format!("{n}(((\"todo!\"))  ):::endNode")
         }
 
         // ── Dialogue ──────────────────────────────────────────────────────
