@@ -41,7 +41,7 @@ fn atom_internal<'tokens, I: UrdInput<'tokens>>(
         .allow_trailing()
         .collect::<Vec<_>>()
         .delimited_by(just(Token::LeftBracket), just(Token::RightBracket))
-        .map(Ast::list);
+        .map_with(|items, extra| Ast::list(items).with_span(extra.span()));
 
     let map = comma_separated_kv_pairs_internal(expr.clone())
         .delimited_by(just(Token::DictStart), just(Token::RightCurly));
@@ -54,21 +54,26 @@ fn atom_internal<'tokens, I: UrdInput<'tokens>>(
         Token::StrLit(s) => Ast::value(RuntimeValue::Str(s)),
         Token::Dice((count, sides)) => Ast::value(RuntimeValue::Dice(count, sides)),
     }
+    .map_with(|ast, extra| ast.with_span(extra.span()))
     .labelled("value")
     .or(list)
     .or(map)
     .or(select! {
         Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
     }
+    .map_with(|ast, extra| ast.with_span(extra.span()))
     .then(
         comma_separated_exprs_internal(expr.clone())
             .boxed()
             .delimited_by(just(Token::LeftParen), just(Token::RightParen))
             .or_not(),
     )
-    .map(|(ident, maybe_params)| match maybe_params {
-        Some(params) => Ast::call(ident, params),
-        None => ident,
+    .map_with(|(ident, maybe_params), extra| {
+        let span = extra.span();
+        match maybe_params {
+            Some(params) => Ast::call(ident, params).with_span(span),
+            None => ident,
+        }
     }));
 
     // Postfix subscript: zero or more `[key]` suffixes, left-associative.
@@ -78,6 +83,7 @@ fn atom_internal<'tokens, I: UrdInput<'tokens>>(
     base.foldl(subscript_suffix.repeated(), |obj, key| {
         Ast::subscript(obj, key)
     })
+    .map_with(|ast, extra| ast.with_span(extra.span()))
 }
 
 /// Creates a Pratt parser for parsing expressions in the Urd language.
@@ -163,6 +169,7 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> BoxedUrdParser<'tokens, I> {
                 Ast::assign_op(l, r)
             }),
         ))
+        .map_with(|ast, extra| ast.with_span(extra.span()))
     })
     .labelled("expression")
     .boxed()
@@ -183,7 +190,7 @@ fn comma_separated_exprs_internal<'tok, I: UrdInput<'tok>>(
     expr.separated_by(just(Token::Comma))
         .allow_trailing()
         .collect::<Vec<_>>()
-        .map(Ast::expr_list)
+        .map_with(|exprs, extra| Ast::expr_list(exprs).with_span(extra.span()))
 }
 
 fn comma_separated_kv_pairs_internal<'tok, I: UrdInput<'tok>>(
@@ -195,7 +202,7 @@ fn comma_separated_kv_pairs_internal<'tok, I: UrdInput<'tok>>(
         .separated_by(just(Token::Comma))
         .allow_trailing()
         .collect::<Vec<_>>()
-        .map(Ast::map)
+        .map_with(|items, extra| Ast::map(items).with_span(extra.span()))
 }
 
 /// Parser for an optional static type annotation: `: TypeName`.
@@ -264,9 +271,12 @@ pub fn declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         .then(type_annotation().or_not())
         .then_ignore(just(Token::Assign))
         .then(expr())
-        .map(|(((decl, name), annotation), def)| match annotation {
-            Some(ann) => Ast::typed_decl(decl, name, ann, def),
-            None => Ast::decl(decl, name, def),
+        .map_with(|(((decl, name), annotation), def), extra| {
+            let span = extra.span();
+            match annotation {
+                Some(ann) => Ast::typed_decl(decl, name, ann, def).with_span(span),
+                None => Ast::decl(decl, name, def).with_span(span),
+            }
         })
         .labelled("declaration")
         .boxed()

@@ -16,6 +16,7 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 
+use urd::analysis;
 use urd::compiler::Compiler;
 use urd::ir::Event;
 use urd::parse_test;
@@ -326,13 +327,27 @@ fn resolve_script_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("examples/quest/cave.urd"))
 }
 
+/// Run all static-analysis passes over `ast` and print rich ariadne diagnostics
+/// to stderr.  Analysis is non-fatal: issues are reported but execution continues.
+fn run_analysis(ast: &urd::parser::ast::Ast, src: &str, filename: &str) {
+    let errors = analysis::analyze(ast);
+    if !errors.is_empty() {
+        analysis::render_errors_stderr(&errors, src, filename);
+        eprintln!("[analysis] {} issue(s) found in '{}'", errors.len(), filename);
+    }
+}
+
 /// Load, parse, compile the script at `path` and return a ready [`Vm`].
 fn build_vm(path: &Path) -> Result<Vm, String> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| format!("Could not read '{}': {}", path.display(), e))?;
 
+    let display_name = path.display().to_string();
+
     let ast = parse_test!(script(), src.as_str())
         .map_err(|errs| format!("Parse errors in '{}':\n{:?}", path.display(), errs))?;
+
+    run_analysis(&ast, &src, &display_name);
 
     let parent = path
         .parent()

@@ -25,7 +25,7 @@ pub fn statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 pub fn return_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     just(Token::Return)
         .ignore_then(expr().or_not())
-        .map(Ast::return_stmt)
+        .map_with(|val, extra| Ast::return_stmt(val).with_span(extra.span()))
         .boxed()
 }
 
@@ -47,7 +47,9 @@ pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
                 .or_not()
                 .map(|r| r.is_some()),
         )
-        .map(|(label, expects_return)| Ast::jump_stmt(label, expects_return))
+        .map_with(|(label, expects_return), extra| {
+            Ast::jump_stmt(label, expects_return).with_span(extra.span())
+        })
         .boxed()
 }
 
@@ -67,7 +69,7 @@ pub fn let_call_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> 
         .then(label)
         .then_ignore(just(Token::And))
         .then_ignore(just(Token::Return))
-        .map(|(name, target)| Ast::let_call(name, target))
+        .map_with(|(name, target), extra| Ast::let_call(name, target).with_span(extra.span()))
         .boxed()
 }
 
@@ -85,7 +87,7 @@ fn import_statement_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I>
         .then(select! {
             Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
         })
-        .map(|(path, alias)| Ast::import(path, alias))
+        .map_with(|(path, alias), extra| Ast::import(path, alias).with_span(extra.span()))
         .boxed()
 }
 
@@ -142,7 +144,9 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
 
     let decorated = decorators_parser()
         .then(decoratable.clone())
-        .map(|(decorators, node)| node.with_decorators(decorators));
+        .map_with(|(decorators, node), extra| {
+            node.with_decorators(decorators).with_span(extra.span())
+        });
 
     // let_call_statement must come FIRST (before declaration) because it also
     // starts with `let` but is a statement form that must not yield mid-expression.
@@ -170,7 +174,9 @@ pub fn assignment<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     .then(expr().delimited_by(just(Token::LeftBracket), just(Token::RightBracket)))
     .then_ignore(just(Token::Assign))
     .then(expr())
-    .map(|((object, key), value)| Ast::subscript_assign(object, key, value));
+    .map_with(|((object, key), value), extra| {
+        Ast::subscript_assign(object, key, value).with_span(extra.span())
+    });
 
     // Plain assignment: ident = expr  (existing logic)
     let plain_assign = select! {
@@ -178,7 +184,7 @@ pub fn assignment<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     }
     .then_ignore(just(Token::Assign))
     .then(expr())
-    .map(|(ident, value)| Ast::assign_op(ident, value));
+    .map_with(|(ident, value), extra| Ast::assign_op(ident, value).with_span(extra.span()));
 
     subscript_assign.or(plain_assign).boxed()
 }
@@ -245,8 +251,8 @@ fn decorator_def_parser<'tok, I: UrdInput<'tok>>(
         .then(event_constraint_parser())
         .then(decorator_params_parser())
         .then(block)
-        .map(|(((name, event_constraint), params), body)| {
-            Ast::decorator_def(name, event_constraint, params, body)
+        .map_with(|(((name, event_constraint), params), body), extra| {
+            Ast::decorator_def(name, event_constraint, params, body).with_span(extra.span())
         })
         .boxed()
 }
@@ -272,7 +278,9 @@ pub fn dialogue<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         .delimited_by(just(Token::LessThan), just(Token::GreaterThan))
         .then_ignore(just(Token::Colon))
         .then(content)
-        .map(|(speakers, content)| Ast::dialogue(speakers, content))
+        .map_with(|(speakers, content), extra| {
+            Ast::dialogue(speakers, content).with_span(extra.span())
+        })
         .boxed()
 }
 
@@ -297,7 +305,9 @@ fn labeled_block_parser<'tok, I: UrdInput<'tok>>(
     just(Token::Label)
         .ignore_then(ident)
         .then(block)
-        .map(|(label, body)| Ast::labeled_block(label, body))
+        .map_with(|(label, body), extra| {
+            Ast::labeled_block(label, body).with_span(extra.span())
+        })
         .boxed()
 }
 
@@ -317,11 +327,12 @@ fn if_parser<'tok, I: UrdInput<'tok>>(
         .then(block)
         .then(elif.repeated().collect::<Vec<_>>())
         .then(else_block.or_not())
-        .map(|(((cond, body), elifs), else_b)| {
+        .map_with(|(((cond, body), elifs), else_b), extra| {
+            let span = extra.span();
             let else_part = elifs
                 .into_iter()
                 .rfold(else_b, |acc, (c, b)| Some(Ast::if_stmt(c, b, acc)));
-            Ast::if_stmt(cond, body, else_part)
+            Ast::if_stmt(cond, body, else_part).with_span(span)
         })
         .boxed()
 }
@@ -338,7 +349,7 @@ pub fn code_block<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
             .allow_trailing()
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LeftCurly), just(Token::RightCurly))
-            .map(Ast::block)
+            .map_with(|stmts, extra| Ast::block(stmts).with_span(extra.span()))
     })
     .boxed()
 }
@@ -370,9 +381,9 @@ fn menu_parser<'tok, I: UrdInput<'tok>>(
         Token::StrLit(s) => s,
     };
 
-    let option = option_label.then(block).map(|(label, code_block)| {
+    let option = option_label.then(block).map_with(|(label, code_block), extra| {
         // Use Display trait to convert ParsedString to String
-        Ast::menu_option(format!("{}", label), code_block)
+        Ast::menu_option(format!("{}", label), code_block).with_span(extra.span())
     });
 
     let options = option
@@ -383,7 +394,7 @@ fn menu_parser<'tok, I: UrdInput<'tok>>(
 
     just(Token::Menu)
         .ignore_then(options.delimited_by(just(Token::LeftCurly), just(Token::RightCurly)))
-        .map(Ast::menu)
+        .map_with(|options, extra| Ast::menu(options).with_span(extra.span()))
         .boxed()
 }
 
@@ -417,7 +428,9 @@ fn enum_decl_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     just(Token::Enum)
         .ignore_then(name)
         .then(variants.delimited_by(just(Token::LeftCurly), just(Token::RightCurly)))
-        .map(|(name, variants)| Ast::enum_decl(name, variants))
+        .map_with(|(name, variants), extra| {
+            Ast::enum_decl(name, variants).with_span(extra.span())
+        })
         .boxed()
 }
 
@@ -452,7 +465,9 @@ fn match_parser<'tok, I: UrdInput<'tok>>(
     just(Token::Match)
         .ignore_then(expr())
         .then(arms.delimited_by(just(Token::LeftCurly), just(Token::RightCurly)))
-        .map(|(scrutinee, arms)| Ast::match_stmt(scrutinee, arms))
+        .map_with(|(scrutinee, arms), extra| {
+            Ast::match_stmt(scrutinee, arms).with_span(extra.span())
+        })
         .boxed()
 }
 
@@ -584,6 +599,6 @@ pub fn script<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         .allow_leading()
         .allow_trailing()
         .collect::<Vec<_>>()
-        .map(Ast::block)
+        .map_with(|stmts, extra| Ast::block(stmts).with_span(extra.span()))
         .boxed()
 }

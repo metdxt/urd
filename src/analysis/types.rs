@@ -40,8 +40,10 @@
 use crate::parser::ast::{Ast, AstContent, Operator, TypeAnnotation};
 use crate::runtime::value::RuntimeValue;
 
+use chumsky::span::SimpleSpan;
+
 use super::context::{AnalysisContext, ScopeStack, extract_decl_name};
-use super::{AnalysisError, NodeDescription};
+use super::AnalysisError;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -51,7 +53,7 @@ use super::{AnalysisError, NodeDescription};
 pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     let mut errors: Vec<AnalysisError> = Vec::new();
     let mut scope = ScopeStack::new(&ctx.top_level_vars);
-    check_node(ast, ctx, &NodeDescription::top_level(), &mut scope, &mut errors);
+    check_node(ast, ctx, ast.span(), &mut scope, &mut errors);
     errors
 }
 
@@ -62,10 +64,16 @@ pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
 fn check_node(
     ast: &Ast,
     ctx: &AnalysisContext,
-    location: &NodeDescription,
+    parent_span: SimpleSpan,
     scope: &mut ScopeStack,
     errors: &mut Vec<AnalysisError>,
 ) {
+    // Use the current node's own span when non-zero; fall back to the parent's
+    // span so nested errors have the most specific location available.
+    let span = {
+        let s = ast.span();
+        if s.start == 0 && s.end == 0 { parent_span } else { s }
+    };
     match ast.content() {
         // ── Declaration with type annotation ─────────────────────────────
         AstContent::Declaration {
@@ -75,12 +83,17 @@ fn check_node(
             ..
         } => {
             // Check that the initialiser is compatible with the annotation.
+            // Use the rhs node's own span for the error location if available.
+            let rhs_span = {
+                let s = decl_defs.span();
+                if s.start == 0 && s.end == 0 { span } else { s }
+            };
             if let Some(var_name) = extract_decl_name(decl_name) {
                 check_value_compat(
                     decl_defs,
                     ann,
                     &var_name,
-                    location,
+                    rhs_span,
                     ctx,
                     errors,
                 );
@@ -88,7 +101,7 @@ fn check_node(
                 scope.declare(var_name, ann.clone());
             }
             // Recurse into the initialiser for nested declarations/assigns.
-            check_node(decl_defs, ctx, location, scope, errors);
+            check_node(decl_defs, ctx, span, scope, errors);
         }
 
         // ── Declaration without type annotation (still recurse) ───────────
@@ -97,7 +110,7 @@ fn check_node(
             decl_defs,
             ..
         } => {
-            check_node(decl_defs, ctx, location, scope, errors);
+            check_node(decl_defs, ctx, span, scope, errors);
         }
 
         // ── Assignment: `left = right` ────────────────────────────────────
@@ -112,33 +125,36 @@ fn check_node(
             {
                 let var_name = &path[0];
                 if let Some(ann) = scope.lookup(var_name).cloned() {
-                    check_value_compat(right, &ann, var_name, location, ctx, errors);
+                    let rhs_span = {
+                        let s = right.span();
+                        if s.start == 0 && s.end == 0 { span } else { s }
+                    };
+                    check_value_compat(right, &ann, var_name, rhs_span, ctx, errors);
                 }
             }
-            check_node(left, ctx, location, scope, errors);
-            check_node(right, ctx, location, scope, errors);
+            check_node(left, ctx, span, scope, errors);
+            check_node(right, ctx, span, scope, errors);
         }
 
         // ── Other BinOp: recurse into both sides ─────────────────────────
         AstContent::BinOp { left, right, .. } => {
-            check_node(left, ctx, location, scope, errors);
-            check_node(right, ctx, location, scope, errors);
+            check_node(left, ctx, span, scope, errors);
+            check_node(right, ctx, span, scope, errors);
         }
 
         // ── Block: push a new scope, walk statements, pop ────────────────
         AstContent::Block(stmts) => {
             scope.push();
             for stmt in stmts {
-                check_node(stmt, ctx, location, scope, errors);
+                check_node(stmt, ctx, span, scope, errors);
             }
             scope.pop();
         }
 
         // ── LabeledBlock ─────────────────────────────────────────────────
-        AstContent::LabeledBlock { label, block } => {
-            let inner_loc = NodeDescription::label(label);
+        AstContent::LabeledBlock { block, .. } => {
             scope.push();
-            check_node(block, ctx, &inner_loc, scope, errors);
+            check_node(block, ctx, ast.span(), scope, errors);
             scope.pop();
         }
 
@@ -148,13 +164,13 @@ fn check_node(
             then_block,
             else_block,
         } => {
-            check_node(condition, ctx, location, scope, errors);
+            check_node(condition, ctx, span, scope, errors);
             scope.push();
-            check_node(then_block, ctx, location, scope, errors);
+            check_node(then_block, ctx, span, scope, errors);
             scope.pop();
             if let Some(eb) = else_block {
                 scope.push();
-                check_node(eb, ctx, location, scope, errors);
+                check_node(eb, ctx, span, scope, errors);
                 scope.pop();
             }
         }
@@ -162,89 +178,87 @@ fn check_node(
         // ── Menu ──────────────────────────────────────────────────────────
         AstContent::Menu { options } => {
             for opt in options {
-                check_node(opt, ctx, location, scope, errors);
+                check_node(opt, ctx, span, scope, errors);
             }
         }
 
         // ── MenuOption ────────────────────────────────────────────────────
-        AstContent::MenuOption { label, content } => {
-            let opt_loc = NodeDescription::menu_option(label, location);
+        AstContent::MenuOption { content, .. } => {
             scope.push();
-            check_node(content, ctx, &opt_loc, scope, errors);
+            check_node(content, ctx, span, scope, errors);
             scope.pop();
         }
 
         // ── Match ─────────────────────────────────────────────────────────
         AstContent::Match { scrutinee, arms } => {
-            check_node(scrutinee, ctx, location, scope, errors);
-            for (i, arm) in arms.iter().enumerate() {
-                let arm_loc = NodeDescription::match_arm(i, location);
+            check_node(scrutinee, ctx, span, scope, errors);
+            for arm in arms.iter() {
                 scope.push();
-                check_node(&arm.body, ctx, &arm_loc, scope, errors);
+                check_node(&arm.body, ctx, span, scope, errors);
                 scope.pop();
             }
         }
 
         // ── Call ──────────────────────────────────────────────────────────
         AstContent::Call { func_path, params } => {
-            check_node(func_path, ctx, location, scope, errors);
-            check_node(params, ctx, location, scope, errors);
+            check_node(func_path, ctx, span, scope, errors);
+            check_node(params, ctx, span, scope, errors);
         }
 
         // ── Return ────────────────────────────────────────────────────────
         AstContent::Return { value: Some(v) } => {
-            check_node(v, ctx, location, scope, errors);
+            check_node(v, ctx, span, scope, errors);
         }
 
         // ── Unary ─────────────────────────────────────────────────────────
         AstContent::UnaryOp { expr, .. } => {
-            check_node(expr, ctx, location, scope, errors);
+            check_node(expr, ctx, span, scope, errors);
         }
 
         // ── ExprList ──────────────────────────────────────────────────────
         AstContent::ExprList(exprs) => {
             for e in exprs {
-                check_node(e, ctx, location, scope, errors);
+                check_node(e, ctx, span, scope, errors);
             }
         }
 
         // ── List ──────────────────────────────────────────────────────────
         AstContent::List(items) => {
             for item in items {
-                check_node(item, ctx, location, scope, errors);
+                check_node(item, ctx, span, scope, errors);
             }
         }
 
         // ── Map ───────────────────────────────────────────────────────────
         AstContent::Map(pairs) => {
             for (k, v) in pairs {
-                check_node(k, ctx, location, scope, errors);
-                check_node(v, ctx, location, scope, errors);
+                check_node(k, ctx, span, scope, errors);
+                check_node(v, ctx, span, scope, errors);
             }
         }
 
         // ── Subscript ─────────────────────────────────────────────────────
         AstContent::Subscript { object, key } => {
-            check_node(object, ctx, location, scope, errors);
-            check_node(key, ctx, location, scope, errors);
+            check_node(object, ctx, span, scope, errors);
+            check_node(key, ctx, span, scope, errors);
         }
 
         // ── SubscriptAssign ───────────────────────────────────────────────
         AstContent::SubscriptAssign { object, key, value } => {
-            check_node(object, ctx, location, scope, errors);
-            check_node(key, ctx, location, scope, errors);
-            check_node(value, ctx, location, scope, errors);
+            check_node(object, ctx, span, scope, errors);
+            check_node(key, ctx, span, scope, errors);
+            check_node(value, ctx, span, scope, errors);
         }
 
         // ── Dialogue ──────────────────────────────────────────────────────
         AstContent::Dialogue { speakers, content } => {
-            check_node(speakers, ctx, location, scope, errors);
-            check_node(content, ctx, location, scope, errors);
+            check_node(speakers, ctx, span, scope, errors);
+            check_node(content, ctx, span, scope, errors);
         }
 
         // ── DecoratorDef ──────────────────────────────────────────────────
         AstContent::DecoratorDef { body, .. } => {
-            check_node(body, ctx, location, scope, errors);
+            check_node(body, ctx, span, scope, errors);
         }
 
         // ── Leaf / no-op nodes ────────────────────────────────────────────
@@ -271,7 +285,7 @@ fn check_value_compat(
     value_ast: &Ast,
     expected: &TypeAnnotation,
     variable: &str,
-    location: &NodeDescription,
+    span: SimpleSpan,
     ctx: &AnalysisContext,
     errors: &mut Vec<AnalysisError>,
 ) {
@@ -286,7 +300,7 @@ fn check_value_compat(
                     variable: variable.to_owned(),
                     expected: expected.clone(),
                     got: "list".to_owned(),
-                    location: location.clone(),
+                    span,
                 });
             }
             return;
@@ -297,7 +311,7 @@ fn check_value_compat(
                     variable: variable.to_owned(),
                     expected: expected.clone(),
                     got: "map".to_owned(),
-                    location: location.clone(),
+                    span,
                 });
             }
             return;
@@ -313,7 +327,7 @@ fn check_value_compat(
         variable: variable.to_owned(),
         expected: expected.clone(),
         got: runtime_value_type_name(rv),
-        location: location.clone(),
+        span,
     });
 }
 
@@ -470,8 +484,11 @@ mod tests {
     fn assert_type_mismatch(errors: &[AnalysisError], var: &str) {
         assert_eq!(errors.len(), 1, "expected exactly 1 error, got: {errors:?}");
         match &errors[0] {
-            AnalysisError::TypeMismatch { variable, .. } => {
+            AnalysisError::TypeMismatch { variable, span, .. } => {
                 assert_eq!(variable.as_str(), var);
+                // Test AST nodes carry zero spans.
+                assert_eq!(span.start, 0);
+                assert_eq!(span.end, 0);
             }
             other => panic!("expected TypeMismatch, got: {other:?}"),
         }

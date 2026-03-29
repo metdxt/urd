@@ -23,10 +23,12 @@
 //! A wildcard arm always makes a `match` exhaustive; the pass returns
 //! immediately without further checks.
 
+use chumsky::span::SimpleSpan;
+
 use crate::parser::ast::{Ast, AstContent, MatchArm, MatchPattern, TypeAnnotation};
 use crate::runtime::value::RuntimeValue;
 
-use super::{AnalysisError, NodeDescription};
+use super::AnalysisError;
 use super::context::AnalysisContext;
 
 // ---------------------------------------------------------------------------
@@ -36,7 +38,7 @@ use super::context::AnalysisContext;
 /// Run the exhaustiveness pass over `ast` and return any diagnostics found.
 pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     let mut errors: Vec<AnalysisError> = Vec::new();
-    check_node(ast, ctx, &NodeDescription::top_level(), &mut errors);
+    check_node(ast, ctx, ast.span(), &mut errors);
     errors
 }
 
@@ -47,30 +49,35 @@ pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
 fn check_node(
     ast: &Ast,
     ctx: &AnalysisContext,
-    location: &NodeDescription,
+    parent_span: SimpleSpan,
     errors: &mut Vec<AnalysisError>,
 ) {
+    // Use the current node's span when it is non-zero; otherwise inherit the
+    // parent's span so nested errors have the most specific location available.
+    let span = {
+        let s = ast.span();
+        if s.start == 0 && s.end == 0 { parent_span } else { s }
+    };
+
     match ast.content() {
         // ── Match: check this node then recurse into arm bodies ───────────
         AstContent::Match { scrutinee, arms } => {
-            check_match(scrutinee, arms, ctx, location, errors);
+            check_match(scrutinee, arms, ctx, span, errors);
 
-            for (i, arm) in arms.iter().enumerate() {
-                let arm_loc = NodeDescription::match_arm(i, location);
-                check_node(&arm.body, ctx, &arm_loc, errors);
+            for arm in arms.iter() {
+                check_node(&arm.body, ctx, span, errors);
             }
         }
 
         // ── Structural nodes that may contain nested matches ──────────────
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                check_node(stmt, ctx, location, errors);
+                check_node(stmt, ctx, span, errors);
             }
         }
 
-        AstContent::LabeledBlock { label, block } => {
-            let inner_loc = NodeDescription::label(label);
-            check_node(block, ctx, &inner_loc, errors);
+        AstContent::LabeledBlock { block, .. } => {
+            check_node(block, ctx, ast.span(), errors);
         }
 
         AstContent::If {
@@ -78,83 +85,82 @@ fn check_node(
             then_block,
             else_block,
         } => {
-            check_node(condition, ctx, location, errors);
-            check_node(then_block, ctx, location, errors);
+            check_node(condition, ctx, span, errors);
+            check_node(then_block, ctx, span, errors);
             if let Some(eb) = else_block {
-                check_node(eb, ctx, location, errors);
+                check_node(eb, ctx, span, errors);
             }
         }
 
         AstContent::Menu { options } => {
             for opt in options {
-                check_node(opt, ctx, location, errors);
+                check_node(opt, ctx, span, errors);
             }
         }
 
-        AstContent::MenuOption { label, content } => {
-            let opt_loc = NodeDescription::menu_option(label, location);
-            check_node(content, ctx, &opt_loc, errors);
+        AstContent::MenuOption { content, .. } => {
+            check_node(content, ctx, span, errors);
         }
 
         AstContent::Declaration { decl_defs, .. } => {
-            check_node(decl_defs, ctx, location, errors);
+            check_node(decl_defs, ctx, span, errors);
         }
 
         AstContent::BinOp { left, right, .. } => {
-            check_node(left, ctx, location, errors);
-            check_node(right, ctx, location, errors);
+            check_node(left, ctx, span, errors);
+            check_node(right, ctx, span, errors);
         }
 
         AstContent::UnaryOp { expr, .. } => {
-            check_node(expr, ctx, location, errors);
+            check_node(expr, ctx, span, errors);
         }
 
         AstContent::Call { func_path, params } => {
-            check_node(func_path, ctx, location, errors);
-            check_node(params, ctx, location, errors);
+            check_node(func_path, ctx, span, errors);
+            check_node(params, ctx, span, errors);
         }
 
         AstContent::Return { value: Some(v) } => {
-            check_node(v, ctx, location, errors);
+            check_node(v, ctx, span, errors);
         }
 
         AstContent::ExprList(exprs) => {
             for e in exprs {
-                check_node(e, ctx, location, errors);
+                check_node(e, ctx, span, errors);
             }
         }
 
         AstContent::List(items) => {
             for item in items {
-                check_node(item, ctx, location, errors);
+                check_node(item, ctx, span, errors);
             }
         }
 
         AstContent::Map(pairs) => {
             for (k, v) in pairs {
-                check_node(k, ctx, location, errors);
-                check_node(v, ctx, location, errors);
+                check_node(k, ctx, span, errors);
+                check_node(v, ctx, span, errors);
             }
         }
 
         AstContent::Subscript { object, key } => {
-            check_node(object, ctx, location, errors);
-            check_node(key, ctx, location, errors);
+            check_node(object, ctx, span, errors);
+            check_node(key, ctx, span, errors);
         }
 
         AstContent::SubscriptAssign { object, key, value } => {
-            check_node(object, ctx, location, errors);
-            check_node(key, ctx, location, errors);
-            check_node(value, ctx, location, errors);
+            check_node(object, ctx, span, errors);
+            check_node(key, ctx, span, errors);
+            check_node(value, ctx, span, errors);
         }
 
         AstContent::Dialogue { speakers, content } => {
-            check_node(speakers, ctx, location, errors);
-            check_node(content, ctx, location, errors);
+            check_node(speakers, ctx, span, errors);
+            check_node(content, ctx, span, errors);
         }
 
         AstContent::DecoratorDef { body, .. } => {
-            check_node(body, ctx, location, errors);
+            check_node(body, ctx, span, errors);
         }
 
         // Leaf nodes or nodes that cannot contain a Match.
@@ -175,7 +181,7 @@ fn check_match(
     scrutinee: &Ast,
     arms: &[MatchArm],
     ctx: &AnalysisContext,
-    location: &NodeDescription,
+    span: SimpleSpan,
     errors: &mut Vec<AnalysisError>,
 ) {
     // A wildcard arm always makes the match exhaustive.
@@ -212,7 +218,7 @@ fn check_match(
         errors.push(AnalysisError::NonExhaustiveMatch {
             enum_name,
             missing_variants,
-            location: location.clone(),
+            span,
         });
     }
 }
@@ -632,18 +638,17 @@ mod tests {
         let scrutinee = ident_path("t");
         let arms = vec![value_arm("A", return_block())];
         let match_node = Ast::match_stmt(scrutinee, arms);
-        // Place the match inside a label block so the location reads "label 'scene'".
+        // Place the match inside a label block.
+        // Test AST nodes have zero spans, so we just assert a NonExhaustiveMatch is produced.
         let label = Ast::labeled_block("scene".to_owned(), Ast::block(vec![match_node]));
         let root = Ast::block(vec![label]);
         let errors = check(&root, &ctx);
         assert_eq!(errors.len(), 1);
         match &errors[0] {
-            AnalysisError::NonExhaustiveMatch { location, .. } => {
-                assert!(
-                    location.0.contains("scene"),
-                    "expected location to mention 'scene', got '{}'",
-                    location.0
-                );
+            AnalysisError::NonExhaustiveMatch { span, .. } => {
+                // Test nodes have zero spans.
+                assert_eq!(span.start, 0);
+                assert_eq!(span.end, 0);
             }
             other => panic!("unexpected: {other:?}"),
         }

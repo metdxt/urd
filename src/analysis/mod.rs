@@ -21,13 +21,20 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+use chumsky::span::SimpleSpan;
+use ariadne::{Label, Report, ReportKind, sources};
+
 use crate::parser::ast::{Ast, TypeAnnotation};
 use context::AnalysisContext;
 
-/// Best-effort source location.
+// ---------------------------------------------------------------------------
+// NodeDescription — human-readable fallback label for ariadne output
+// ---------------------------------------------------------------------------
+
+/// Best-effort human-readable source location.
 ///
-/// The AST does not embed source spans, so we use a human-readable description
-/// that places a diagnostic in the reader's mental model of the script.
+/// Used as a descriptive label in ariadne diagnostics and as a fallback
+/// description for AST nodes built in tests (which carry zero spans).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeDescription(pub String);
 
@@ -69,6 +76,10 @@ impl std::fmt::Display for NodeDescription {
     }
 }
 
+// ---------------------------------------------------------------------------
+// AnalysisError
+// ---------------------------------------------------------------------------
+
 /// A single diagnostic produced by the static analyser.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnalysisError {
@@ -78,8 +89,9 @@ pub enum AnalysisError {
         enum_name: String,
         /// The variant names that are not covered by any arm.
         missing_variants: Vec<String>,
-        /// Where in the script the match statement appears.
-        location: NodeDescription,
+        /// The source span of the offending `match` node.
+        /// A zero span (`0..0`) means the node was built outside the parser (e.g. in tests).
+        span: SimpleSpan,
     },
 
     /// A value was assigned to a variable whose declared type is incompatible.
@@ -90,30 +102,103 @@ pub enum AnalysisError {
         expected: TypeAnnotation,
         /// A human-readable description of the actual value's type.
         got: String,
-        /// Where in the script the assignment appears.
-        location: NodeDescription,
+        /// The source span of the offending assignment node.
+        /// A zero span (`0..0`) means the node was built outside the parser (e.g. in tests).
+        span: SimpleSpan,
     },
 
     /// An execution path reaches its end without a recognised terminator.
     ///
     /// Valid terminators are `end!`, `todo!`, a bare `return`, or a `jump`.
     DeadEnd {
-        /// The path that is missing a terminator.
-        location: NodeDescription,
+        /// The source span of the offending block/option node.
+        /// A zero span (`0..0`) means the node was built outside the parser (e.g. in tests).
+        span: SimpleSpan,
+        /// A human-readable description of the dead-end location, used as a
+        /// label in ariadne output and for zero-span fallback messages.
+        description: NodeDescription,
     },
 }
 
-impl std::fmt::Display for AnalysisError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl AnalysisError {
+    /// Returns the source span associated with this error.
+    ///
+    /// For AST nodes built in tests (without a real parser span) this will be
+    /// a zero span `0..0`.
+    pub fn span(&self) -> SimpleSpan {
+        match self {
+            AnalysisError::NonExhaustiveMatch { span, .. } => *span,
+            AnalysisError::TypeMismatch { span, .. } => *span,
+            AnalysisError::DeadEnd { span, .. } => *span,
+        }
+    }
+
+    /// Returns `true` if the span is a zero span (i.e. no real source location).
+    fn is_zero_span(span: &SimpleSpan) -> bool {
+        span.start == 0 && span.end == 0
+    }
+
+    /// Returns a short human-readable message for this error (used in `Display`
+    /// and as the ariadne report message).
+    fn message(&self) -> String {
         match self {
             AnalysisError::NonExhaustiveMatch {
                 enum_name,
                 missing_variants,
-                location,
-            } => write!(
-                f,
-                "Non-exhaustive match on enum '{enum_name}' at {location}: \
-                 missing variants: {}",
+                span,
+            } => {
+                let loc = if Self::is_zero_span(span) {
+                    "(unknown location)".to_owned()
+                } else {
+                    format!("byte {}..{}", span.start, span.end)
+                };
+                format!(
+                    "Non-exhaustive match on enum '{enum_name}' at {loc}: \
+                     missing variants: {}",
+                    missing_variants.join(", ")
+                )
+            }
+
+            AnalysisError::TypeMismatch {
+                variable,
+                expected,
+                got,
+                span,
+            } => {
+                let loc = if Self::is_zero_span(span) {
+                    "(unknown location)".to_owned()
+                } else {
+                    format!("byte {}..{}", span.start, span.end)
+                };
+                format!(
+                    "Type mismatch for '{variable}' at {loc}: \
+                     expected {expected:?}, got {got}"
+                )
+            }
+
+            AnalysisError::DeadEnd { span, description } => {
+                let loc = if Self::is_zero_span(span) {
+                    description.to_string()
+                } else {
+                    format!("byte {}..{}", span.start, span.end)
+                };
+                format!(
+                    "Dead end at {loc}: execution path has no terminator \
+                     (use `end!`, `todo!`, `return`, or `jump`)"
+                )
+            }
+        }
+    }
+
+    /// Returns a short label string suitable for an ariadne `Label`.
+    fn label_message(&self) -> String {
+        match self {
+            AnalysisError::NonExhaustiveMatch {
+                enum_name,
+                missing_variants,
+                ..
+            } => format!(
+                "match on '{enum_name}' is missing: {}",
                 missing_variants.join(", ")
             ),
 
@@ -121,21 +206,84 @@ impl std::fmt::Display for AnalysisError {
                 variable,
                 expected,
                 got,
-                location,
-            } => write!(
-                f,
-                "Type mismatch for '{variable}' at {location}: \
-                 expected {expected:?}, got {got}"
+                ..
+            } => format!(
+                "'{variable}' expects {expected:?} but got {got}"
             ),
 
-            AnalysisError::DeadEnd { location } => write!(
-                f,
-                "Dead end at {location}: execution path has no terminator \
-                 (use `end!`, `todo!`, `return`, or `jump`)"
+            AnalysisError::DeadEnd { description, .. } => format!(
+                "{description}: no terminator on this path"
             ),
         }
     }
 }
+
+impl std::fmt::Display for AnalysisError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ariadne rendering
+// ---------------------------------------------------------------------------
+
+/// Render all diagnostics as rich ariadne reports, writing to `writer`.
+///
+/// For errors with a real source span the output is a colourful annotated
+/// code snippet (ariadne style).  For **zero-span** errors (AST nodes built in
+/// tests without parser spans) a plain `writeln!` fallback is used instead.
+pub fn render_errors<W: std::io::Write>(
+    errors: &[AnalysisError],
+    src: &str,
+    source_name: &str,
+    writer: &mut W,
+) -> std::io::Result<()> {
+    for error in errors {
+        let span = error.span();
+
+        if AnalysisError::is_zero_span(&span) {
+            // No real span — fall back to a plain text line.
+            writeln!(writer, "error: {}", error.message())?;
+            continue;
+        }
+
+        let start = span.start;
+        let end = span.end;
+        let range = start..end;
+
+        let name_owned = source_name.to_owned();
+
+        let report = Report::<(String, std::ops::Range<usize>)>::build(
+            ReportKind::Error,
+            (name_owned.clone(), range.clone()),
+        )
+        .with_message(error.message())
+        .with_label(
+            Label::new((name_owned.clone(), range))
+                .with_message(error.label_message()),
+        )
+        .finish();
+
+        report
+            .write(sources([(name_owned, src.to_owned())]), &mut *writer)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    }
+
+    Ok(())
+}
+
+/// Convenience wrapper that renders diagnostics to `stderr`.
+pub fn render_errors_stderr(errors: &[AnalysisError], src: &str, source_name: &str) {
+    let mut stderr = std::io::stderr();
+    if let Err(e) = render_errors(errors, src, source_name, &mut stderr) {
+        eprintln!("warning: failed to render diagnostics: {e}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public analysis entry point
+// ---------------------------------------------------------------------------
 
 /// Run all three analysis passes over `ast` and collect every diagnostic.
 ///

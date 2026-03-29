@@ -11,6 +11,8 @@
 //! - [`UnaryOperator`]: Enum for unary operations
 //! - [`TypeAnnotation`]: Enum for optional static type annotations
 
+use chumsky::span::{SimpleSpan, Span};
+
 use crate::runtime::value::RuntimeValue;
 
 /// Represents a node in the Abstract Syntax Tree.
@@ -20,6 +22,8 @@ pub struct Ast {
     decorators: Vec<Decorator>,
     /// The content of this AST node
     content: AstContent,
+    /// The source span this node was parsed from. Zero span when constructed outside the parser.
+    span: SimpleSpan,
 }
 
 /// A decorator applied to an AST node, using Python-like `@name` or `@name(args)` syntax.
@@ -375,19 +379,21 @@ pub enum AstContent {
 }
 
 impl Ast {
-    /// Creates a new AST node with the given content.
+    /// Creates a new AST node with the given content and a zero span.
     pub fn new(content: AstContent) -> Self {
         Ast {
             content,
             decorators: vec![],
+            span: SimpleSpan::new((), 0..0),
         }
     }
 
-    /// Creates a new AST node with the given content and decorators.
+    /// Creates a new AST node with the given content and decorators, and a zero span.
     pub fn new_decorated(content: AstContent, decorators: Vec<Decorator>) -> Self {
         Ast {
             content,
             decorators,
+            span: SimpleSpan::new((), 0..0),
         }
     }
 
@@ -395,6 +401,17 @@ impl Ast {
     pub fn with_decorators(mut self, decorators: Vec<Decorator>) -> Self {
         self.decorators = decorators;
         self
+    }
+
+    /// Replaces the span on this node, returning `self`. Used by parsers after construction.
+    pub fn with_span(mut self, span: SimpleSpan) -> Self {
+        self.span = span;
+        self
+    }
+
+    /// Returns the source span this node was parsed from.
+    pub fn span(&self) -> SimpleSpan {
+        self.span
     }
 
     /// Returns the decorators attached to this AST node.

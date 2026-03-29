@@ -1,0 +1,184 @@
+const aria        = :{ name: "ARIA",        name_color: "cyan"   }
+const commander   = :{ name: "Commander",   name_color: "yellow" }
+const nav_console = :{ name: "NAV CONSOLE", name_color: "gray"   }
+
+global hull_integrity = 100
+global oxygen_level   = 80
+global power_cells    = 3
+global docking_clear  = false
+
+let mood: int   = "cheerful"
+let score: bool = 42
+
+enum Direction { North, South, East, West }
+
+let heading: Direction = North
+
+label signal_lost {
+    <aria>: {
+        "Commander, I am losing signal integrity."
+        "Static is bleeding across all communication channels."
+        "If you can still hear me, the emergency beacon is on deck seven."
+        "Follow the red guide-strips on the floor. You will find your way."
+    }
+}
+
+jump intro
+
+label intro {
+    <aria>: {
+        "Good morning, Commander."
+        "All primary systems are nominal."
+        "Shall we chart a course through the debris field?"
+    }
+
+    menu {
+        "Proceed to the debris field" {
+            jump nav_briefing
+        }
+        "Check hull integrity first" {
+            jump hull_check
+        }
+        "Abort mission" {
+            jump abort
+        }
+    }
+}
+
+label hull_check {
+    <aria>: "Hull integrity reading: {hull_integrity} percent."
+
+    if hull_integrity >= 80 {
+        <aria>: {
+            "All structural panels are within tolerance."
+            "We are cleared to proceed."
+        }
+    } else {
+        <aria>: {
+            "Hull integrity is below safe operational thresholds."
+            "I strongly recommend docking for repairs before we continue."
+        }
+    }
+
+    jump intro
+}
+
+label nav_briefing {
+    <nav_console>: {
+        "PLOTTING COURSE."
+        "FOUR CORRIDORS AVAILABLE: NORTH, SOUTH, EAST, WEST."
+        "AWAITING HEADING SELECTION FROM FLIGHT OFFICER."
+    }
+
+    menu {
+        "Set heading: North" {
+            heading = North
+            jump nav_route
+        }
+        "Set heading: South" {
+            heading = South
+            jump nav_route
+        }
+        "Set heading: East" {
+            heading = East
+            jump nav_route
+        }
+        "Set heading: West" {
+            heading = West
+            jump nav_route
+        }
+    }
+}
+
+label nav_route {
+    match heading {
+        North {
+            <aria>: {
+                "North corridor confirmed."
+                "Magnetic interference is low. Sensors are fully operational."
+            }
+            jump debris_field
+        }
+        South {
+            <aria>: {
+                "South corridor confirmed."
+                "Residual heat signatures detected. Likely cooling vents ahead."
+                "Proceed with caution."
+            }
+            jump debris_field
+        }
+        East {
+            <aria>: {
+                "East corridor confirmed."
+                "Faint distress beacon detected on long-range scan."
+                "We may not be alone out here, Commander."
+            }
+            jump debris_field
+        }
+    }
+}
+
+label debris_field {
+    <aria>: {
+        "Entering debris field."
+        "Reducing thrust to one-quarter impulse."
+        "Collision avoidance systems are active."
+    }
+
+    if power_cells > 1 {
+        <aria>: "Shields at full power. We can handle some turbulence."
+        power_cells = power_cells - 1
+        jump clear_passage
+    } else {
+        <aria>: {
+            "Power reserves are critically low."
+            "I am rerouting auxiliary systems to navigation."
+        }
+        jump low_power
+    }
+}
+
+label low_power {
+    <aria>: {
+        "Emergency protocols engaged."
+        "Life support is now running on backup power cells."
+        "Estimated reserve: forty minutes."
+    }
+
+    menu {
+        "Make for the docking bay immediately" {
+            docking_clear = true
+            jump clear_passage
+        }
+        "Broadcast a distress signal first" {
+            jump signal_lost
+        }
+    }
+}
+
+label clear_passage {
+    <aria>: {
+        "We are through the debris field."
+        "Hull integrity holding. No breaches detected."
+    }
+    jump victory
+}
+
+label victory {
+    <commander>: {
+        "We made it through."
+        "Log the route and seal the sensor readings."
+        "The crew will want to know exactly what is out there."
+    }
+    <aria>: "Mission data archived. All telemetry has been transmitted to command."
+    jump _end
+}
+
+label abort {
+    <commander>: "Stand down. We will try again when conditions improve."
+    <aria>: "Understood. Returning to standby mode. Whenever you are ready, Commander."
+    jump _end
+}
+
+label _end {
+}

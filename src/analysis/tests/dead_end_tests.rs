@@ -46,7 +46,7 @@ fn dialogue() -> Ast {
 
 fn has_dead_end_at(errors: &[AnalysisError], fragment: &str) -> bool {
     errors.iter().any(|e| match e {
-        AnalysisError::DeadEnd { location } => location.0.contains(fragment),
+        AnalysisError::DeadEnd { description, .. } => description.0.contains(fragment),
         _ => false,
     })
 }
