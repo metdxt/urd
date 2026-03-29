@@ -17,6 +17,9 @@
 //! | Everything else                         | no          |
 //!
 //! A `Block` terminates if and only if one of its statements terminates.
+//! When a terminator is found, any subsequent `LabeledBlock` statements are
+//! still visited — they are independent jump targets that can be reached from
+//! anywhere in the script regardless of their source position.
 //! A `Menu` terminates if and only if every option terminates.
 //! An `If` with both branches terminates if both branches terminate.
 
@@ -134,24 +137,38 @@ fn termination_of(
             }
 
             let mut last = Termination::Open;
+            let mut terminated = false;
 
             for stmt in stmts {
+                if terminated {
+                    // A terminator was already found — remaining inline code
+                    // is unreachable and not checked.  However, LabeledBlocks
+                    // are jump targets reachable from anywhere in the script,
+                    // so we must still visit them even when they appear after
+                    // a `jump` or `return`.
+                    if matches!(stmt.content(), AstContent::LabeledBlock { .. }) {
+                        termination_of(stmt, errors, span, location);
+                    }
+                    continue;
+                }
+
                 let t = termination_of(stmt, errors, span, location);
                 if t == Termination::Terminates {
-                    // This statement terminates every path.  Anything after
-                    // it is unreachable — we stop here (but do not emit
-                    // errors for the unreachable code itself).
-                    return Termination::Terminates;
+                    terminated = true;
                 }
                 last = t;
             }
 
-            // After exhausting all statements without hitting a hard
-            // terminator: if the last one was MayTerminate, propagate that;
-            // otherwise the block is Open.
-            match last {
-                Termination::MayTerminate => Termination::MayTerminate,
-                _ => Termination::Open,
+            if terminated {
+                Termination::Terminates
+            } else {
+                // After exhausting all statements without hitting a hard
+                // terminator: if the last one was MayTerminate, propagate
+                // that; otherwise the block is Open.
+                match last {
+                    Termination::MayTerminate => Termination::MayTerminate,
+                    _ => Termination::Open,
+                }
             }
         }
 
@@ -704,6 +721,55 @@ mod tests {
         let ast = Ast::block(vec![if_node, return_node()]);
         let errors = check(&ast);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn labeled_block_after_top_level_jump_is_flagged() {
+        // This is the cave.urd pattern: `jump start` appears early, putting
+        // all subsequent labeled blocks outside the reach of the sequential
+        // block walker.  They must still be checked independently.
+        let ast = Ast::block(vec![
+            jump_one_way("start"),
+            Ast::labeled_block("start".to_string(), Ast::block(vec![return_node()])),
+            Ast::labeled_block("_end".to_string(), Ast::block(vec![])),  // empty — no terminator
+        ]);
+        let errors = check(&ast);
+        assert_eq!(errors.len(), 1, "expected exactly 1 error; got: {errors:?}");
+        assert!(
+            errors.iter().any(|e| matches!(e, AnalysisError::DeadEnd { description, .. }
+                if description.0.contains("_end"))),
+            "expected a dead-end error for label '_end'; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn labeled_block_after_top_level_jump_with_terminator_is_clean() {
+        // A properly-terminated label appearing after a top-level jump
+        // must NOT produce an error.
+        let ast = Ast::block(vec![
+            jump_one_way("start"),
+            Ast::labeled_block("start".to_string(), Ast::block(vec![return_node()])),
+        ]);
+        let errors = check(&ast);
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn multiple_labels_after_jump_all_checked() {
+        // All labels after a jump are visited; only the open ones are reported.
+        let ast = Ast::block(vec![
+            jump_one_way("a"),
+            Ast::labeled_block("a".to_string(),    Ast::block(vec![return_node()])),  // ok
+            Ast::labeled_block("b".to_string(),    Ast::block(vec![end_call()])),     // ok
+            Ast::labeled_block("dead".to_string(), Ast::block(vec![])),               // error
+        ]);
+        let errors = check(&ast);
+        assert_eq!(errors.len(), 1, "expected exactly 1 error; got: {errors:?}");
+        assert!(
+            errors.iter().any(|e| matches!(e, AnalysisError::DeadEnd { description, .. }
+                if description.0.contains("dead"))),
+            "expected dead-end for label 'dead'; got: {errors:?}"
+        );
     }
 
     #[test]

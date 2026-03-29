@@ -207,4 +207,5 @@ label game_over {
 }
 
 label _end {
+    return
 }
