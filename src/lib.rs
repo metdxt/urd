@@ -13,6 +13,7 @@
 //!
 //! ## Modules
 //!
+//! - [`analysis`]: Static analysis passes (exhaustiveness, types, dead-end)
 //! - [`erro`]: Error handling and reporting
 //! - [`lexer`]: Tokenization of source code
 //! - [`parser`]: Parsing tokens into an Abstract Syntax Tree (AST)
@@ -20,6 +21,7 @@
 
 #![feature(trait_alias)]
 
+pub mod analysis;
 pub mod compiler;
 pub mod erro;
 pub mod ir;
