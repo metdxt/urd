@@ -458,15 +458,27 @@ pub fn eval_expr(
         AstContent::Map(pairs) => {
             let mut map = std::collections::HashMap::new();
             for (key_ast, val_ast) in pairs {
-                let key_val = eval_expr(key_ast, env)?;
-                let key_str = match &key_val {
-                    RuntimeValue::Str(ps) => ps.to_string(),
-                    RuntimeValue::IdentPath(p) => p.last().cloned().unwrap_or_default(),
-                    other => {
-                        return Err(VmError::TypeError(format!(
-                            "map key must be Str or identifier, got {:?}",
-                            other
-                        )));
+                // Map keys written as bare identifiers (e.g. `name:` in
+                // `:{name: "x"}`) must be treated as literal string keys, NOT
+                // as variable lookups.  Only fall through to full expression
+                // evaluation when the key is something else (e.g. a computed
+                // string expression).
+                let key_str = match key_ast.content() {
+                    AstContent::Value(RuntimeValue::IdentPath(p)) => {
+                        p.last().cloned().unwrap_or_default()
+                    }
+                    _ => {
+                        let key_val = eval_expr(key_ast, env)?;
+                        match &key_val {
+                            RuntimeValue::Str(ps) => ps.to_string(),
+                            RuntimeValue::IdentPath(p) => p.last().cloned().unwrap_or_default(),
+                            other => {
+                                return Err(VmError::TypeError(format!(
+                                    "map key must be Str or identifier, got {:?}",
+                                    other
+                                )));
+                            }
+                        }
                     }
                 };
                 let val = eval_expr(val_ast, env)?;
