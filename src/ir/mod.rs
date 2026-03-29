@@ -27,7 +27,7 @@ use crate::parser::ast::{Ast, DeclKind, Decorator, MatchPattern};
 ///
 /// A `NodeId` is simply a `u32` wrapped in a newtype so that the compiler
 /// cannot accidentally confuse it with plain integers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NodeId(pub u32);
 
 /// Sentinel value meaning "no continuation" (e.g. the last node of a branch).

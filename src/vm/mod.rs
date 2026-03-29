@@ -685,7 +685,7 @@ fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> String {
             RuntimeValue::Str(ps) => ps.to_string(),
             RuntimeValue::Dice(count, sides) => format!("{}d{}", count, sides),
             RuntimeValue::IdentPath(path) => path.join("."),
-            RuntimeValue::Label(name) => name.clone(),
+            RuntimeValue::Label { name, .. } => name.clone(),
             RuntimeValue::Map(m) => format!("map({})", m.len()),
             RuntimeValue::ScriptDecorator { .. } => "<decorator>".to_string(),
         },
@@ -918,7 +918,7 @@ fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
         (RuntimeValue::Int(x), RuntimeValue::Float(y)) => (*x as f64) == *y,
         (RuntimeValue::Float(x), RuntimeValue::Int(y)) => *x == (*y as f64),
         (RuntimeValue::Str(x), RuntimeValue::Str(y)) => x.to_string() == y.to_string(),
-        (RuntimeValue::Label(x), RuntimeValue::Label(y)) => x == y,
+        (RuntimeValue::Label { node_id: x, .. }, RuntimeValue::Label { node_id: y, .. }) => x == y,
         _ => false,
     }
 }
@@ -1021,8 +1021,14 @@ impl Vm {
         // arguments) without polluting the globals map that a save-file system
         // would serialise.
         let mut env = Environment::new();
-        for (name, _node_id) in &graph.labels {
-            env.define_builtin(name.clone(), RuntimeValue::Label(name.clone()));
+        for (name, node_id) in &graph.labels {
+            env.define_builtin(
+                name.clone(),
+                RuntimeValue::Label {
+                    name: name.clone(),
+                    node_id: *node_id,
+                },
+            );
         }
 
         let cursor = graph.entry;
@@ -2423,19 +2429,43 @@ mod tests {
         let vm = Vm::new(graph, empty_registry()).expect("vm construction");
 
         // The label "scene_one" should be pre-seeded in the environment
+        // Extract the NodeId the compiler assigned to "scene_one" so we can
+        // construct the expected value with the correct concrete reference.
+        let expected_node_id = *vm.graph().labels.get("scene_one").expect("label in graph");
         let val = vm.env().get("scene_one").expect("label should be in env");
-        assert_eq!(val, RuntimeValue::Label("scene_one".to_string()));
+        assert_eq!(
+            val,
+            RuntimeValue::Label {
+                name: "scene_one".to_string(),
+                node_id: expected_node_id,
+            }
+        );
     }
 
     #[test]
     fn test_label_value_equality() {
+        use crate::ir::NodeId;
+        // Equality is by node_id — the canonical execution reference.
         assert!(values_equal(
-            &RuntimeValue::Label("a".to_string()),
-            &RuntimeValue::Label("a".to_string())
+            &RuntimeValue::Label {
+                name: "a".to_string(),
+                node_id: NodeId(0)
+            },
+            &RuntimeValue::Label {
+                name: "a".to_string(),
+                node_id: NodeId(0)
+            },
         ));
+        // Different node_ids → not equal, even if names happened to match.
         assert!(!values_equal(
-            &RuntimeValue::Label("a".to_string()),
-            &RuntimeValue::Label("b".to_string())
+            &RuntimeValue::Label {
+                name: "a".to_string(),
+                node_id: NodeId(0)
+            },
+            &RuntimeValue::Label {
+                name: "a".to_string(),
+                node_id: NodeId(1)
+            },
         ));
     }
 
@@ -2503,11 +2533,16 @@ mod tests {
                     "expected 'next' in fields, got {:?}",
                     fields
                 );
-                assert_eq!(
-                    fields.get("next"),
-                    Some(&RuntimeValue::Label("fallback".to_string())),
-                    "next should be Label(\"fallback\")"
-                );
+                // Check that the value is a Label pointing at "fallback".
+                // We match on the name rather than constructing the full value
+                // to avoid coupling this test to the compiler's NodeId assignment.
+                match fields.get("next") {
+                    Some(RuntimeValue::Label { name, .. }) => assert_eq!(
+                        name, "fallback",
+                        "expected Label pointing at 'fallback', got name '{name}'"
+                    ),
+                    other => panic!("expected Label for 'next' field, got {:?}", other),
+                }
             }
             other => panic!("expected Dialogue, got {:?}", other),
         }

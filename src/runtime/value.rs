@@ -4,6 +4,7 @@
 //! The `RuntimeValue` enum represents all possible values that can be produced
 //! by the interpreter during script execution.
 
+use crate::ir::NodeId;
 use crate::lexer::{Token, strings::ParsedString};
 
 /// Represents a value in the Urd runtime environment.
@@ -37,12 +38,24 @@ pub enum RuntimeValue {
     /// Identifier representing a variable or property path
     IdentPath(Vec<String>),
 
-    /// A reference to a named label in the compiled script.
+    /// A reference to a compiled label in the script.
     ///
     /// Label values are pre-seeded into the VM environment at startup (one per
-    /// `label name { }` block). They are fully serialisable — the game engine
-    /// receives the label name string and can use it to trigger navigation.
-    Label(String),
+    /// `label name { }` block) and are fully serialisable.
+    ///
+    /// - `node_id` is the **reliable execution reference**: the concrete
+    ///   [`NodeId`] of the label's [`crate::ir::IrNodeKind::EnterScope`] node
+    ///   in the compiled [`crate::ir::IrGraph`].  This is unambiguous within a
+    ///   single graph and is what the VM uses to navigate.  When multi-file
+    ///   support arrives, this becomes a `(module_id, NodeId)` pair.
+    /// - `name` is the human-readable label identifier, used for display,
+    ///   string interpolation, and as the serialised form the game engine sees.
+    Label {
+        /// Human-readable label name (e.g. `"intro_scene"`).
+        name: String,
+        /// Concrete graph node this label resolves to.
+        node_id: NodeId,
+    },
 
     /// A runtime map value: `:{key: value, ...}` literals or the implicit
     /// `event` map passed to decorator bodies.
