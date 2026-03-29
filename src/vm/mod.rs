@@ -93,9 +93,18 @@ pub struct Environment {
     /// Registered enum types — maps enum name → ordered variant name list.
     enums: HashMap<String, Vec<String>>,
     /// Global variables declared with `global`.
+    /// These represent persistent game state (e.g. reputation, flags) and are
+    /// the values a save-file system would serialise and restore.
     globals: HashMap<String, RuntimeValue>,
     /// Names that were declared with `const` (immutable after first assignment).
     constants: HashSet<String>,
+    /// Read-only structural values injected by the VM — never writable from
+    /// script code and never part of a save file.
+    ///
+    /// Currently used to expose compiled label names as [`RuntimeValue::Label`]
+    /// values so they can be passed as arguments (e.g. to decorators) without
+    /// being treated as saveable game state.
+    builtins: HashMap<String, RuntimeValue>,
 }
 
 impl Environment {
@@ -177,7 +186,11 @@ impl Environment {
         Ok(())
     }
 
-    /// Looks up `name`, searching from the innermost scope outward, then globals.
+    /// Looks up `name`, searching from the innermost scope outward, then
+    /// globals, then builtins.
+    ///
+    /// Builtins are consulted last so that script-declared variables and globals
+    /// can shadow them, but builtins are never writable via [`Self::set`].
     ///
     /// # Errors
     /// Returns [`VmError::UndefinedVariable`] if `name` is not found anywhere.
@@ -190,7 +203,21 @@ impl Environment {
         if let Some(v) = self.globals.get(name) {
             return Ok(v.clone());
         }
+        if let Some(v) = self.builtins.get(name) {
+            return Ok(v.clone());
+        }
         Err(VmError::UndefinedVariable(name.to_string()))
+    }
+
+    /// Inserts a read-only builtin value.
+    ///
+    /// Builtins are structural values injected by the VM itself (e.g. label
+    /// references). They are never writable from script code and are never
+    /// serialised into a save file.
+    ///
+    /// Silently overwrites any previous builtin with the same name.
+    pub fn define_builtin(&mut self, name: impl Into<String>, value: RuntimeValue) {
+        self.builtins.insert(name.into(), value);
     }
 
     /// Registers an enum type with its ordered variant names.
@@ -658,6 +685,7 @@ fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> String {
             RuntimeValue::Str(ps) => ps.to_string(),
             RuntimeValue::Dice(count, sides) => format!("{}d{}", count, sides),
             RuntimeValue::IdentPath(path) => path.join("."),
+            RuntimeValue::Label(name) => name.clone(),
             RuntimeValue::Map(m) => format!("map({})", m.len()),
             RuntimeValue::ScriptDecorator { .. } => "<decorator>".to_string(),
         },
@@ -890,6 +918,7 @@ fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
         (RuntimeValue::Int(x), RuntimeValue::Float(y)) => (*x as f64) == *y,
         (RuntimeValue::Float(x), RuntimeValue::Int(y)) => *x == (*y as f64),
         (RuntimeValue::Str(x), RuntimeValue::Str(y)) => x.to_string() == y.to_string(),
+        (RuntimeValue::Label(x), RuntimeValue::Label(y)) => x == y,
         _ => false,
     }
 }
@@ -987,11 +1016,20 @@ impl Vm {
             }
         }
 
+        // Pre-seed every compiled label name as a RuntimeValue::Label builtin
+        // so scripts can reference labels as values (e.g. pass them to decorator
+        // arguments) without polluting the globals map that a save-file system
+        // would serialise.
+        let mut env = Environment::new();
+        for (name, _node_id) in &graph.labels {
+            env.define_builtin(name.clone(), RuntimeValue::Label(name.clone()));
+        }
+
         let cursor = graph.entry;
         Ok(Vm {
             graph,
             cursor,
-            env: Environment::new(),
+            env,
             call_stack: Vec::new(),
             pending_choice: None,
             registry,
@@ -2370,5 +2408,108 @@ mod tests {
             RuntimeValue::Int(99),
             "m[\"a\"] should be 99 after assign"
         );
+    }
+
+    #[test]
+    fn test_label_values_preseeded_in_env() {
+        // Build a script with a labeled block, then verify the label name
+        // is accessible as RuntimeValue::Label in the environment before
+        // any script execution.
+        let body = Ast::block(vec![]);
+        let labeled = Ast::labeled_block("scene_one".to_string(), body);
+        let script = Ast::block(vec![labeled]);
+
+        let graph = Compiler::compile(&script).expect("compile");
+        let vm = Vm::new(graph, empty_registry()).expect("vm construction");
+
+        // The label "scene_one" should be pre-seeded in the environment
+        let val = vm.env().get("scene_one").expect("label should be in env");
+        assert_eq!(val, RuntimeValue::Label("scene_one".to_string()));
+    }
+
+    #[test]
+    fn test_label_value_equality() {
+        assert!(values_equal(
+            &RuntimeValue::Label("a".to_string()),
+            &RuntimeValue::Label("a".to_string())
+        ));
+        assert!(!values_equal(
+            &RuntimeValue::Label("a".to_string()),
+            &RuntimeValue::Label("b".to_string())
+        ));
+    }
+
+    #[test]
+    fn test_label_value_in_decorator_fields() {
+        // Full end-to-end: define a decorator that stores a label in event fields,
+        // then verify the emitted Event::Dialogue has the Label value in fields.
+        //
+        // Script:
+        //   label fallback { }
+        //   decorator timed(fallback_label) {
+        //       event["next"] = fallback_label
+        //   }
+        //   @timed(fallback)
+        //   <Alice>: "Hurry!"
+        use crate::parser::ast::{DecoratorParam, EventConstraint};
+
+        // label fallback { }
+        let fallback_label = Ast::labeled_block("fallback".to_string(), Ast::block(vec![]));
+
+        // decorator timed(fallback_label) { event["next"] = fallback_label }
+        let event_ident = Ast::value(RuntimeValue::IdentPath(vec!["event".to_string()]));
+        let key_ast = Ast::value(RuntimeValue::Str(
+            crate::lexer::strings::ParsedString::new_plain("next"),
+        ));
+        let param_ident = Ast::value(RuntimeValue::IdentPath(vec!["fallback_label".to_string()]));
+        let subscript_assign = Ast::subscript_assign(event_ident, key_ast, param_ident);
+        let dec_body = Ast::block(vec![subscript_assign]);
+
+        let decorator_def = Ast::decorator_def(
+            "timed".to_string(),
+            EventConstraint::Any,
+            vec![DecoratorParam {
+                name: "fallback_label".to_string(),
+                type_annotation: None,
+            }],
+            dec_body,
+        );
+
+        // @timed(fallback) Alice: "Hurry!"
+        let speakers = Ast::expr_list(vec![str_lit("Alice")]);
+        let lines = Ast::expr_list(vec![str_lit("Hurry!")]);
+        let deco = Decorator::new(
+            "timed".to_string(),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::IdentPath(vec![
+                "fallback".to_string(),
+            ]))]),
+        );
+        let dialogue = Ast::new_decorated(
+            AstContent::Dialogue {
+                speakers: Box::new(speakers),
+                content: Box::new(lines),
+            },
+            vec![deco],
+        );
+
+        let ast = Ast::block(vec![fallback_label, decorator_def, dialogue]);
+        let mut vm = build_vm(ast);
+
+        let ev = vm.next(None).expect("expected event").expect("no error");
+        match ev {
+            Event::Dialogue { fields, .. } => {
+                assert!(
+                    fields.contains_key("next"),
+                    "expected 'next' in fields, got {:?}",
+                    fields
+                );
+                assert_eq!(
+                    fields.get("next"),
+                    Some(&RuntimeValue::Label("fallback".to_string())),
+                    "next should be Label(\"fallback\")"
+                );
+            }
+            other => panic!("expected Dialogue, got {:?}", other),
+        }
     }
 }

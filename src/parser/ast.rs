@@ -147,6 +147,8 @@ pub enum TypeAnnotation {
     Map,
     /// The `dice` type (e.g. `2d6`)
     Dice,
+    /// A label reference — used to annotate parameters that accept label values.
+    Label,
     /// A named user-defined type, e.g. an enum variant path like `Direction`
     Named(Vec<String>),
 }

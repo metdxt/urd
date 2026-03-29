@@ -814,6 +814,7 @@ fn rv_summary(rv: &RuntimeValue) -> String {
         RuntimeValue::Str(_) => "\"…\"".into(),
         RuntimeValue::Dice(c, s) => format!("{c}d{s}"),
         RuntimeValue::IdentPath(p) => p.join("."),
+        RuntimeValue::Label(name) => format!(":{name}"),
         RuntimeValue::Map(m) => format!("⟨map({})⟩", m.len()),
         RuntimeValue::ScriptDecorator { .. } => "⟨decorator⟩".into(),
     }

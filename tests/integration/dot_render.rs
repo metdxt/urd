@@ -37,14 +37,14 @@ enum Action {
     Talk
 }
 
-decorator timed(duration: float) {
-    event["duration"] = duration
+decorator timed(duration: float, fallback: label) {
+    event["timed"] = :{duration: duration, next: fallback}
 }
 
 @scene("tavern")
 label start {
     @voiced("narrator")
-    @timed(3.0)
+    @timed(3.0, notice_board)
     <Narrator>: "You push open the heavy oak door and step inside."
 
     if reputation > 10 {
@@ -362,10 +362,34 @@ fn dot_has_define_script_decorator_node() {
         dot.contains("@timed"),
         "DOT must show the decorator name in the def_decorator node label"
     );
+    // timed now has two params: duration (float) and fallback (label)
+    assert!(
+        dot.contains("@timed (2 params)"),
+        "DOT must show the correct param count (2) for the timed decorator"
+    );
     // DefineScriptDecorator uses the lavender hex #E6E6FA fill.
     assert!(
         dot.contains("#E6E6FA"),
         "def_decorator node must use lavender hex fill (#E6E6FA)"
+    );
+}
+
+#[test]
+fn dot_has_label_value_in_decorator_node() {
+    let dot = compile_example().to_dot();
+    // @timed(3.0, notice_board) — the second argument resolves to
+    // RuntimeValue::Label("notice_board") and is stored in the event map.
+    // The dialogue node that carries @timed should mention @timed in its label.
+    assert!(
+        dot.contains("@timed"),
+        "DOT must show @timed annotation on the decorated dialogue node"
+    );
+    // notice_board is a known label in the script — it must be present as a
+    // cluster subgraph (verifying the label itself compiled correctly alongside
+    // being used as a first-class value in the decorator argument).
+    assert!(
+        dot.contains("subgraph cluster_notice_board"),
+        "notice_board label (used as a value in @timed) must still compile as a real label block"
     );
 }
 

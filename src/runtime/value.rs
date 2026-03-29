@@ -37,6 +37,13 @@ pub enum RuntimeValue {
     /// Identifier representing a variable or property path
     IdentPath(Vec<String>),
 
+    /// A reference to a named label in the compiled script.
+    ///
+    /// Label values are pre-seeded into the VM environment at startup (one per
+    /// `label name { }` block). They are fully serialisable — the game engine
+    /// receives the label name string and can use it to trigger navigation.
+    Label(String),
+
     /// A runtime map value: `:{key: value, ...}` literals or the implicit
     /// `event` map passed to decorator bodies.
     ///

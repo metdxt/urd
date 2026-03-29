@@ -226,6 +226,8 @@ pub(crate) fn type_annotation<'tok, I: UrdInput<'tok>>() -> impl Parser<
             Token::IdentPath(path) if path == ["list"]  => TypeAnnotation::List,
             Token::IdentPath(path) if path == ["map"]   => TypeAnnotation::Map,
             Token::IdentPath(path) if path == ["dice"]  => TypeAnnotation::Dice,
+            // `label` is a keyword token, not an IdentPath, so it needs its own arm
+            Token::Label => TypeAnnotation::Label,
             // Any other identifier path is a user-defined (named) type
             Token::IdentPath(path) => TypeAnnotation::Named(path),
         }
@@ -268,4 +270,95 @@ pub fn declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         })
         .labelled("declaration")
         .boxed()
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+    use crate::parse_test;
+
+    /// Helper: parse a type annotation from source text (e.g. `": int"`).
+    fn parse_type_annotation(src: &str) -> Result<TypeAnnotation, ()> {
+        parse_test!(type_annotation(), src).map_err(|_| ())
+    }
+
+    #[test]
+    fn test_type_annotation_int() {
+        assert_eq!(parse_type_annotation(": int"), Ok(TypeAnnotation::Int));
+    }
+
+    #[test]
+    fn test_type_annotation_float() {
+        assert_eq!(parse_type_annotation(": float"), Ok(TypeAnnotation::Float));
+    }
+
+    #[test]
+    fn test_type_annotation_bool() {
+        assert_eq!(parse_type_annotation(": bool"), Ok(TypeAnnotation::Bool));
+    }
+
+    #[test]
+    fn test_type_annotation_str() {
+        assert_eq!(parse_type_annotation(": str"), Ok(TypeAnnotation::Str));
+    }
+
+    #[test]
+    fn test_type_annotation_null() {
+        assert_eq!(parse_type_annotation(": null"), Ok(TypeAnnotation::Null));
+    }
+
+    #[test]
+    fn test_type_annotation_list() {
+        assert_eq!(parse_type_annotation(": list"), Ok(TypeAnnotation::List));
+    }
+
+    #[test]
+    fn test_type_annotation_map() {
+        assert_eq!(parse_type_annotation(": map"), Ok(TypeAnnotation::Map));
+    }
+
+    #[test]
+    fn test_type_annotation_dice() {
+        assert_eq!(parse_type_annotation(": dice"), Ok(TypeAnnotation::Dice));
+    }
+
+    /// `label` is a keyword token (not an `IdentPath`), so it needs its own
+    /// dedicated arm in the `select!` macro.  This test guards that arm.
+    #[test]
+    fn test_type_annotation_label() {
+        assert_eq!(parse_type_annotation(": label"), Ok(TypeAnnotation::Label));
+    }
+
+    #[test]
+    fn test_type_annotation_named_single() {
+        assert_eq!(
+            parse_type_annotation(": Direction"),
+            Ok(TypeAnnotation::Named(vec!["Direction".to_string()]))
+        );
+    }
+
+    #[test]
+    fn test_type_annotation_named_path() {
+        assert_eq!(
+            parse_type_annotation(": my_mod.Color"),
+            Ok(TypeAnnotation::Named(vec![
+                "my_mod".to_string(),
+                "Color".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_type_annotation_missing_colon_fails() {
+        assert!(parse_type_annotation("int").is_err());
+    }
+
+    #[test]
+    fn test_type_annotation_bare_colon_fails() {
+        assert!(parse_type_annotation(":").is_err());
+    }
 }
