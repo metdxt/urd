@@ -10,6 +10,12 @@
 //! - [`IrNode`]: A single node in the graph, identified by its [`NodeId`].
 //! - [`IrNodeKind`]: The payload of a node, discriminating between all node kinds.
 //! - [`Event`]: Serialisable output events emitted by the VM to its consumer.
+//!
+//! ## Submodules
+//!
+//! - [`dot`]: Graphviz DOT renderer for [`IrGraph`].
+
+pub mod dot;
 
 use std::collections::HashMap;
 

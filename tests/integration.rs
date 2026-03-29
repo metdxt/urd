@@ -1,5 +1,8 @@
 #![allow(missing_docs)]
 
+#[path = "integration/dot_render.rs"]
+mod dot_render;
+
 #[path = "integration/parser_block_basic.rs"]
 mod parser_block_basic;
 
