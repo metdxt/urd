@@ -193,6 +193,9 @@ pub enum Token {
     #[token("match")]
     Match,
 
+    #[token("decorator")]
+    DecoratorKw,
+
     #[token("_")]
     Wildcard,
 
@@ -339,6 +342,13 @@ mod tests {
         assert!(matches!(lex("enum"), Token::Enum));
         assert!(matches!(lex("match"), Token::Match));
         assert!(matches!(lex("_"), Token::Wildcard));
+    }
+
+    #[test]
+    fn decorator_keyword() {
+        assert!(matches!(lex("decorator"), Token::DecoratorKw));
+        // "decorators" (with extra chars) must still lex as IdentPath
+        assert!(matches!(lex("decorators"), Token::IdentPath(_)));
     }
 
     #[test]

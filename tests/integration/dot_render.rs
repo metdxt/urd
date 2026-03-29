@@ -37,9 +37,14 @@ enum Action {
     Talk
 }
 
+decorator timed(duration: float) {
+    event["duration"] = duration
+}
+
 @scene("tavern")
 label start {
     @voiced("narrator")
+    @timed(3.0)
     <Narrator>: "You push open the heavy oak door and step inside."
 
     if reputation > 10 {
@@ -342,6 +347,25 @@ fn dot_has_define_enum_node() {
     assert!(
         dot.contains("lavender"),
         "DefineEnum node must use lavender fill"
+    );
+}
+
+#[test]
+fn dot_has_define_script_decorator_node() {
+    let dot = compile_example().to_dot();
+    // The def_decorator node label is set by node_attrs for DefineScriptDecorator.
+    assert!(
+        dot.contains("def_decorator"),
+        "DOT must contain a def_decorator node for the script-defined `timed` decorator"
+    );
+    assert!(
+        dot.contains("@timed"),
+        "DOT must show the decorator name in the def_decorator node label"
+    );
+    // DefineScriptDecorator uses the lavender hex #E6E6FA fill.
+    assert!(
+        dot.contains("#E6E6FA"),
+        "def_decorator node must use lavender hex fill (#E6E6FA)"
     );
 }
 

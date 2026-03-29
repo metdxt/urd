@@ -8,8 +8,8 @@ use chumsky::prelude::*;
 use crate::{
     lexer::Token,
     parser::{
-        ast::{Ast, Decorator, MatchArm, MatchPattern},
-        expr::{comma_separated_exprs, declaration, expr},
+        ast::{Ast, Decorator, DecoratorParam, EventConstraint, MatchArm, MatchPattern},
+        expr::{comma_separated_exprs, declaration, expr, type_annotation},
     },
     runtime::value::RuntimeValue,
 };
@@ -100,21 +100,101 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
         .or(return_statement())
         .or(jump_statement())
         .or(enum_decl_parser())
-        .or(match_parser(block))
+        .or(match_parser(block.clone()))
+        .or(decorator_def_parser(block))
         .or(decorated)
         .or(decoratable)
 }
 
-/// Parser for assignment statements (ident = expr)
-/// This allows mutating previously declared variables.
+/// Parser for assignment statements (ident = expr) and subscript assignment (ident[key] = expr).
+/// This allows mutating previously declared variables and map/list entries.
 pub fn assignment<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
-    select! {
+    // Subscript assignment: ident[key] = value  (must come FIRST — more specific)
+    let subscript_assign = select! {
+        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
+    }
+    .then(expr().delimited_by(just(Token::LeftBracket), just(Token::RightBracket)))
+    .then_ignore(just(Token::Assign))
+    .then(expr())
+    .map(|((object, key), value)| Ast::subscript_assign(object, key, value));
+
+    // Plain assignment: ident = expr  (existing logic)
+    let plain_assign = select! {
         Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
     }
     .then_ignore(just(Token::Assign))
     .then(expr())
-    .map(|(ident, value)| Ast::assign_op(ident, value))
-    .boxed()
+    .map(|(ident, value)| Ast::assign_op(ident, value));
+
+    subscript_assign.or(plain_assign).boxed()
+}
+
+/// Parses the optional `<event: dialogue|choice>` constraint clause.
+/// Returns `EventConstraint::Any` when the clause is absent.
+fn event_constraint_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
+    'tok,
+    I,
+    EventConstraint,
+    chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
+> + Clone {
+    let kind = select! {
+        Token::IdentPath(p) if p == ["dialogue"] => EventConstraint::Dialogue,
+        Token::IdentPath(p) if p == ["choice"] => EventConstraint::Choice,
+    }
+    .labelled("event kind (dialogue or choice)");
+
+    just(Token::LessThan)
+        .ignore_then(select! { Token::IdentPath(p) if p == ["event"] => () })
+        .ignore_then(just(Token::Colon))
+        .ignore_then(kind)
+        .then_ignore(just(Token::GreaterThan))
+        .or_not()
+        .map(|opt| opt.unwrap_or(EventConstraint::Any))
+}
+
+/// Parses `(name: Type, name2, ...)` — the parameter list of a decorator definition.
+fn decorator_params_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
+    'tok,
+    I,
+    Vec<DecoratorParam>,
+    chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
+> + Clone {
+    let param = select! {
+        Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
+    }
+    .labelled("parameter name")
+    .then(type_annotation().or_not())
+    .map(|(name, type_annotation)| DecoratorParam {
+        name,
+        type_annotation,
+    });
+
+    param
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LeftParen), just(Token::RightParen))
+}
+
+/// Parses a full decorator definition:
+/// `decorator name<event: dialogue>(param: Type, ...) { body }`
+fn decorator_def_parser<'tok, I: UrdInput<'tok>>(
+    block: impl UrdParser<'tok, I> + 'tok,
+) -> impl UrdParser<'tok, I> {
+    let name = select! {
+        Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
+    }
+    .labelled("decorator name");
+
+    just(Token::DecoratorKw)
+        .ignore_then(name)
+        .then(event_constraint_parser())
+        .then(decorator_params_parser())
+        .then(block)
+        .map(|(((name, event_constraint), params), body)| {
+            Ast::decorator_def(name, event_constraint, params, body)
+        })
+        .boxed()
 }
 
 /// Parser for dialogue lines
@@ -222,6 +302,11 @@ pub fn enum_decl<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 /// Parser for match statements: `match expr { pattern { ... } ... }`
 pub fn match_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     match_parser(code_block()).boxed()
+}
+
+/// Parser for decorator definitions: `decorator name<event: kind>(params...) { body }`
+pub fn decorator_def<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
+    decorator_def_parser(code_block()).boxed()
 }
 
 fn menu_parser<'tok, I: UrdInput<'tok>>(

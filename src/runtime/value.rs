@@ -10,6 +10,16 @@ use crate::lexer::{Token, strings::ParsedString};
 ///
 /// Runtime values are the result of evaluating expressions and the operands
 /// for operations during script execution.
+///
+/// ## Serde notes
+///
+/// `Map` and `ScriptDecorator` are marked `#[serde(skip)]` because they hold
+/// `Ast` nodes (which are not `Serialize`/`Deserialize`) and because they are
+/// ephemeral, in-body-execution-only values that never appear in a serialised
+/// [`crate::ir::Event`].  Attempting to serialise a `RuntimeValue` that is
+/// `Map` or `ScriptDecorator` will silently omit the field; deserialising
+/// back will never reconstruct them (which is correct — they only exist
+/// transiently during script execution).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RuntimeValue {
     /// The null value
@@ -26,6 +36,29 @@ pub enum RuntimeValue {
     Dice(u8, u8),
     /// Identifier representing a variable or property path
     IdentPath(Vec<String>),
+
+    /// A runtime map value: `:{key: value, ...}` literals or the implicit
+    /// `event` map passed to decorator bodies.
+    ///
+    /// `Ast` is not serialisable, so this variant is excluded from serde
+    /// entirely — it is an ephemeral, in-execution-only value.
+    #[serde(skip)]
+    Map(std::collections::HashMap<String, Box<RuntimeValue>>),
+
+    /// A script-defined decorator, stored as a first-class runtime value.
+    ///
+    /// `Ast` is not serialisable, so this variant is excluded from serde
+    /// entirely — it is an ephemeral, in-execution-only value.
+    #[serde(skip)]
+    ScriptDecorator {
+        /// Optional event-kind constraint (checked at apply-time).
+        event_constraint: crate::parser::ast::EventConstraint,
+        /// Ordered list of parameter names (type annotations already stripped
+        /// by the compiler).
+        params: Vec<String>,
+        /// The decorator body, kept as raw `Ast` for inline evaluation.
+        body: Box<crate::parser::ast::Ast>,
+    },
 }
 
 #[allow(missing_docs)]

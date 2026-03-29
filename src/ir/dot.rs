@@ -135,9 +135,10 @@ pub fn render_dot(graph: &IrGraph) -> String {
             let (shape, fill, label) = node_attrs(node.id, &node.kind, &label_by_entry);
             writeln!(
                 out,
-                "        {} [label={}, shape={shape}, style=filled, fillcolor={fill}];",
+                "        {} [label={}, shape={shape}, style=filled, fillcolor={}];",
                 nid(node.id),
                 quoted(&label),
+                quoted(fill),
             )
             .ok();
         }
@@ -164,9 +165,10 @@ pub fn render_dot(graph: &IrGraph) -> String {
         let (shape, fill, label) = node_attrs(node.id, &node.kind, &label_by_entry);
         writeln!(
             out,
-            "    {} [label={}, shape={shape}, style=filled, fillcolor={fill}];",
+            "    {} [label={}, shape={shape}, style=filled, fillcolor={}];",
             nid(node.id),
             quoted(&label),
+            quoted(fill),
         )
         .ok();
     }
@@ -196,6 +198,7 @@ pub fn render_dot(graph: &IrGraph) -> String {
             | IrNodeKind::EnterScope { next, .. }
             | IrNodeKind::ExitScope { next, .. }
             | IrNodeKind::DefineEnum { next, .. }
+            | IrNodeKind::DefineScriptDecorator { next, .. }
             | IrNodeKind::Dialogue { next, .. } => {
                 let target = follow_nops(graph, *next);
                 write_edge(&mut out, &n, target, None, None, &mut has_end_edge);
@@ -341,6 +344,7 @@ fn reachable_nodes(graph: &IrGraph) -> HashSet<NodeId> {
             | IrNodeKind::EnterScope { next, .. }
             | IrNodeKind::ExitScope { next, .. }
             | IrNodeKind::DefineEnum { next, .. }
+            | IrNodeKind::DefineScriptDecorator { next, .. }
             | IrNodeKind::Nop { next }
             | IrNodeKind::Dialogue { next, .. } => {
                 queue.push_back(*next);
@@ -453,6 +457,7 @@ fn compute_clusters(
                 | IrNodeKind::EnterScope { next, .. }
                 | IrNodeKind::ExitScope { next, .. }
                 | IrNodeKind::DefineEnum { next, .. }
+                | IrNodeKind::DefineScriptDecorator { next, .. }
                 | IrNodeKind::Nop { next }
                 | IrNodeKind::Dialogue { next, .. } => {
                     queue.push_back(*next);
@@ -518,7 +523,8 @@ fn entry_cluster_name(graph: &IrGraph) -> Option<String> {
             IrNodeKind::Assign { next, .. }
             | IrNodeKind::Eval { next, .. }
             | IrNodeKind::Nop { next }
-            | IrNodeKind::DefineEnum { next, .. } => {
+            | IrNodeKind::DefineEnum { next, .. }
+            | IrNodeKind::DefineScriptDecorator { next, .. } => {
                 current = *next;
             }
             _ => return None,
@@ -582,6 +588,12 @@ fn node_attrs(
             "box",
             "lavender",
             format!("enum {name} ({} variants)", variants.len()),
+        ),
+
+        IrNodeKind::DefineScriptDecorator { name, params, .. } => (
+            "box",
+            "#E6E6FA",
+            format!("def_decorator\n@{name} ({} params)", params.len()),
         ),
 
         IrNodeKind::Nop { .. } => {
@@ -802,6 +814,8 @@ fn rv_summary(rv: &RuntimeValue) -> String {
         RuntimeValue::Str(_) => "\"…\"".into(),
         RuntimeValue::Dice(c, s) => format!("{c}d{s}"),
         RuntimeValue::IdentPath(p) => p.join("."),
+        RuntimeValue::Map(m) => format!("⟨map({})⟩", m.len()),
+        RuntimeValue::ScriptDecorator { .. } => "⟨decorator⟩".into(),
     }
 }
 

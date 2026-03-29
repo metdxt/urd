@@ -86,7 +86,7 @@ pub enum VmError {
 /// Variables live in a stack of scopes; each [`IrNodeKind::EnterScope`] pushes
 /// a new scope and the matching [`IrNodeKind::ExitScope`] pops it.  Globals
 /// (`global x = …`) are stored in a separate flat map and are never popped.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Environment {
     /// Stack of local scopes; `scopes.last()` is the innermost one.
     scopes: Vec<HashMap<String, RuntimeValue>>,
@@ -302,6 +302,31 @@ impl DecoratorRegistry {
         self.handlers.keys().map(String::as_str)
     }
 
+    /// Registers a script-defined decorator by name so that the VM validation
+    /// pass accepts `@name(args)` usages in dialogue/choice nodes.
+    ///
+    /// The handler is a stub that returns an empty fields map; full body
+    /// evaluation at apply-time is a future VM extension.
+    ///
+    /// # Errors
+    /// Currently infallible; returns `Ok(())` always.  The `Result` return
+    /// type is kept for forward compatibility with richer error handling.
+    pub fn define_script_decorator(
+        &mut self,
+        name: String,
+        _event_constraint: crate::parser::ast::EventConstraint,
+        _params: Vec<String>,
+        _body: crate::parser::ast::Ast,
+    ) -> Result<(), VmError> {
+        // Register a stub handler so `@name` passes the validation pass in
+        // `Vm::new` and can be used in dialogue/choice nodes without a native
+        // Rust closure.  Full body evaluation is deferred to a future milestone.
+        self.handlers
+            .entry(name)
+            .or_insert_with(|| Box::new(|_args: &[RuntimeValue]| HashMap::new()));
+        Ok(())
+    }
+
     /// Evaluates `decorator`'s arguments and invokes the registered handler.
     ///
     /// # Errors
@@ -399,9 +424,24 @@ pub fn eval_expr(
             log::warn!("List literals are not yet supported; returning Null");
             Ok(RuntimeValue::Null)
         }
-        AstContent::Map(_) => {
-            log::warn!("Map literals are not yet supported; returning Null");
-            Ok(RuntimeValue::Null)
+        AstContent::Map(pairs) => {
+            let mut map = std::collections::HashMap::new();
+            for (key_ast, val_ast) in pairs {
+                let key_val = eval_expr(key_ast, env)?;
+                let key_str = match &key_val {
+                    RuntimeValue::Str(ps) => ps.to_string(),
+                    RuntimeValue::IdentPath(p) => p.last().cloned().unwrap_or_default(),
+                    other => {
+                        return Err(VmError::TypeError(format!(
+                            "map key must be Str or identifier, got {:?}",
+                            other
+                        )));
+                    }
+                };
+                let val = eval_expr(val_ast, env)?;
+                map.insert(key_str, Box::new(val));
+            }
+            Ok(RuntimeValue::Map(map))
         }
 
         // ── Invalid expression contexts ──────────────────────────────────────
@@ -437,6 +477,35 @@ pub fn eval_expr(
         )),
         AstContent::Match { .. } => Err(VmError::InvalidExpression(
             "Match cannot appear in expression context".to_string(),
+        )),
+        AstContent::DecoratorDef { .. } => Err(VmError::InvalidExpression(
+            "DecoratorDef cannot appear in expression context".to_string(),
+        )),
+        AstContent::Subscript { object, key } => {
+            let obj_val = eval_expr(object, env)?;
+            let key_val = eval_expr(key, env)?;
+            let key_str = match &key_val {
+                RuntimeValue::Str(ps) => ps.to_string(),
+                RuntimeValue::Int(i) => i.to_string(),
+                other => {
+                    return Err(VmError::TypeError(format!(
+                        "subscript key must be Str or Int, got {:?}",
+                        other
+                    )));
+                }
+            };
+            match obj_val {
+                RuntimeValue::Map(map) => map.get(&key_str).map(|v| *v.clone()).ok_or_else(|| {
+                    VmError::UndefinedVariable(format!("key '{}' not found in map", key_str))
+                }),
+                other => Err(VmError::TypeError(format!(
+                    "subscript requires Map, got {:?}",
+                    other
+                ))),
+            }
+        }
+        AstContent::SubscriptAssign { .. } => Err(VmError::InvalidExpression(
+            "SubscriptAssign must be used as a statement, not in expression context".to_string(),
         )),
     }
 }
@@ -589,6 +658,8 @@ fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> String {
             RuntimeValue::Str(ps) => ps.to_string(),
             RuntimeValue::Dice(count, sides) => format!("{}d{}", count, sides),
             RuntimeValue::IdentPath(path) => path.join("."),
+            RuntimeValue::Map(m) => format!("map({})", m.len()),
+            RuntimeValue::ScriptDecorator { .. } => "<decorator>".to_string(),
         },
     }
 }
@@ -859,12 +930,25 @@ impl Vm {
     /// Returns [`VmError::UnknownDecorator`] if any decorator used in the
     /// script is not registered.
     pub fn new(graph: IrGraph, registry: DecoratorRegistry) -> Result<Self, VmError> {
-        // Validation pass — check every decorator in dialogue and choice nodes.
+        // Pass 1: collect all names defined by DefineScriptDecorator nodes so
+        // that the validation pass below can accept them without a Rust handler.
+        let script_defined: HashSet<&str> = graph
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.kind {
+                IrNodeKind::DefineScriptDecorator { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        // Pass 2: validate every decorator used in Dialogue / Choice nodes.
         for node in &graph.nodes {
             match &node.kind {
                 IrNodeKind::Dialogue { decorators, .. } => {
                     for dec in decorators {
-                        if !registry.handlers.contains_key(dec.name()) {
+                        if !registry.handlers.contains_key(dec.name())
+                            && !script_defined.contains(dec.name())
+                        {
                             return Err(VmError::UnknownDecorator {
                                 name: dec.name().to_string(),
                                 node_id: node.id,
@@ -877,7 +961,9 @@ impl Vm {
                     options,
                 } => {
                     for dec in decorators {
-                        if !registry.handlers.contains_key(dec.name()) {
+                        if !registry.handlers.contains_key(dec.name())
+                            && !script_defined.contains(dec.name())
+                        {
                             return Err(VmError::UnknownDecorator {
                                 name: dec.name().to_string(),
                                 node_id: node.id,
@@ -886,7 +972,9 @@ impl Vm {
                     }
                     for opt in options {
                         for dec in &opt.decorators {
-                            if !registry.handlers.contains_key(dec.name()) {
+                            if !registry.handlers.contains_key(dec.name())
+                                && !script_defined.contains(dec.name())
+                            {
                                 return Err(VmError::UnknownDecorator {
                                     name: dec.name().to_string(),
                                     node_id: node.id,
@@ -970,8 +1058,21 @@ impl Vm {
                 // ── Side-effecting expression ────────────────────────────────
                 IrNodeKind::Eval { expr, next } => {
                     let next_id = *next;
-                    if let Err(e) = eval_expr(expr, &self.env) {
-                        return Some(Err(e));
+                    // Clone the expr to release the graph borrow before we
+                    // take &mut self.env in eval_subscript_assign.
+                    let expr_cloned = expr.clone();
+                    match expr_cloned.content() {
+                        AstContent::SubscriptAssign { object, key, value } => {
+                            let (obj, k, v) = (*object.clone(), *key.clone(), *value.clone());
+                            if let Err(e) = eval_subscript_assign(&obj, &k, &v, &mut self.env) {
+                                return Some(Err(e));
+                            }
+                        }
+                        _ => {
+                            if let Err(e) = eval_expr(&expr_cloned, &self.env) {
+                                return Some(Err(e));
+                            }
+                        }
                     }
                     self.cursor = next_id;
                 }
@@ -1100,6 +1201,32 @@ impl Vm {
                     self.cursor = next_id;
                 }
 
+                // ── Script-defined decorator registration ────────────────────
+                //
+                // At execution time we store a `RuntimeValue::ScriptDecorator`
+                // in the environment under `name`.  When a `@name(args)` usage
+                // is encountered during Dialogue/Choice evaluation, `apply_decorator`
+                // finds it there and calls `apply_script_decorator` to run the body.
+                IrNodeKind::DefineScriptDecorator {
+                    name,
+                    event_constraint,
+                    params,
+                    body,
+                    next,
+                } => {
+                    let name = name.clone();
+                    let next_id = *next;
+                    let decorator_val = RuntimeValue::ScriptDecorator {
+                        event_constraint: event_constraint.clone(),
+                        params: params.clone(),
+                        body: Box::new(body.clone()),
+                    };
+                    if let Err(e) = self.env.set(&name, decorator_val, &DeclKind::Variable) {
+                        return Some(Err(e));
+                    }
+                    self.cursor = next_id;
+                }
+
                 // ── Dialogue event ───────────────────────────────────────────
                 IrNodeKind::Dialogue {
                     speakers,
@@ -1119,10 +1246,13 @@ impl Vm {
                     };
 
                     // Evaluate decorators and merge their fields.
+                    // `apply_decorator` checks the env first (for script-defined
+                    // decorators), then falls back to the Rust registry.
+                    let decorators_cloned: Vec<Decorator> = decorators.to_vec();
                     let mut fields: HashMap<String, RuntimeValue> = HashMap::new();
-                    for dec in decorators {
-                        match self.registry.apply(dec, &self.env) {
-                            Ok(dec_fields) => fields.extend(dec_fields),
+                    for dec in &decorators_cloned {
+                        match apply_decorator(dec, &self.env, &self.registry, fields) {
+                            Ok(new_fields) => fields = new_fields,
                             Err(e) => return Some(Err(e)),
                         }
                     }
@@ -1225,6 +1355,239 @@ impl Vm {
 
 // ─── Free helpers ─────────────────────────────────────────────────────────────
 
+/// Execute a subscript assignment: `ident[key] = value`.
+///
+/// The `object` must resolve to a simple variable name (single-segment
+/// `IdentPath`) in the environment holding a [`RuntimeValue::Map`].
+/// Mutates the map in-place by reading the current value, inserting the new
+/// entry, then writing back.
+fn eval_subscript_assign(
+    object: &crate::parser::ast::Ast,
+    key: &crate::parser::ast::Ast,
+    value: &crate::parser::ast::Ast,
+    env: &mut Environment,
+) -> Result<(), VmError> {
+    // 1. Extract variable name from object.
+    let var_name = match object.content() {
+        AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => path[0].clone(),
+        _ => {
+            return Err(VmError::TypeError(
+                "subscript assignment target must be a simple variable name".to_string(),
+            ));
+        }
+    };
+
+    // 2. Evaluate key and value (immutable borrow — env not mutated yet).
+    let key_val = eval_expr(key, env)?;
+    let new_val = eval_expr(value, env)?;
+
+    let key_str = match &key_val {
+        RuntimeValue::Str(ps) => ps.to_string(),
+        RuntimeValue::Int(i) => i.to_string(),
+        other => {
+            return Err(VmError::TypeError(format!(
+                "subscript key must be Str or Int, got {:?}",
+                other
+            )));
+        }
+    };
+
+    // 3. Get the map, mutate it, write back.
+    let mut map_val = env.get(&var_name)?;
+    match &mut map_val {
+        RuntimeValue::Map(map) => {
+            map.insert(key_str, Box::new(new_val));
+        }
+        other => {
+            return Err(VmError::TypeError(format!(
+                "subscript assignment requires Map variable '{}', got {:?}",
+                var_name, other
+            )));
+        }
+    }
+    env.set(&var_name, map_val, &DeclKind::Variable)
+}
+
+/// Execute an AST block synchronously in a mutable environment.
+///
+/// Used to run decorator bodies without creating a full VM execution loop.
+/// Forbidden constructs (Dialogue, Menu, Jump, Return, etc.) return an error.
+fn exec_block_sync(ast: &crate::parser::ast::Ast, env: &mut Environment) -> Result<(), VmError> {
+    use crate::parser::ast::AstContent as AC;
+    match ast.content() {
+        AC::Block(stmts) => {
+            for stmt in stmts {
+                exec_block_sync(stmt, env)?;
+            }
+            Ok(())
+        }
+        AC::Declaration {
+            kind,
+            decl_name,
+            decl_defs,
+            ..
+        } => {
+            let var_name = match decl_name.content() {
+                AC::Value(RuntimeValue::IdentPath(p)) if p.len() == 1 => p[0].clone(),
+                _ => {
+                    return Err(VmError::TypeError(
+                        "expected identifier in declaration".to_string(),
+                    ));
+                }
+            };
+            let val = eval_expr(decl_defs, env)?;
+            env.set(&var_name, val, kind)?;
+            Ok(())
+        }
+        AC::BinOp {
+            op: Operator::Assign,
+            left,
+            right,
+        } => {
+            let var_name = match left.content() {
+                AC::Value(RuntimeValue::IdentPath(p)) if p.len() == 1 => p[0].clone(),
+                _ => {
+                    return Err(VmError::TypeError(
+                        "expected identifier in assignment".to_string(),
+                    ));
+                }
+            };
+            let val = eval_expr(right, env)?;
+            env.set(&var_name, val, &DeclKind::Variable)?;
+            Ok(())
+        }
+        AC::SubscriptAssign { object, key, value } => {
+            eval_subscript_assign(object, key, value, env)
+        }
+        AC::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            let cond = eval_expr(condition, env)?;
+            if is_truthy(&cond) {
+                exec_block_sync(then_block, env)?;
+            } else if let Some(eb) = else_block {
+                exec_block_sync(eb, env)?;
+            }
+            Ok(())
+        }
+        AC::Call { .. } => {
+            eval_expr(ast, env)?;
+            Ok(())
+        }
+        // Pure expressions: evaluate and discard the result.
+        AC::BinOp { .. }
+        | AC::UnaryOp { .. }
+        | AC::Value(_)
+        | AC::Subscript { .. }
+        | AC::List(_)
+        | AC::Map(_)
+        | AC::ExprList(_) => {
+            eval_expr(ast, env)?;
+            Ok(())
+        }
+        // Forbidden inside decorator bodies.
+        AC::Dialogue { .. }
+        | AC::Menu { .. }
+        | AC::MenuOption { .. }
+        | AC::LabeledBlock { .. }
+        | AC::Jump { .. }
+        | AC::Return { .. }
+        | AC::DecoratorDef { .. }
+        | AC::Match { .. }
+        | AC::EnumDecl { .. } => Err(VmError::InvalidExpression(format!(
+            "{:?} is not allowed inside a decorator body",
+            std::mem::discriminant(ast.content())
+        ))),
+    }
+}
+
+/// Invoke a script-defined decorator body.
+///
+/// Builds a temporary local environment with `event` (the current event's
+/// fields as a [`RuntimeValue::Map`]) and the decorator's parameter bindings,
+/// runs the body synchronously, then extracts and returns the (possibly
+/// mutated) event fields map.
+///
+/// # Errors
+/// Returns [`VmError`] if the body execution fails or if the decorator body
+/// replaces `event` with a non-`Map` value.
+fn apply_script_decorator(
+    params: &[String],
+    body: &crate::parser::ast::Ast,
+    args: &[RuntimeValue],
+    outer_env: &Environment,
+    event_fields: HashMap<String, RuntimeValue>,
+) -> Result<HashMap<String, RuntimeValue>, VmError> {
+    let mut local_env = outer_env.clone();
+    local_env.push_scope();
+
+    // Bind `event` as a Map so the body can read/write event["key"].
+    let event_map: HashMap<String, Box<RuntimeValue>> = event_fields
+        .into_iter()
+        .map(|(k, v)| (k, Box::new(v)))
+        .collect();
+    local_env.set("event", RuntimeValue::Map(event_map), &DeclKind::Variable)?;
+
+    // Bind each declared parameter to the corresponding argument value.
+    for (name, val) in params.iter().zip(args.iter()) {
+        local_env.set(name, val.clone(), &DeclKind::Variable)?;
+    }
+
+    // Execute the body synchronously.
+    exec_block_sync(body, &mut local_env)?;
+
+    // Extract the (possibly mutated) event map.
+    match local_env.get("event")? {
+        RuntimeValue::Map(map) => Ok(map.into_iter().map(|(k, v)| (k, *v)).collect()),
+        other => Err(VmError::TypeError(format!(
+            "decorator body replaced `event` with a non-Map value: {:?}",
+            other
+        ))),
+    }
+}
+
+/// Apply a single decorator: checks the environment first for a
+/// script-defined [`RuntimeValue::ScriptDecorator`], then falls back to the
+/// Rust [`DecoratorRegistry`].
+///
+/// `existing_fields` is the accumulated fields map so far; the decorator may
+/// add new fields or overwrite existing ones.  The returned map is the merged
+/// result.
+fn apply_decorator(
+    dec: &Decorator,
+    env: &Environment,
+    registry: &DecoratorRegistry,
+    existing_fields: HashMap<String, RuntimeValue>,
+) -> Result<HashMap<String, RuntimeValue>, VmError> {
+    match env.get(dec.name()) {
+        Ok(RuntimeValue::ScriptDecorator { params, body, .. }) => {
+            // Evaluate arguments.
+            let args = match dec.args().content() {
+                AstContent::ExprList(items) => items
+                    .iter()
+                    .map(|a| eval_expr(a, env))
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => vec![eval_expr(dec.args(), env)?],
+            };
+            apply_script_decorator(&params, &body, &args, env, existing_fields)
+        }
+        Ok(_) => Err(VmError::TypeError(format!(
+            "'{}' is defined in scope but is not a decorator",
+            dec.name()
+        ))),
+        Err(VmError::UndefinedVariable(_)) => {
+            // Fall back to the Rust registry.
+            let dec_fields = registry.apply(dec, env)?;
+            let mut merged = existing_fields;
+            merged.extend(dec_fields);
+            Ok(merged)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Build a [`Event::Choice`] from an options list, evaluating all decorators.
 fn build_choice_event(
     options: &[crate::ir::IrChoiceOption],
@@ -1232,11 +1595,11 @@ fn build_choice_event(
     env: &Environment,
     registry: &DecoratorRegistry,
 ) -> Result<Event, VmError> {
-    // Merge top-level (Menu) decorator fields.
+    // Merge top-level (Menu) decorator fields via apply_decorator so that
+    // script-defined decorators are handled correctly.
     let mut fields: HashMap<String, RuntimeValue> = HashMap::new();
     for dec in decorators {
-        let dec_fields = registry.apply(dec, env)?;
-        fields.extend(dec_fields);
+        fields = apply_decorator(dec, env, registry, fields)?;
     }
 
     // Build per-option ChoiceEvent entries.
@@ -1244,8 +1607,7 @@ fn build_choice_event(
     for opt in options {
         let mut opt_fields: HashMap<String, RuntimeValue> = HashMap::new();
         for dec in &opt.decorators {
-            let dec_fields = registry.apply(dec, env)?;
-            opt_fields.extend(dec_fields);
+            opt_fields = apply_decorator(dec, env, registry, opt_fields)?;
         }
         choice_options.push(ChoiceEvent {
             label: opt.label.clone(),
@@ -1816,5 +2178,197 @@ mod tests {
             }
             other => panic!("expected Dialogue, got {:?}", other),
         }
+    }
+
+    // ── Script-decorator integration tests ────────────────────────────────────
+
+    /// A script-defined decorator that writes `event["camera_shake"] = amount`
+    /// should produce a Dialogue event with that field set.
+    ///
+    /// Script equivalent:
+    /// ```
+    /// decorator shake(amount) { event["camera_shake"] = amount }
+    /// @shake(0.5)
+    /// Alice: "Watch out!"
+    /// ```
+    #[test]
+    fn test_script_decorator_mutates_event_fields() {
+        use crate::parser::ast::{DecoratorParam, EventConstraint};
+
+        // Build the decorator body: `event["camera_shake"] = amount`
+        let event_ident = Ast::value(RuntimeValue::IdentPath(vec!["event".to_string()]));
+        let key_ast = Ast::value(RuntimeValue::Str(
+            crate::lexer::strings::ParsedString::new_plain("camera_shake"),
+        ));
+        let amount_ident = Ast::value(RuntimeValue::IdentPath(vec!["amount".to_string()]));
+        let subscript_assign = Ast::subscript_assign(event_ident, key_ast, amount_ident);
+        let body = Ast::block(vec![subscript_assign]);
+
+        let decorator_def = Ast::decorator_def(
+            "shake".to_string(),
+            EventConstraint::Any,
+            vec![DecoratorParam {
+                name: "amount".to_string(),
+                type_annotation: None,
+            }],
+            body,
+        );
+
+        // @shake(0.5) Alice: "Watch out!"
+        let speakers = Ast::expr_list(vec![str_lit("Alice")]);
+        let lines = Ast::expr_list(vec![str_lit("Watch out!")]);
+        let deco = Decorator::new(
+            "shake".to_string(),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::Float(0.5))]),
+        );
+        let dialogue = Ast::new_decorated(
+            AstContent::Dialogue {
+                speakers: Box::new(speakers),
+                content: Box::new(lines),
+            },
+            vec![deco],
+        );
+
+        let ast = Ast::block(vec![decorator_def, dialogue]);
+        let mut vm = build_vm(ast);
+
+        let ev = vm.next(None).expect("expected event").expect("no error");
+        match ev {
+            Event::Dialogue { fields, .. } => {
+                assert!(
+                    fields.contains_key("camera_shake"),
+                    "expected 'camera_shake' in fields, got {:?}",
+                    fields
+                );
+                assert_eq!(
+                    fields.get("camera_shake"),
+                    Some(&RuntimeValue::Float(0.5)),
+                    "camera_shake should be Float(0.5)"
+                );
+            }
+            other => panic!("expected Dialogue, got {:?}", other),
+        }
+    }
+
+    /// A VM built with an empty Rust registry but a script-defined decorator
+    /// must NOT return `VmError::UnknownDecorator` — the definition in the
+    /// script is sufficient.
+    #[test]
+    fn test_script_decorator_does_not_require_rust_registration() {
+        use crate::parser::ast::EventConstraint;
+
+        // decorator noop() { }
+        let decorator_def = Ast::decorator_def(
+            "noop".to_string(),
+            EventConstraint::Any,
+            vec![],
+            Ast::block(vec![]),
+        );
+
+        // @noop() Alice: "Hi"
+        let speakers = Ast::expr_list(vec![str_lit("Alice")]);
+        let lines = Ast::expr_list(vec![str_lit("Hi")]);
+        let deco = Decorator::new("noop".to_string(), Ast::expr_list(vec![]));
+        let dialogue = Ast::new_decorated(
+            AstContent::Dialogue {
+                speakers: Box::new(speakers),
+                content: Box::new(lines),
+            },
+            vec![deco],
+        );
+
+        let ast = Ast::block(vec![decorator_def, dialogue]);
+        let graph = Compiler::compile(&ast).expect("compile ok");
+
+        // Empty registry — must still succeed.
+        let result = Vm::new(graph, empty_registry());
+        assert!(
+            result.is_ok(),
+            "script-defined decorator should not require Rust registration, got {:?}",
+            result
+        );
+    }
+
+    /// Evaluating a Map literal `:{\"key\": 42}` returns a `RuntimeValue::Map`.
+    #[test]
+    fn test_map_literal_eval() {
+        let env = Environment::new();
+        let key_ast = Ast::value(RuntimeValue::Str(
+            crate::lexer::strings::ParsedString::new_plain("key"),
+        ));
+        let val_ast = int(42);
+        let map_ast = Ast::map(vec![(key_ast, val_ast)]);
+
+        let result = eval_expr(&map_ast, &env).expect("map eval");
+        match result {
+            RuntimeValue::Map(m) => {
+                assert_eq!(m.len(), 1);
+                assert_eq!(*m["key"], RuntimeValue::Int(42));
+            }
+            other => panic!("expected Map, got {:?}", other),
+        }
+    }
+
+    /// `Map[key]` subscript read returns the correct value.
+    #[test]
+    fn test_subscript_read() {
+        let mut env = Environment::new();
+
+        // let m = :{"a": 99}
+        let key_ast = Ast::value(RuntimeValue::Str(
+            crate::lexer::strings::ParsedString::new_plain("a"),
+        ));
+        let val_ast = int(99);
+        let map_ast = Ast::map(vec![(key_ast, val_ast)]);
+        env.set("m", eval_expr(&map_ast, &env).unwrap(), &DeclKind::Variable)
+            .unwrap();
+
+        // m["a"]
+        let subscript = Ast::subscript(
+            Ast::value(RuntimeValue::IdentPath(vec!["m".to_string()])),
+            Ast::value(RuntimeValue::Str(
+                crate::lexer::strings::ParsedString::new_plain("a"),
+            )),
+        );
+
+        let result = eval_expr(&subscript, &env).expect("subscript read");
+        assert_eq!(result, RuntimeValue::Int(99));
+    }
+
+    /// Subscript assignment `m["a"] = 99` mutates the map stored in the env.
+    #[test]
+    fn test_subscript_assign_mutates_map() {
+        let mut env = Environment::new();
+
+        // let m = :{"a": 1}
+        let key_ast = Ast::value(RuntimeValue::Str(
+            crate::lexer::strings::ParsedString::new_plain("a"),
+        ));
+        let val_ast = int(1);
+        let map_ast = Ast::map(vec![(key_ast, val_ast)]);
+        env.set("m", eval_expr(&map_ast, &env).unwrap(), &DeclKind::Variable)
+            .unwrap();
+
+        // m["a"] = 99
+        let obj = Ast::value(RuntimeValue::IdentPath(vec!["m".to_string()]));
+        let key = Ast::value(RuntimeValue::Str(
+            crate::lexer::strings::ParsedString::new_plain("a"),
+        ));
+        let val = int(99);
+        eval_subscript_assign(&obj, &key, &val, &mut env).expect("subscript assign");
+
+        // Read back m["a"]
+        let subscript = Ast::subscript(
+            Ast::value(RuntimeValue::IdentPath(vec!["m".to_string()])),
+            Ast::value(RuntimeValue::Str(
+                crate::lexer::strings::ParsedString::new_plain("a"),
+            )),
+        );
+        let result = eval_expr(&subscript, &env).expect("read back");
+        assert_eq!(
+            result,
+            RuntimeValue::Int(99),
+            "m[\"a\"] should be 99 after assign"
+        );
     }
 }

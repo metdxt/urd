@@ -14,3 +14,6 @@ mod parser_block_menu;
 
 #[path = "integration/parser_expr.rs"]
 mod parser_expr;
+
+#[path = "integration/parser_decorator_def.rs"]
+mod parser_decorator_def;

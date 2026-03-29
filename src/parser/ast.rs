@@ -151,6 +151,19 @@ pub enum TypeAnnotation {
     Named(Vec<String>),
 }
 
+/// The optional event-kind constraint on a decorator definition.
+/// `decorator foo<event: dialogue>(...)` → `EventConstraint::Dialogue`
+/// If the `<event: ...>` clause is absent, the decorator applies to any event.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EventConstraint {
+    /// Constrains the decorator to dialogue events only
+    Dialogue,
+    /// Constrains the decorator to choice/menu events only
+    Choice,
+    /// No constraint — the decorator applies to any event kind
+    Any,
+}
+
 /// A pattern in a match arm.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MatchPattern {
@@ -159,6 +172,15 @@ pub enum MatchPattern {
     /// A literal or identifier path — matches by value equality.
     /// Covers: IntLit, FloatLit, BoolLit, StrLit, Null, IdentPath (enum variant or variable)
     Value(Ast),
+}
+
+/// A single named parameter in a `decorator` definition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecoratorParam {
+    /// The parameter name (plain identifier)
+    pub name: String,
+    /// Optional static type annotation (informational only)
+    pub type_annotation: Option<TypeAnnotation>,
 }
 
 /// A single arm in a match statement.
@@ -297,6 +319,36 @@ pub enum AstContent {
         scrutinee: Box<Ast>,
         /// Ordered list of match arms
         arms: Vec<MatchArm>,
+    },
+
+    /// Definition of a script-level decorator: `decorator name<event: kind>(params) { body }`
+    DecoratorDef {
+        /// The decorator's name
+        name: String,
+        /// Optional event-kind constraint
+        event_constraint: EventConstraint,
+        /// Ordered list of named parameters
+        params: Vec<DecoratorParam>,
+        /// The body block (always AstContent::Block)
+        body: Box<Ast>,
+    },
+
+    /// Subscript read: `expr[key]`
+    Subscript {
+        /// The object being indexed
+        object: Box<Ast>,
+        /// The index/key expression
+        key: Box<Ast>,
+    },
+
+    /// Subscript assignment: `expr[key] = value`
+    SubscriptAssign {
+        /// The object being indexed
+        object: Box<Ast>,
+        /// The index/key expression
+        key: Box<Ast>,
+        /// The value to assign
+        value: Box<Ast>,
     },
 }
 
@@ -560,6 +612,38 @@ impl Ast {
         Self::new(AstContent::Match {
             scrutinee: Box::new(scrutinee),
             arms,
+        })
+    }
+
+    /// Create a decorator definition node
+    pub fn decorator_def(
+        name: String,
+        event_constraint: EventConstraint,
+        params: Vec<DecoratorParam>,
+        body: Ast,
+    ) -> Self {
+        Self::new(AstContent::DecoratorDef {
+            name,
+            event_constraint,
+            params,
+            body: Box::new(body),
+        })
+    }
+
+    /// Create a subscript-read node (`obj[key]`)
+    pub fn subscript(object: Ast, key: Ast) -> Self {
+        Self::new(AstContent::Subscript {
+            object: Box::new(object),
+            key: Box::new(key),
+        })
+    }
+
+    /// Create a subscript-assign node (`obj[key] = value`)
+    pub fn subscript_assign(object: Ast, key: Ast, value: Ast) -> Self {
+        Self::new(AstContent::SubscriptAssign {
+            object: Box::new(object),
+            key: Box::new(key),
+            value: Box::new(value),
         })
     }
 }

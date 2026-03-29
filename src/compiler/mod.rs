@@ -123,6 +123,10 @@ impl CompilerState {
                     self.scan_labels(&arm.body);
                 }
             }
+            // DecoratorDef bodies are stored as raw Ast for lazy apply-time
+            // evaluation — they are never compiled into IR nodes, so any labels
+            // inside them are private to the body and must not be pre-allocated
+            // in the outer label_placeholders map.
             // All other nodes either have no sub-statements or only expressions.
             _ => {}
         }
@@ -371,6 +375,43 @@ impl CompilerState {
                 "MenuOption `{}` appeared outside a Menu",
                 label
             ))),
+
+            // ── DecoratorDef ─────────────────────────────────────────────────
+            AstContent::DecoratorDef {
+                name,
+                event_constraint,
+                params,
+                body,
+            } => {
+                // Strip type annotations — runtime only needs parameter names.
+                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                let id = self.graph.push(IrNodeKind::DefineScriptDecorator {
+                    name: name.clone(),
+                    event_constraint: event_constraint.clone(),
+                    params: param_names,
+                    body: *body.clone(),
+                    next,
+                });
+                Ok(id)
+            }
+
+            // ── Subscript (index read at statement level) ────────────────────
+            AstContent::Subscript { .. } => {
+                let id = self.graph.push(IrNodeKind::Eval {
+                    expr: ast.clone(),
+                    next,
+                });
+                Ok(id)
+            }
+
+            // ── SubscriptAssign (index write) ────────────────────────────────
+            AstContent::SubscriptAssign { .. } => {
+                let id = self.graph.push(IrNodeKind::Eval {
+                    expr: ast.clone(),
+                    next,
+                });
+                Ok(id)
+            }
         }
     }
 }
@@ -408,6 +449,138 @@ mod tests {
         parser::ast::{Ast, AstContent, DeclKind, MatchArm, MatchPattern},
         runtime::value::RuntimeValue,
     };
+
+    // ── decorator tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_decorator_def_compiles_to_define_script_decorator() {
+        use crate::parser::ast::{DecoratorParam, EventConstraint};
+
+        let body = Ast::block(vec![]);
+        let decorator_ast = Ast::decorator_def(
+            "shake".to_string(),
+            EventConstraint::Any,
+            vec![DecoratorParam {
+                name: "amount".to_string(),
+                type_annotation: None,
+            }],
+            body,
+        );
+        let script_ast = Ast::block(vec![decorator_ast]);
+
+        let graph = Compiler::compile(&script_ast).expect("compile failed");
+        let entry = &graph.nodes[graph.entry.0 as usize];
+        assert!(
+            matches!(
+                &entry.kind,
+                IrNodeKind::DefineScriptDecorator { name, params, .. }
+                if name == "shake" && params == &["amount"]
+            ),
+            "expected DefineScriptDecorator at entry, got {:?}",
+            entry.kind
+        );
+    }
+
+    #[test]
+    fn test_decorator_def_then_dialogue_chains() {
+        use crate::parser::ast::{AstContent, EventConstraint};
+
+        let body = Ast::block(vec![]);
+        let dec_ast = Ast::decorator_def("voiced".to_string(), EventConstraint::Any, vec![], body);
+        let dialogue_ast = Ast::new_decorated(
+            AstContent::Dialogue {
+                speakers: Box::new(Ast::value(RuntimeValue::IdentPath(vec![
+                    "Alice".to_string(),
+                ]))),
+                content: Box::new(Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()]))),
+            },
+            vec![],
+        );
+        let script_ast = Ast::block(vec![dec_ast, dialogue_ast]);
+
+        let graph = Compiler::compile(&script_ast).expect("compile failed");
+        let entry_node = &graph.nodes[graph.entry.0 as usize];
+        let IrNodeKind::DefineScriptDecorator { next, .. } = &entry_node.kind else {
+            panic!("expected DefineScriptDecorator, got {:?}", entry_node.kind)
+        };
+        assert!(
+            matches!(
+                &graph.nodes[next.0 as usize].kind,
+                IrNodeKind::Dialogue { .. }
+            ),
+            "expected Dialogue after DefineScriptDecorator"
+        );
+    }
+
+    #[test]
+    fn test_decorator_def_no_params() {
+        use crate::parser::ast::EventConstraint;
+
+        let body = Ast::block(vec![]);
+        let decorator_ast = Ast::decorator_def(
+            "highlight".to_string(),
+            EventConstraint::Dialogue,
+            vec![],
+            body,
+        );
+        let script_ast = Ast::block(vec![decorator_ast]);
+
+        let graph = Compiler::compile(&script_ast).expect("compile failed");
+        let entry = &graph.nodes[graph.entry.0 as usize];
+        assert!(
+            matches!(
+                &entry.kind,
+                IrNodeKind::DefineScriptDecorator {
+                    name,
+                    params,
+                    event_constraint,
+                    ..
+                }
+                if name == "highlight"
+                    && params.is_empty()
+                    && matches!(event_constraint, crate::parser::ast::EventConstraint::Dialogue)
+            ),
+            "expected DefineScriptDecorator(highlight) at entry, got {:?}",
+            entry.kind
+        );
+    }
+
+    #[test]
+    fn test_decorator_def_body_labels_are_private() {
+        use crate::parser::ast::EventConstraint;
+
+        // Labels declared inside a decorator body are private — the body is
+        // stored as raw Ast for lazy apply-time evaluation and is never compiled
+        // into IR nodes, so its labels must NOT appear in graph.labels and a
+        // jump targeting one from outside must fail with UnknownLabel.
+        let inner_labeled = Ast::labeled_block("inner_scene".to_string(), Ast::block(vec![]));
+        let body = Ast::block(vec![inner_labeled]);
+        let decorator_ast =
+            Ast::decorator_def("wrapper".to_string(), EventConstraint::Any, vec![], body);
+        // Compiling the decorator alone must succeed and must NOT register the
+        // inner label in the public graph.labels map.
+        let script_ast = Ast::block(vec![decorator_ast]);
+        let graph = Compiler::compile(&script_ast).expect("compile failed");
+        assert!(
+            !graph.labels.contains_key("inner_scene"),
+            "inner_scene is private to the decorator body — must not appear in graph.labels"
+        );
+
+        // A jump to a label that only exists inside a decorator body must
+        // produce a CompilerError::UnknownLabel.
+        let inner_labeled2 = Ast::labeled_block("inner_scene".to_string(), Ast::block(vec![]));
+        let body2 = Ast::block(vec![inner_labeled2]);
+        let decorator_ast2 =
+            Ast::decorator_def("wrapper2".to_string(), EventConstraint::Any, vec![], body2);
+        let jump_ast = Ast::jump_stmt("inner_scene".to_string());
+        let script_with_jump = Ast::block(vec![decorator_ast2, jump_ast]);
+        let result = Compiler::compile(&script_with_jump);
+        assert!(
+            matches!(result, Err(CompilerError::UnknownLabel(ref l)) if l == "inner_scene"),
+            "expected UnknownLabel for jump into decorator body, got {:?}",
+            result
+        );
+    }
 
     // ── helpers ──────────────────────────────────────────────────────────────
 

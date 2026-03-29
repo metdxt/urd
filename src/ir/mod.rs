@@ -207,6 +207,23 @@ pub enum IrNodeKind {
         next: NodeId,
     },
 
+    /// Register a script-defined decorator in the VM's decorator table.
+    ///
+    /// Executing this node stores a `RuntimeValue::ScriptDecorator` into the
+    /// environment under `name`, making it available for `@name(args)` applications.
+    DefineScriptDecorator {
+        /// The decorator's name (used as the environment key).
+        name: String,
+        /// Optional event-kind constraint (informational; checked at apply-time).
+        event_constraint: crate::parser::ast::EventConstraint,
+        /// Ordered parameter names (type annotations stripped — runtime ignores them).
+        params: Vec<String>,
+        /// The body block, kept as raw `Ast` for inline evaluation at apply-time.
+        body: crate::parser::ast::Ast,
+        /// The next node to execute.
+        next: NodeId,
+    },
+
     /// A merge point or pre-allocated placeholder.
     ///
     /// Used as a forward-reference during two-pass compilation; the compiler

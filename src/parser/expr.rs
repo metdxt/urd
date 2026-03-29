@@ -46,7 +46,7 @@ fn atom_internal<'tokens, I: UrdInput<'tokens>>(
     let map = comma_separated_kv_pairs_internal(expr.clone())
         .delimited_by(just(Token::DictStart), just(Token::RightCurly));
 
-    select! {
+    let base = select! {
         Token::Null => Ast::value(RuntimeValue::Null),
         Token::BoolLit(b) => Ast::value(RuntimeValue::Bool(b)),
         Token::IntLit(i) => Ast::value(RuntimeValue::Int(i)),
@@ -61,7 +61,7 @@ fn atom_internal<'tokens, I: UrdInput<'tokens>>(
         Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
     }
     .then(
-        comma_separated_exprs_internal(expr)
+        comma_separated_exprs_internal(expr.clone())
             .boxed()
             .delimited_by(just(Token::LeftParen), just(Token::RightParen))
             .or_not(),
@@ -69,7 +69,15 @@ fn atom_internal<'tokens, I: UrdInput<'tokens>>(
     .map(|(ident, maybe_params)| match maybe_params {
         Some(params) => Ast::call(ident, params),
         None => ident,
-    }))
+    }));
+
+    // Postfix subscript: zero or more `[key]` suffixes, left-associative.
+    // e.g. `obj[a][b]` → Subscript(Subscript(obj, a), b)
+    let subscript_suffix = expr.delimited_by(just(Token::LeftBracket), just(Token::RightBracket));
+
+    base.foldl(subscript_suffix.repeated(), |obj, key| {
+        Ast::subscript(obj, key)
+    })
 }
 
 /// Creates a Pratt parser for parsing expressions in the Urd language.
@@ -197,7 +205,10 @@ fn comma_separated_kv_pairs_internal<'tok, I: UrdInput<'tok>>(
 ///
 /// This function returns a raw [`Parser`] rather than the [`UrdParser`] alias because its
 /// output type is [`TypeAnnotation`], not [`Ast`].
-fn type_annotation<'tok, I: UrdInput<'tok>>() -> impl Parser<
+///
+/// Visibility is `pub(crate)` so that `block.rs` can reuse this parser for decorator
+/// parameter type annotations without duplicating the logic.
+pub(crate) fn type_annotation<'tok, I: UrdInput<'tok>>() -> impl Parser<
     'tok,
     I,
     TypeAnnotation,
