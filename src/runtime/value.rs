@@ -10,7 +10,7 @@ use crate::lexer::{Token, strings::ParsedString};
 ///
 /// Runtime values are the result of evaluating expressions and the operands
 /// for operations during script execution.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RuntimeValue {
     /// The null value
     Null,

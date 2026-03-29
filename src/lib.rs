@@ -20,7 +20,10 @@
 
 #![feature(trait_alias)]
 
+pub mod compiler;
 pub mod erro;
+pub mod ir;
 pub mod lexer;
 pub mod parser;
 pub mod runtime;
+pub mod vm;

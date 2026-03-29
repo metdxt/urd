@@ -17,7 +17,7 @@ use logos::{Lexer, Logos};
 ///
 /// Interpolations can include a path to a variable and an optional format string.
 /// For example, in "{user.name:02}", the path is "user.name" and the format is "02".
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Interpolation {
     /// The dot-separated path to the variable (e.g., "user.name")
     pub path: String,
@@ -26,7 +26,7 @@ pub struct Interpolation {
 }
 
 /// Represents different parts that make up a parsed string literal.
-#[derive(Logos, Debug, Clone, PartialEq)]
+#[derive(Logos, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[logos(error = LexerError)]
 pub enum StringPart {
     /// Marker for the end of a string literal
@@ -49,7 +49,7 @@ pub enum StringPart {
 }
 
 /// String parsed from code
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParsedString(Vec<StringPart>);
 
 impl ParsedString {
@@ -66,6 +66,11 @@ impl ParsedString {
     /// New plain parsed string
     pub fn new_plain(s: &str) -> Self {
         ParsedString::new_from_parts(vec![StringPart::Literal(s.into())])
+    }
+
+    /// Returns a slice of all [`StringPart`]s that make up this string.
+    pub fn parts(&self) -> &[StringPart] {
+        &self.0
     }
 }
 
