@@ -486,11 +486,11 @@ fn dot_write_artifacts_for_inspection() {
         if let Some(stdin) = child.stdin.as_mut() {
             let _ = stdin.write_all(dot_src.as_bytes());
         }
-        if let Ok(out) = child.wait_with_output() {
-            if out.status.success() {
-                let _ = std::fs::write(&svg_path, &out.stdout);
-                println!("SVG artifact : {}", svg_path.display());
-            }
+        if let Ok(out) = child.wait_with_output()
+            && out.status.success()
+        {
+            let _ = std::fs::write(&svg_path, &out.stdout);
+            println!("SVG artifact : {}", svg_path.display());
         }
     }
 

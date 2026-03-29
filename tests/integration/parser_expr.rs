@@ -721,6 +721,7 @@ fn test_typed_let_int() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn test_typed_let_float() {
     let result = parse_test!(declaration(), "let pi: float = 3.14").unwrap();
     assert_eq!(
