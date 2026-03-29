@@ -305,6 +305,16 @@ pub enum AstContent {
     Jump {
         /// Label identifier to jump to
         label: String,
+        /// If true, push a call frame so we can `return` back here.
+        expects_return: bool,
+    },
+
+    /// Subroutine call with result binding: `let name = jump label and return`
+    LetCall {
+        /// Variable to store the return value in.
+        name: String,
+        /// Target label to jump to.
+        target: String,
     },
 
     /// Enum declaration: enum Foo { A, B, C }
@@ -610,8 +620,13 @@ impl Ast {
     }
 
     /// Create jump statement node
-    pub fn jump_stmt(label: String) -> Self {
-        Self::new(AstContent::Jump { label })
+    pub fn jump_stmt(label: String, expects_return: bool) -> Self {
+        Self::new(AstContent::Jump { label, expects_return })
+    }
+
+    /// Create a subroutine call with result binding node (`let name = jump target and return`)
+    pub fn let_call(name: String, target: String) -> Self {
+        Self::new(AstContent::LetCall { name, target })
     }
 
     /// Create an enum declaration node

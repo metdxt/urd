@@ -29,17 +29,45 @@ pub fn return_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         .boxed()
 }
 
-/// Parser for jump statement (jump ident or jump module.label)
+/// Parser for jump statement (`jump label` or `jump label and return`)
 pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
+    let label = select! {
+        // Local jump: `jump label_name`
+        Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
+        // Cross-module jump: `jump module_name.label_name`
+        // Encoded as "module_name.label_name" — the compiler detects the dot.
+        Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
+    };
+
     just(Token::Jump)
+        .ignore_then(label)
+        .then(
+            just(Token::And)
+                .ignore_then(just(Token::Return))
+                .or_not()
+                .map(|r| r.is_some()),
+        )
+        .map(|(label, expects_return)| Ast::jump_stmt(label, expects_return))
+        .boxed()
+}
+
+/// Parser for `let name = jump label and return` (subroutine call with result binding)
+pub fn let_call_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
+    let label = select! {
+        Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
+        Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
+    };
+
+    just(Token::Let)
         .ignore_then(select! {
-            // Local jump: `jump label_name`
             Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
-            // Cross-module jump: `jump module_name.label_name`
-            // Encoded as "module_name.label_name" — the compiler detects the dot.
-            Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
         })
-        .map(Ast::jump_stmt)
+        .then_ignore(just(Token::Assign))
+        .then_ignore(just(Token::Jump))
+        .then(label)
+        .then_ignore(just(Token::And))
+        .then_ignore(just(Token::Return))
+        .map(|(name, target)| Ast::let_call(name, target))
         .boxed()
 }
 
@@ -116,7 +144,10 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
         .then(decoratable.clone())
         .map(|(decorators, node)| node.with_decorators(decorators));
 
-    assignment()
+    // let_call_statement must come FIRST (before declaration) because it also
+    // starts with `let` but is a statement form that must not yield mid-expression.
+    let_call_statement()
+        .or(assignment())
         .or(declaration())
         .or(if_parser(block.clone()))
         .or(return_statement())
@@ -463,8 +494,13 @@ mod tests {
     fn jump_local_label_parses() {
         let result = parse_test!(jump_statement(), "jump my_label");
         let ast = result.expect("local jump should parse");
-        if let AstContent::Jump { label } = ast.content() {
+        if let AstContent::Jump {
+            label,
+            expects_return,
+        } = ast.content()
+        {
             assert_eq!(label, "my_label");
+            assert!(!expects_return, "plain jump should have expects_return=false");
         } else {
             panic!("Expected AstContent::Jump, got {:?}", ast.content());
         }
@@ -474,11 +510,67 @@ mod tests {
     fn jump_cross_module_encodes_dot_notation() {
         let result = parse_test!(jump_statement(), "jump mymod.scene_start");
         let ast = result.expect("cross-module jump should parse");
-        if let AstContent::Jump { label } = ast.content() {
+        if let AstContent::Jump {
+            label,
+            expects_return,
+        } = ast.content()
+        {
             // Dot-notation is the convention for cross-module jumps; the compiler splits on '.'
             assert_eq!(label, "mymod.scene_start");
+            assert!(!expects_return);
         } else {
             panic!("Expected AstContent::Jump, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn jump_and_return_parses() {
+        let src = "jump my_label and return";
+        let result = parse_test!(statement(), src);
+        assert!(result.is_ok(), "should parse: {result:?}");
+        let ast = result.unwrap();
+        match ast.content() {
+            AstContent::Jump {
+                label,
+                expects_return,
+            } => {
+                assert_eq!(label, "my_label");
+                assert!(*expects_return, "expects_return should be true");
+            }
+            other => panic!("expected Jump, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn let_call_parses() {
+        let src = "let result = jump my_label and return";
+        let result = parse_test!(statement(), src);
+        assert!(result.is_ok(), "should parse: {result:?}");
+        let ast = result.unwrap();
+        match ast.content() {
+            AstContent::LetCall { name, target } => {
+                assert_eq!(name, "result");
+                assert_eq!(target, "my_label");
+            }
+            other => panic!("expected LetCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jump_without_and_return_has_expects_return_false() {
+        let src = "jump plain_label";
+        let result = parse_test!(statement(), src);
+        assert!(result.is_ok(), "should parse: {result:?}");
+        let ast = result.unwrap();
+        match ast.content() {
+            AstContent::Jump {
+                label,
+                expects_return,
+            } => {
+                assert_eq!(label, "plain_label");
+                assert!(!expects_return, "expects_return should be false");
+            }
+            other => panic!("expected Jump, got {other:?}"),
         }
     }
 }

@@ -293,7 +293,10 @@ impl CompilerState {
             }
 
             // ── Jump ─────────────────────────────────────────────────────────
-            AstContent::Jump { label } => {
+            AstContent::Jump {
+                label,
+                expects_return,
+            } => {
                 // Check for cross-module dot-notation: "alias.label_name"
                 let target = if let Some(dot_pos) = label.find('.') {
                     let alias = &label[..dot_pos];
@@ -313,7 +316,45 @@ impl CompilerState {
                         .ok_or_else(|| CompilerError::UnknownLabel(label.clone()))?
                 };
 
-                let id = self.graph.push(IrNodeKind::Jump { target });
+                if *expects_return {
+                    // `jump label and return` — subroutine call without a binding.
+                    // Use an empty var name as the "discard return value" sentinel.
+                    let id = self.graph.push(IrNodeKind::LetCall {
+                        var: String::new(),
+                        target,
+                        next,
+                    });
+                    Ok(id)
+                } else {
+                    let id = self.graph.push(IrNodeKind::Jump { target });
+                    Ok(id)
+                }
+            }
+
+            // ── LetCall ───────────────────────────────────────────────────────
+            AstContent::LetCall { name, target } => {
+                // Check for cross-module dot-notation: "alias.label_name"
+                let target_id = if let Some(dot_pos) = target.find('.') {
+                    let alias = &target[..dot_pos];
+                    let label_name = &target[dot_pos + 1..];
+                    let namespaced = format!("{}::{}", alias, label_name);
+                    self.graph
+                        .labels
+                        .get(&namespaced)
+                        .copied()
+                        .ok_or_else(|| CompilerError::UnknownLabel(target.clone()))?
+                } else {
+                    self.label_placeholders
+                        .get(target)
+                        .copied()
+                        .ok_or_else(|| CompilerError::UnknownLabel(target.clone()))?
+                };
+
+                let id = self.graph.push(IrNodeKind::LetCall {
+                    var: name.clone(),
+                    target: target_id,
+                    next,
+                });
                 Ok(id)
             }
 
@@ -805,7 +846,7 @@ mod tests {
         let body2 = Ast::block(vec![inner_labeled2]);
         let decorator_ast2 =
             Ast::decorator_def("wrapper2".to_string(), EventConstraint::Any, vec![], body2);
-        let jump_ast = Ast::jump_stmt("inner_scene".to_string());
+        let jump_ast = Ast::jump_stmt("inner_scene".to_string(), false);
         let script_with_jump = Ast::block(vec![decorator_ast2, jump_ast]);
         let result = Compiler::compile(&script_with_jump);
         assert!(
@@ -934,7 +975,7 @@ mod tests {
         // jump scene1
         let labeled =
             Ast::labeled_block("scene1".to_string(), Ast::block(vec![decl("x", int(42))]));
-        let jump = Ast::jump_stmt("scene1".to_string());
+        let jump = Ast::jump_stmt("scene1".to_string(), false);
         let ast = Ast::block(vec![labeled, jump]);
 
         let graph = match Compiler::compile(&ast) {
@@ -1072,7 +1113,7 @@ mod tests {
     /// Jump to an undefined label returns a CompilerError::UnknownLabel.
     #[test]
     fn test_jump_unknown_label_error() {
-        let ast = Ast::jump_stmt("nonexistent".to_string());
+        let ast = Ast::jump_stmt("nonexistent".to_string(), false);
         let result = Compiler::compile(&ast);
         assert!(
             matches!(result, Err(CompilerError::UnknownLabel(ref l)) if l == "nonexistent"),
@@ -1138,7 +1179,7 @@ mod tests {
 
         let import_node = Ast::import("scenes.urd".to_string(), "scenes".to_string());
         // jump scenes.intro  → stored as Jump { label: "scenes.intro" }
-        let jump_node = Ast::jump_stmt("scenes.intro".to_string());
+        let jump_node = Ast::jump_stmt("scenes.intro".to_string(), false);
         let main_ast = Ast::block(vec![import_node, jump_node]);
 
         let graph =

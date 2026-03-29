@@ -270,6 +270,8 @@ pub struct CallFrame {
     /// The scope depth at the time the frame was pushed (used by Return to
     /// unwind extra scopes).
     pub scope_depth: usize,
+    /// If `Some(name)`, store the return value in this variable when returning.
+    pub assign_to_var: Option<String>,
 }
 
 // ─── DecoratorRegistry ────────────────────────────────────────────────────────
@@ -500,6 +502,9 @@ pub fn eval_expr(
         )),
         AstContent::Jump { .. } => Err(VmError::InvalidExpression(
             "Jump cannot appear in expression context".to_string(),
+        )),
+        AstContent::LetCall { .. } => Err(VmError::InvalidExpression(
+            "LetCall cannot appear in expression context".to_string(),
         )),
         AstContent::EnumDecl { .. } => Err(VmError::InvalidExpression(
             "EnumDecl cannot appear in expression context".to_string(),
@@ -1202,22 +1207,76 @@ impl Vm {
 
                 // ── Return ───────────────────────────────────────────────────
                 IrNodeKind::Return { value } => {
-                    if let Some(val_ast) = value {
-                        // Evaluate return value (discarded for now).
-                        if let Err(e) = eval_expr(val_ast, &self.env) {
-                            return Some(Err(e));
+                    // Evaluate return value first (before popping the frame).
+                    let return_val = if let Some(val_ast) = value {
+                        match eval_expr(val_ast, &self.env) {
+                            Ok(v) => Some(v),
+                            Err(e) => return Some(Err(e)),
                         }
-                    }
+                    } else {
+                        None
+                    };
+
                     match self.call_stack.pop() {
                         Some(frame) => {
                             // Unwind any extra scopes pushed since the call.
                             while self.env.depth() > frame.scope_depth {
                                 self.env.pop_scope();
                             }
+                            // Store return value if the call frame has a binding.
+                            if let (Some(var_name), Some(val)) =
+                                (&frame.assign_to_var, return_val)
+                            {
+                                if let Err(e) =
+                                    self.env.set(var_name, val, &DeclKind::Variable)
+                                {
+                                    return Some(Err(e));
+                                }
+                            }
                             self.cursor = frame.return_cursor;
                         }
                         None => return None, // No frame → script ends.
                     }
+                }
+
+                // ── Subroutine call (with optional result binding) ────────────
+                //
+                // We bypass the target's EnterScope node to avoid a double frame
+                // on the call stack (EnterScope always pushes its own frame).
+                // Instead, LetCall:
+                //   1. Reads body_entry directly from the EnterScope node.
+                //   2. Pushes its own scope + frame (with return_cursor = next).
+                //   3. Jumps to body_entry.
+                //
+                // ExitScope (on fall-through) and Return (on explicit return) both
+                // pop the LetCall frame and land at `next` (the call-site continuation).
+                IrNodeKind::LetCall { var, target, next } => {
+                    let var_name = var.clone();
+                    let target_id = *target;
+                    let next_id = *next;
+
+                    // Resolve body_entry: if the target is an EnterScope node,
+                    // jump past it into the body directly.
+                    let body_entry =
+                        match self.graph.nodes.get(target_id.0 as usize).map(|n| &n.kind) {
+                            Some(IrNodeKind::EnterScope { next: body, .. }) => *body,
+                            _ => target_id, // fallback: jump to target as-is
+                        };
+
+                    let assign = if var_name.is_empty() {
+                        None
+                    } else {
+                        Some(var_name)
+                    };
+
+                    // Push a scope to match the eventual ExitScope's pop.
+                    self.env.push_scope();
+                    self.call_stack.push(CallFrame {
+                        return_cursor: next_id,
+                        scope_depth: self.env.depth() - 1,
+                        assign_to_var: assign,
+                    });
+                    self.cursor = body_entry;
                 }
 
                 // ── Enter labeled-block scope ────────────────────────────────
@@ -1233,19 +1292,28 @@ impl Vm {
                     self.call_stack.push(CallFrame {
                         return_cursor,
                         scope_depth: self.env.depth() - 1,
+                        assign_to_var: None,
                     });
                     self.cursor = body_start;
                 }
 
                 // ── Exit labeled-block scope ─────────────────────────────────
-                IrNodeKind::ExitScope { next, .. } => {
-                    let next_id = *next;
+                IrNodeKind::ExitScope { .. } => {
                     self.env.pop_scope();
-                    // Pop the matching call frame (pushed by EnterScope on
-                    // normal fall-through; Return would have already consumed
-                    // it and jumped past ExitScope, so we only reach here in
-                    // the fall-through / normal-exit case).
-                    self.call_stack.pop();
+                    // Pop the matching call frame (pushed by either EnterScope
+                    // on normal fall-through, or LetCall on a subroutine call).
+                    // Use the frame's `return_cursor` rather than ExitScope's
+                    // `next` field so that LetCall fall-throughs land at the
+                    // call-site continuation (LetCall.next), not back at the
+                    // LetCall node itself.
+                    //
+                    // For plain EnterScope fall-through, frame.return_cursor ==
+                    // ExitScope.next (both set by find_exit_scope_next), so
+                    // behaviour is unchanged.
+                    let next_id = match self.call_stack.pop() {
+                        Some(frame) => frame.return_cursor,
+                        None => NODE_END,
+                    };
                     self.cursor = next_id;
                 }
 
@@ -1554,6 +1622,7 @@ fn exec_block_sync(ast: &crate::parser::ast::Ast, env: &mut Environment) -> Resu
         | AC::MenuOption { .. }
         | AC::LabeledBlock { .. }
         | AC::Jump { .. }
+        | AC::LetCall { .. }
         | AC::Return { .. }
         | AC::DecoratorDef { .. }
         | AC::Match { .. }
@@ -1896,7 +1965,7 @@ mod tests {
         let lines = Ast::expr_list(vec![str_lit("Jumped here!")]);
         let dialogue = Ast::dialogue(speakers, lines);
         let labeled = Ast::labeled_block("scene1".to_string(), Ast::block(vec![dialogue]));
-        let jump = Ast::jump_stmt("scene1".to_string());
+        let jump = Ast::jump_stmt("scene1".to_string(), false);
         // Compiler block is compiled right-to-left; jump comes first in source.
         let ast = Ast::block(vec![jump, labeled]);
 
@@ -2564,5 +2633,150 @@ mod tests {
             }
             other => panic!("expected Dialogue, got {:?}", other),
         }
+    }
+
+    /// `jump label and return` (compiled to LetCall with empty var) pushes a
+    /// call frame, executes the label body, and after `return` resumes at the
+    /// continuation after the call site.
+    #[test]
+    fn test_subroutine_call_and_return() {
+        // Execution order in source (mirrors a real Urd script):
+        //
+        //   jump greet and return      ← entry: LetCall
+        //   Alice: "After call"        ← continuation after return
+        //   return                     ← explicit end so VM doesn't fall into greet
+        //   label greet {
+        //       Alice: "Hello from greet"
+        //       return
+        //   }
+        //
+        // AST block is compiled right-to-left, so `call_jump` becomes the
+        // graph entry and `greet_label` is at the tail (never reached
+        // sequentially from the main flow).
+        let speakers1 = Ast::expr_list(vec![str_lit("Alice")]);
+        let lines1 = Ast::expr_list(vec![str_lit("Hello from greet")]);
+        let greet_dialogue = Ast::dialogue(speakers1, lines1);
+        let greet_body = Ast::block(vec![greet_dialogue, Ast::return_stmt(None)]);
+        let greet_label = Ast::labeled_block("greet".to_string(), greet_body);
+
+        // jump greet and return  (expects_return = true → compiles to LetCall)
+        let call_jump = Ast::jump_stmt("greet".to_string(), true);
+
+        let speakers2 = Ast::expr_list(vec![str_lit("Alice")]);
+        let lines2 = Ast::expr_list(vec![str_lit("After call")]);
+        let after_dialogue = Ast::dialogue(speakers2, lines2);
+
+        // Explicit return ends the main flow so the VM doesn't fall through
+        // into the greet label definition.
+        let main_return = Ast::return_stmt(None);
+
+        // Layout: [call_jump → after_dialogue → main_return → greet_label]
+        // Entry = call_jump (leftmost in vec = first compiled = graph entry).
+        let ast = Ast::block(vec![call_jump, after_dialogue, main_return, greet_label]);
+        let mut vm = build_vm(ast);
+
+        // First event: dialogue emitted from inside greet.
+        let ev1 = vm.next(None).expect("expected first event").expect("no error");
+        match ev1 {
+            Event::Dialogue { lines, .. } => match &lines[0] {
+                RuntimeValue::Str(ps) => assert_eq!(
+                    ps.to_string(),
+                    "Hello from greet",
+                    "first event should be the greet dialogue"
+                ),
+                other => panic!("expected Str, got {:?}", other),
+            },
+            other => panic!("expected Dialogue for greet, got {:?}", other),
+        }
+
+        // Second event: the continuation dialogue after the call returns.
+        let ev2 = vm.next(None).expect("expected second event").expect("no error");
+        match ev2 {
+            Event::Dialogue { lines, .. } => match &lines[0] {
+                RuntimeValue::Str(ps) => assert_eq!(
+                    ps.to_string(),
+                    "After call",
+                    "second event should be the post-call dialogue"
+                ),
+                other => panic!("expected Str, got {:?}", other),
+            },
+            other => panic!("expected Dialogue after return, got {:?}", other),
+        }
+
+        assert!(vm.next(None).is_none(), "script should end after second dialogue");
+    }
+
+    /// `let result = jump double and return` binds the subroutine's return
+    /// value to `result` and execution continues after the call site.
+    #[test]
+    fn test_let_call_captures_return_value() {
+        // label double {
+        //     return 42
+        // }
+        // let result = jump double and return
+        // Alice: result
+        let double_body = Ast::block(vec![Ast::return_stmt(Some(int(42)))]);
+        let double_label = Ast::labeled_block("double".to_string(), double_body);
+
+        let let_call = Ast::let_call("result".to_string(), "double".to_string());
+
+        let speakers = Ast::expr_list(vec![str_lit("Bot")]);
+        let lines = Ast::expr_list(vec![ident("result")]);
+        let dialogue = Ast::dialogue(speakers, lines);
+
+        // Layout: [let_call → dialogue → double_label]
+        // Entry = let_call (leftmost). The explicit return inside double means
+        // the VM never falls sequentially into double_label from dialogue.
+        let ast = Ast::block(vec![let_call, dialogue, double_label]);
+        let mut vm = build_vm(ast);
+
+        let ev = vm.next(None).expect("expected event").expect("no error");
+        match ev {
+            Event::Dialogue { lines, .. } => {
+                assert_eq!(
+                    lines,
+                    vec![RuntimeValue::Int(42)],
+                    "result should be the return value 42"
+                );
+            }
+            other => panic!("expected Dialogue, got {:?}", other),
+        }
+
+        assert!(vm.next(None).is_none(), "script should end after dialogue");
+    }
+
+    /// A plain `jump label` (expects_return=false) compiles to
+    /// `IrNodeKind::Jump`, never to `IrNodeKind::LetCall`.
+    ///
+    /// This is the compiler-level invariant that guarantees no LetCall frame
+    /// is ever pushed at runtime for a plain unconditional jump.
+    #[test]
+    fn test_jump_without_return_does_not_push_frame() {
+        // label dest { }
+        // jump dest          ← plain jump, expects_return = false
+        let dest_label = Ast::labeled_block("dest".to_string(), Ast::block(vec![]));
+        let jump = Ast::jump_stmt("dest".to_string(), false);
+        let ast = Ast::block(vec![dest_label, jump]);
+
+        let graph = Compiler::compile(&ast).expect("compile failed");
+
+        // Plain jump must emit IrNodeKind::Jump, never LetCall.
+        let has_let_call = graph
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, IrNodeKind::LetCall { .. }));
+        assert!(
+            !has_let_call,
+            "plain `jump label` must not emit a LetCall node; graph = {graph:?}"
+        );
+
+        let has_jump = graph
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, IrNodeKind::Jump { .. }));
+        assert!(
+            has_jump,
+            "plain `jump label` must emit a Jump node; graph = {graph:?}"
+        );
     }
 }

@@ -14,8 +14,12 @@
 //! ## Submodules
 //!
 //! - [`dot`]: Graphviz DOT renderer for [`IrGraph`].
+//! - [`sequence`]: Mermaid sequence diagram renderer for [`IrGraph`].
 
+pub mod analysis;
 pub mod dot;
+pub mod mermaid;
+pub mod sequence;
 
 use std::collections::HashMap;
 
@@ -206,6 +210,21 @@ pub enum IrNodeKind {
         target: NodeId,
     },
 
+    /// Subroutine call with result binding.
+    ///
+    /// Pushes a [`CallFrame`][crate::vm::CallFrame] with `assign_to_var = Some(var)` (or `None`
+    /// when `var` is empty) and jumps to `target`. When a `Return` pops the
+    /// frame, the return value (if any) is stored in `var`.
+    LetCall {
+        /// Variable name to store the return value in.
+        /// An empty string means "discard the return value".
+        var: String,
+        /// The target entry [`NodeId`].
+        target: NodeId,
+        /// The node to resume at after the callee returns.
+        next: NodeId,
+    },
+
     /// Return from the current script (or sub-routine).
     Return {
         /// Optional return value expression.
@@ -361,6 +380,10 @@ fn remap_node_kind(kind: &mut IrNodeKind, offset: u32) {
             *default = default.map(|id| shift(id, offset));
         }
         IrNodeKind::Jump { target } => *target = shift(*target, offset),
+        IrNodeKind::LetCall { target, next, .. } => {
+            *target = shift(*target, offset);
+            *next = shift(*next, offset);
+        }
         IrNodeKind::Return { .. } => {}
         IrNodeKind::EnterScope { next, .. } => *next = shift(*next, offset),
         IrNodeKind::ExitScope { next, .. } => *next = shift(*next, offset),

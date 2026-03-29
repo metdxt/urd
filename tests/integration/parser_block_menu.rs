@@ -557,5 +557,5 @@ fn test_jump_ast_shape() {
         panic!("expected Block");
     };
     assert_eq!(stmts.len(), 1);
-    assert!(matches!(stmts[0].content(), AstContent::Jump { label } if label == "somewhere"));
+    assert!(matches!(stmts[0].content(), AstContent::Jump { label, .. } if label == "somewhere"));
 }

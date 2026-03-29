@@ -20,3 +20,9 @@ mod parser_decorator_def;
 
 #[path = "integration/import.rs"]
 mod import;
+
+#[path = "integration/mermaid_render.rs"]
+mod mermaid_render;
+
+#[path = "integration/sequence.rs"]
+mod sequence;

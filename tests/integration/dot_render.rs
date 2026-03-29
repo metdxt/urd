@@ -25,8 +25,10 @@ use urd::{compiler::Compiler, parse_test, parser::block::script};
 /// - `menu` with three options and a decorator (`@important`)
 /// - `match` with value patterns and a wildcard arm
 /// - `let` declarations and `=` assignments
-/// - `jump` between labels
-/// - `return` to exit early
+/// - `jump` between labels (fire-and-forget)
+/// - `jump … and return` — subroutine call, discard result
+/// - `let x = jump … and return` — subroutine call, capture return value
+/// - `return` to exit early or yield a value back to the caller
 const EXAMPLE_SCRIPT: &str = r#"
 global reputation = 0
 const max_health = 100
@@ -54,6 +56,9 @@ label start {
     } else {
         <Innkeeper>: "What do you want?"
     }
+
+    let rank = jump compute_rank and return
+    jump log_visit and return
 
     @important
     menu {
@@ -114,6 +119,21 @@ label notice_board {
 
     jump start
 }
+
+label compute_rank {
+    if reputation > 10 {
+        return "hero"
+    }
+    if reputation < 0 {
+        return "villain"
+    }
+    return "neutral"
+}
+
+label log_visit {
+    <Narrator>: "Your visit has been recorded in the ledger."
+    return
+}
 "#;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -139,14 +159,14 @@ fn example_script_compiles() {
 #[test]
 fn compiled_graph_has_expected_label_count() {
     let graph = compile_example();
-    // start, talk, notice_board
+    // start, talk, notice_board, compute_rank, log_visit
     assert_eq!(
         graph.labels.len(),
-        3,
-        "expected 3 named labels, got {:?}",
+        5,
+        "expected 5 named labels, got {:?}",
         graph.labels.keys().collect::<Vec<_>>()
     );
-    for name in ["start", "talk", "notice_board"] {
+    for name in ["start", "talk", "notice_board", "compute_rank", "log_visit"] {
         assert!(
             graph.labels.contains_key(name),
             "label '{name}' should be present in the compiled graph"
@@ -415,6 +435,63 @@ fn dot_has_return_node() {
         dot.contains("mistyrose"),
         "Return node must use mistyrose fill"
     );
+}
+
+#[test]
+fn dot_has_let_call_nodes() {
+    let dot = compile_example().to_dot();
+    // `let rank = jump compute_rank and return` compiles to an IrNodeKind::LetCall
+    // node whose label in the DOT graph reads "⤑ compute_rank\n→ rank".
+    assert!(
+        dot.contains("⤑ "),
+        "DOT must contain at least one LetCall node with a '⤑ ' label prefix"
+    );
+    assert!(
+        dot.contains("→ rank"),
+        "DOT must show the bound variable name 'rank' in the LetCall node label"
+    );
+    // Both the binding and the discard-result form must reference their callees.
+    assert!(
+        dot.contains("compute_rank"),
+        "DOT must reference the compute_rank subroutine in a LetCall node"
+    );
+    assert!(
+        dot.contains("log_visit"),
+        "DOT must reference the log_visit subroutine (discard-result call)"
+    );
+}
+
+#[test]
+fn dot_has_subroutine_call_edges() {
+    let dot = compile_example().to_dot();
+    // LetCall emits two directed edges per call site:
+    //   • a dashed 'call' edge  → the callee's EnterScope
+    //   • a solid  'ret'  edge  → the continuation node after the call returns
+    assert!(
+        dot.contains(r#"label="call""#),
+        "DOT must contain a 'call' labelled edge from each LetCall node to its callee"
+    );
+    assert!(
+        dot.contains(r#"label="ret""#),
+        "DOT must contain a 'ret' labelled edge from each LetCall node to its continuation"
+    );
+}
+
+#[test]
+fn dot_subroutine_labels_produce_clusters() {
+    let dot = compile_example().to_dot();
+    // Subroutine labels compile to the same LabeledBlock IR as ordinary labels,
+    // so they must also appear as named cluster subgraphs with EnterScope markers.
+    for label in ["compute_rank", "log_visit"] {
+        assert!(
+            dot.contains(&format!("subgraph cluster_{label}")),
+            "DOT must contain a cluster subgraph for subroutine label '{label}'"
+        );
+        assert!(
+            dot.contains(&format!("▶ {label}")),
+            "DOT must contain an EnterScope (▶) marker node for subroutine label '{label}'"
+        );
+    }
 }
 
 // ── Graphviz live validation ──────────────────────────────────────────────────

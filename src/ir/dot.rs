@@ -19,7 +19,11 @@
 //!   layout ranking, and point directly at the target `EnterScope` node.
 //!   (`compound=true` / `lhead` are intentionally omitted — they conflict
 //!   with `splines=ortho` and force Graphviz into bezier routing.)
-//! * `return` always emits an edge to the `__end__` sink.
+//! * `return` inside a subroutine label (targeted by a `LetCall` node) emits
+//!   dashed `↩` back-edges to each caller's ret continuation rather than the
+//!   `__end__` sink, making the real control flow visible.  A bare top-level
+//!   `return` (one whose owning label is never targeted by a `LetCall`) still
+//!   goes to `__end__`.
 //! * `dialogue` nodes display the actual speaker(s) and line text extracted
 //!   from the AST at render time (best-effort; falls back to `⟨expr⟩`).
 //! * Colour legend: cyan = assign/eval, yellow = branch/match,
@@ -37,12 +41,13 @@
 //! # }
 //! ```
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::parser::ast::{AstContent, DeclKind, MatchPattern};
 use crate::runtime::value::RuntimeValue;
 
+use super::analysis::{self, follow_nops};
 use super::{IrGraph, IrNodeKind, NODE_END, NodeId};
 
 // ─── Public surface ──────────────────────────────────────────────────────────
@@ -64,8 +69,8 @@ pub fn render_dot(graph: &IrGraph) -> String {
     let mut has_end_edge = false;
 
     // ── Analysis passes ──────────────────────────────────────────────────────
-    let reachable = reachable_nodes(graph);
-    let clusters = compute_clusters(graph, &reachable);
+    let reachable = analysis::reachable_nodes(graph);
+    let clusters = analysis::compute_clusters(graph, &reachable);
 
     // Sort cluster names by entry NodeId (ascending = compilation order).
     // This encourages Graphviz to place the first-written label at the top.
@@ -74,7 +79,7 @@ pub fn render_dot(graph: &IrGraph) -> String {
 
     // The entry cluster is the one whose entry NodeId is reached first from
     // graph.entry along the linear prologue (assignments, enums, etc.).
-    let entry_cluster = entry_cluster_name(graph);
+    let entry_cluster = analysis::entry_cluster_name(graph);
 
     // Reverse map: label entry NodeId → label name, used to display human-readable
     // jump targets instead of raw NodeId numbers.
@@ -83,6 +88,16 @@ pub fn render_dot(graph: &IrGraph) -> String {
         .iter()
         .map(|(name, &id)| (id, name.clone()))
         .collect();
+
+    // For every LetCall site, record: callee entry NodeId → list of ret continuation
+    // NodeIds (the `next` field, after Nop-following).  This lets Return nodes inside
+    // subroutines draw back-edges to their actual caller continuations instead of the
+    // misleading __end__ sink.
+    let callee_to_rets = analysis::callee_to_rets(graph);
+
+    // Inverted cluster map: NodeId → owning label name.  Used when routing Return
+    // edges so we know which subroutine a given Return node belongs to.
+    let node_to_cluster = analysis::node_to_cluster(&clusters);
 
     // ── DOT header ───────────────────────────────────────────────────────────
     writeln!(out, "digraph urd_script {{").ok();
@@ -262,6 +277,40 @@ pub fn render_dot(graph: &IrGraph) -> String {
                 }
             }
 
+            // ── LetCall: dashed edge to callee, solid edge to return continuation ──
+            IrNodeKind::LetCall { target, next, .. } => {
+                // Dashed edge to the call target (the subroutine entry).
+                if *target == NODE_END {
+                    has_end_edge = true;
+                    writeln!(
+                        out,
+                        "    {n} -> __end__ [style=dashed, color=gray40, constraint=false];"
+                    )
+                    .ok();
+                } else {
+                    let dst = nid(*target);
+                    writeln!(
+                        out,
+                        "    {n} -> {dst} [style=dashed, color=gray40, constraint=false, label=\"call\"];"
+                    )
+                    .ok();
+                }
+                // Dashed edge to the return continuation.
+                let ret = follow_nops(graph, *next);
+                let ret_dst_str = if ret == NODE_END {
+                    has_end_edge = true;
+                    "__end__".to_string()
+                } else {
+                    nid(ret)
+                };
+                writeln!(
+                    out,
+                    "    {n} -> {ret_dst_str} \
+                     [style=dashed, color=darkslateblue, label=\"ret\"];",
+                )
+                .ok();
+            }
+
             // ── Choice fan-out ────────────────────────────────────────────
             IrNodeKind::Choice { options, .. } => {
                 for (i, opt) in options.iter().enumerate() {
@@ -279,10 +328,47 @@ pub fn render_dot(graph: &IrGraph) -> String {
                 // Choice has no `next` — control flows only via chosen option.
             }
 
-            // ── Return: always terminates to __end__ ──────────────────────
+            // ── Return ────────────────────────────────────────────────────
+            // If this Return lives inside a subroutine label (i.e. some LetCall
+            // node targets that label), draw dashed ↩ back-edges to each
+            // caller's ret continuation so the diagram shows the actual resume
+            // point.  A bare top-level return (no LetCall caller) still goes to
+            // __end__ as before.
             IrNodeKind::Return { .. } => {
-                has_end_edge = true;
-                writeln!(out, "    {n} -> __end__ [style=dashed, color=gray40];").ok();
+                let caller_rets: Option<&Vec<NodeId>> = node_to_cluster
+                    .get(&node.id)
+                    .and_then(|label_name| graph.labels.get(*label_name))
+                    .and_then(|entry_id| callee_to_rets.get(entry_id));
+
+                match caller_rets {
+                    Some(ret_nodes) if !ret_nodes.is_empty() => {
+                        for &ret in ret_nodes {
+                            if ret == NODE_END {
+                                has_end_edge = true;
+                                writeln!(
+                                    out,
+                                    "    {n} -> __end__ \
+                                     [style=dashed, color=darkslateblue, \
+                                     constraint=false, label=\"↩\"];",
+                                )
+                                .ok();
+                            } else {
+                                let dst = nid(follow_nops(graph, ret));
+                                writeln!(
+                                    out,
+                                    "    {n} -> {dst} \
+                                     [style=dashed, color=darkslateblue, \
+                                     constraint=false, label=\"↩\"];",
+                                )
+                                .ok();
+                            }
+                        }
+                    }
+                    _ => {
+                        has_end_edge = true;
+                        writeln!(out, "    {n} -> __end__ [style=dashed, color=gray40];").ok();
+                    }
+                }
             }
 
             // ── Terminals with no outgoing edges ──────────────────────────
@@ -307,229 +393,6 @@ pub fn render_dot(graph: &IrGraph) -> String {
     writeln!(out).ok();
     writeln!(out, "}}").ok();
     out
-}
-
-// ─── Analysis helpers ────────────────────────────────────────────────────────
-
-/// Returns the set of all [`NodeId`]s reachable from [`IrGraph::entry`].
-///
-/// Follows every edge kind — including [`IrNodeKind::Jump`] targets — so that
-/// only genuinely unreachable nodes (e.g. dead `ExitScope` left over when all
-/// paths use `jump`/`return`) are excluded.
-fn reachable_nodes(graph: &IrGraph) -> HashSet<NodeId> {
-    let mut reachable: HashSet<NodeId> = HashSet::new();
-    let mut queue: VecDeque<NodeId> = VecDeque::new();
-
-    if graph.entry != NODE_END {
-        queue.push_back(graph.entry);
-    }
-
-    while let Some(id) = queue.pop_front() {
-        if id == NODE_END || id.0 as usize >= graph.nodes.len() {
-            continue;
-        }
-        if !reachable.insert(id) {
-            continue; // already visited
-        }
-
-        match &graph.nodes[id.0 as usize].kind {
-            IrNodeKind::End | IrNodeKind::Return { .. } => {}
-
-            IrNodeKind::Jump { target } => {
-                queue.push_back(*target);
-            }
-
-            IrNodeKind::Assign { next, .. }
-            | IrNodeKind::Eval { next, .. }
-            | IrNodeKind::EnterScope { next, .. }
-            | IrNodeKind::ExitScope { next, .. }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. }
-            | IrNodeKind::Nop { next }
-            | IrNodeKind::Dialogue { next, .. } => {
-                queue.push_back(*next);
-            }
-
-            IrNodeKind::Branch {
-                then_node,
-                else_node,
-                ..
-            } => {
-                queue.push_back(*then_node);
-                queue.push_back(*else_node);
-            }
-
-            IrNodeKind::Switch { arms, default, .. } => {
-                for arm in arms {
-                    queue.push_back(arm.target);
-                }
-                if let Some(d) = default {
-                    queue.push_back(*d);
-                }
-            }
-
-            IrNodeKind::Choice { options, .. } => {
-                for opt in options {
-                    queue.push_back(opt.entry);
-                }
-            }
-        }
-    }
-
-    reachable
-}
-
-/// Follows a chain of consecutive [`IrNodeKind::Nop`] nodes and returns the
-/// first non-`Nop` [`NodeId`] (or [`NODE_END`] if the chain ends there).
-///
-/// Used to collapse compiler-generated merge points so they never appear
-/// in the rendered graph.
-fn follow_nops(graph: &IrGraph, mut id: NodeId) -> NodeId {
-    // Guard against pathological cycles (should never happen, but be safe).
-    for _ in 0..graph.nodes.len() + 1 {
-        if id == NODE_END || id.0 as usize >= graph.nodes.len() {
-            break;
-        }
-        match &graph.nodes[id.0 as usize].kind {
-            IrNodeKind::Nop { next } => id = *next,
-            _ => break,
-        }
-    }
-    id
-}
-
-/// Computes which [`NodeId`]s belong to each named label scope.
-///
-/// For each label, performs a BFS from its [`IrNodeKind::EnterScope`] node
-/// while respecting these boundaries:
-///
-/// - **Dead nodes** (not in `reachable`) are excluded.
-/// - **`Nop` nodes** are followed transparently but never added to the set
-///   (they are collapsed at render time).
-/// - **Other labels' entry nodes** are not entered.
-/// - **`Jump`** targets are not followed (a `Jump` belongs to the current
-///   cluster, but its destination belongs to another).
-/// - **`ExitScope`** for this label stops recursion (exit marker is included,
-///   but its continuation is outside the cluster).
-fn compute_clusters(
-    graph: &IrGraph,
-    reachable: &HashSet<NodeId>,
-) -> HashMap<String, HashSet<NodeId>> {
-    let all_entries: HashSet<NodeId> = graph.labels.values().copied().collect();
-    let mut clusters: HashMap<String, HashSet<NodeId>> = HashMap::new();
-
-    for (label_name, &entry_id) in &graph.labels {
-        let mut members: HashSet<NodeId> = HashSet::new();
-        let mut queue: VecDeque<NodeId> = VecDeque::new();
-        queue.push_back(entry_id);
-
-        while let Some(node_id) = queue.pop_front() {
-            if node_id == NODE_END || node_id.0 as usize >= graph.nodes.len() {
-                continue;
-            }
-            if members.contains(&node_id) {
-                continue;
-            }
-            if !reachable.contains(&node_id) {
-                continue; // skip dead nodes
-            }
-            // Do not enter a different label's cluster.
-            if all_entries.contains(&node_id) && node_id != entry_id {
-                continue;
-            }
-
-            let node = &graph.nodes[node_id.0 as usize];
-
-            // Nop nodes are visited (to reach their successors) but not added.
-            if !matches!(&node.kind, IrNodeKind::Nop { .. }) {
-                members.insert(node_id);
-            }
-
-            match &node.kind {
-                // Terminals — no successors.
-                IrNodeKind::Jump { .. } | IrNodeKind::Return { .. } | IrNodeKind::End => {}
-
-                // Our own exit scope: include it, but do not recurse beyond.
-                IrNodeKind::ExitScope { label, .. } if label == label_name => {}
-
-                IrNodeKind::Assign { next, .. }
-                | IrNodeKind::Eval { next, .. }
-                | IrNodeKind::EnterScope { next, .. }
-                | IrNodeKind::ExitScope { next, .. }
-                | IrNodeKind::DefineEnum { next, .. }
-                | IrNodeKind::DefineScriptDecorator { next, .. }
-                | IrNodeKind::Nop { next }
-                | IrNodeKind::Dialogue { next, .. } => {
-                    queue.push_back(*next);
-                }
-
-                IrNodeKind::Branch {
-                    then_node,
-                    else_node,
-                    ..
-                } => {
-                    queue.push_back(*then_node);
-                    queue.push_back(*else_node);
-                }
-
-                IrNodeKind::Switch { arms, default, .. } => {
-                    for arm in arms {
-                        queue.push_back(arm.target);
-                    }
-                    if let Some(d) = default {
-                        queue.push_back(*d);
-                    }
-                }
-
-                IrNodeKind::Choice { options, .. } => {
-                    for opt in options {
-                        queue.push_back(opt.entry);
-                    }
-                }
-            }
-        }
-
-        clusters.insert(label_name.clone(), members);
-    }
-
-    clusters
-}
-
-/// Finds the name of the first label cluster encountered when following the
-/// linear prologue (assignments, enums, nops) from [`IrGraph::entry`].
-///
-/// This is used to give the "main" entry cluster a thicker border.
-fn entry_cluster_name(graph: &IrGraph) -> Option<String> {
-    let label_by_entry: HashMap<NodeId, &str> = graph
-        .labels
-        .iter()
-        .map(|(name, &id)| (id, name.as_str()))
-        .collect();
-
-    let mut current = graph.entry;
-    let mut visited: HashSet<NodeId> = HashSet::new();
-
-    loop {
-        if current == NODE_END || current.0 as usize >= graph.nodes.len() {
-            return None;
-        }
-        if !visited.insert(current) {
-            return None;
-        }
-        if let Some(name) = label_by_entry.get(&current) {
-            return Some((*name).to_string());
-        }
-        match &graph.nodes[current.0 as usize].kind {
-            IrNodeKind::Assign { next, .. }
-            | IrNodeKind::Eval { next, .. }
-            | IrNodeKind::Nop { next }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. } => {
-                current = *next;
-            }
-            _ => return None,
-        }
-    }
 }
 
 // ─── Visual attributes ───────────────────────────────────────────────────────
@@ -566,6 +429,19 @@ fn node_attrs(
                 .map(|name| format!("jump → {name}"))
                 .unwrap_or_else(|| format!("jump → {}", nid(*target)));
             ("rarrow", "wheat", dest)
+        }
+
+        IrNodeKind::LetCall { var, target, .. } => {
+            let callee = label_by_entry
+                .get(target)
+                .cloned()
+                .unwrap_or_else(|| nid(*target));
+            let label = if var.is_empty() {
+                format!("⤑ {callee}")
+            } else {
+                format!("⤑ {callee}\n→ {var}")
+            };
+            ("rarrow", "wheat", label)
         }
 
         IrNodeKind::Return { value } => (
@@ -853,8 +729,11 @@ mod tests {
     #![allow(clippy::expect_used)]
     #![allow(clippy::unwrap_used)]
 
+    use std::collections::HashMap;
+
     use super::*;
     use crate::compiler::Compiler;
+    use crate::ir::analysis;
     use crate::lexer::strings::ParsedString;
     use crate::parser::ast::{Ast, DeclKind};
     use crate::runtime::value::RuntimeValue;
@@ -936,7 +815,7 @@ mod tests {
         let dot = compile(Ast::block(vec![
             Ast::labeled_block(
                 "scene_a".into(),
-                Ast::block(vec![Ast::jump_stmt("scene_b".into())]),
+                Ast::block(vec![Ast::jump_stmt("scene_b".into(), false)]),
             ),
             Ast::labeled_block(
                 "scene_b".into(),
@@ -964,7 +843,7 @@ mod tests {
         let dot = compile(Ast::block(vec![
             Ast::labeled_block(
                 "scene_a".into(),
-                Ast::block(vec![Ast::jump_stmt("scene_b".into())]),
+                Ast::block(vec![Ast::jump_stmt("scene_b".into(), false)]),
             ),
             Ast::labeled_block(
                 "scene_b".into(),
@@ -994,7 +873,7 @@ mod tests {
         let dot = compile(Ast::block(vec![
             Ast::labeled_block(
                 "first".into(),
-                Ast::block(vec![Ast::jump_stmt("second".into())]),
+                Ast::block(vec![Ast::jump_stmt("second".into(), false)]),
             ),
             Ast::labeled_block(
                 "second".into(),
@@ -1073,7 +952,7 @@ mod tests {
         // A label block where all paths use `jump` leaves ExitScope unreachable.
         let dot = compile(Ast::block(vec![Ast::labeled_block(
             "loop_lbl".into(),
-            Ast::block(vec![Ast::jump_stmt("loop_lbl".into())]),
+            Ast::block(vec![Ast::jump_stmt("loop_lbl".into(), false)]),
         )]))
         .to_dot();
         // EnterScope IS reachable (from entry and from jump).
@@ -1115,7 +994,7 @@ mod tests {
     fn test_jump_edge_points_directly_at_enter_scope() {
         let dot = compile(Ast::block(vec![Ast::labeled_block(
             "loop_top".into(),
-            Ast::block(vec![Ast::jump_stmt("loop_top".into())]),
+            Ast::block(vec![Ast::jump_stmt("loop_top".into(), false)]),
         )]))
         .to_dot();
         // compound=true / lhead are disabled so splines=ortho works everywhere.
@@ -1141,7 +1020,7 @@ mod tests {
                     Ast::value(RuntimeValue::Int(0)),
                 )]),
             ),
-            Ast::jump_stmt("target".into()),
+            Ast::jump_stmt("target".into(), false),
         ]))
         .to_dot();
         assert!(dot.contains("style=dashed"), "jump edge must be dashed");
@@ -1394,17 +1273,17 @@ mod tests {
             labels: HashMap::new(),
         };
         assert_eq!(
-            follow_nops(&graph, NodeId(0)),
+            analysis::follow_nops(&graph, NodeId(0)),
             NodeId(2),
             "follow_nops must skip both Nop nodes"
         );
         assert_eq!(
-            follow_nops(&graph, NodeId(2)),
+            analysis::follow_nops(&graph, NodeId(2)),
             NodeId(2),
             "follow_nops must return End unchanged"
         );
         assert_eq!(
-            follow_nops(&graph, NODE_END),
+            analysis::follow_nops(&graph, NODE_END),
             NODE_END,
             "follow_nops must return NODE_END unchanged"
         );
