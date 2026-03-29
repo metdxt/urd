@@ -15,6 +15,7 @@
 pub mod aliases;
 pub mod ast;
 pub mod block;
+pub mod errors;
 pub mod expr;
 
 /// Helper macro to generate boilerplate for parsing text using Urd lexer

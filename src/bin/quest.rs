@@ -19,8 +19,8 @@ use crossterm::{
 use urd::analysis;
 use urd::compiler::Compiler;
 use urd::ir::Event;
-use urd::parse_test;
 use urd::parser::block::script;
+use urd::parser::errors::render_parse_errors_stderr;
 use urd::runtime::value::RuntimeValue;
 use urd::vm::loader::FsLoader;
 use urd::vm::{DecoratorRegistry, Vm};
@@ -339,13 +339,36 @@ fn run_analysis(ast: &urd::parser::ast::Ast, src: &str, filename: &str) {
 
 /// Load, parse, compile the script at `path` and return a ready [`Vm`].
 fn build_vm(path: &Path) -> Result<Vm, String> {
+    use chumsky::input::Stream;
+    use chumsky::prelude::*;
+    use urd::lexer::{Token, lex_src};
+
     let src = std::fs::read_to_string(path)
         .map_err(|e| format!("Could not read '{}': {}", path.display(), e))?;
 
     let display_name = path.display().to_string();
 
-    let ast = parse_test!(script(), src.as_str())
-        .map_err(|errs| format!("Parse errors in '{}':\n{:?}", path.display(), errs))?;
+    // ── Lex ───────────────────────────────────────────────────────────────
+    let lexer = lex_src(&src).spanned().map(|(tok, span)| match tok {
+        Ok(tok) => (tok, span.into()),
+        Err(e)  => (Token::Error(e), span.into()),
+    });
+    let stream = Stream::from_iter(lexer)
+        .map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
+
+    // ── Parse ─────────────────────────────────────────────────────────────
+    let (maybe_ast, parse_errs) = script().parse(stream).into_output_errors();
+
+    if !parse_errs.is_empty() {
+        render_parse_errors_stderr(&parse_errs, &src, &display_name);
+        return Err(format!(
+            "{} parse error(s) in '{display_name}'",
+            parse_errs.len()
+        ));
+    }
+
+    let ast = maybe_ast
+        .ok_or_else(|| format!("failed to parse '{display_name}'"))?;
 
     run_analysis(&ast, &src, &display_name);
 
