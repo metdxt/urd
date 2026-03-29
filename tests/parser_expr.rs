@@ -4,7 +4,7 @@ use urd::{
     lexer::strings::{ParsedString, StringPart},
     parse_test,
     parser::{
-        ast::{Ast, DeclKind, Operator, UnaryOperator},
+        ast::{Ast, DeclKind, Operator, TypeAnnotation, UnaryOperator},
         expr::{comma_separated_exprs, declaration, expr},
     },
     runtime::value::RuntimeValue,
@@ -40,9 +40,9 @@ fn test_literals() {
 
     assert_eq!(
         parse_test!(expr(), "\"hello\""),
-        Ok(Ast::value(RuntimeValue::Str(
-            ParsedString::new_plain("hello")
-        )))
+        Ok(Ast::value(RuntimeValue::Str(ParsedString::new_plain(
+            "hello"
+        ))))
     );
 
     assert_eq!(
@@ -702,4 +702,276 @@ fn test_collections() {
     assert_eq!(parse_test!(expr(), "[]"), Ok(Ast::list(vec![])));
 
     assert_eq!(parse_test!(expr(), ":{}"), Ok(Ast::map(vec![])));
+}
+
+// ---- Typed declaration tests ----
+
+#[test]
+fn test_typed_let_int() {
+    let result = parse_test!(declaration(), "let x: int = 5").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+            TypeAnnotation::Int,
+            Ast::value(RuntimeValue::Int(5)),
+        )
+    );
+}
+
+#[test]
+fn test_typed_let_float() {
+    let result = parse_test!(declaration(), "let pi: float = 3.14").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["pi".to_string()])),
+            TypeAnnotation::Float,
+            Ast::value(RuntimeValue::Float(3.14)),
+        )
+    );
+}
+
+#[test]
+fn test_typed_let_bool() {
+    let result = parse_test!(declaration(), "let flag: bool = true").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["flag".to_string()])),
+            TypeAnnotation::Bool,
+            Ast::value(RuntimeValue::Bool(true)),
+        )
+    );
+}
+
+#[test]
+fn test_typed_let_str() {
+    let result = parse_test!(declaration(), "let msg: str = \"hello\"").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["msg".to_string()])),
+            TypeAnnotation::Str,
+            Ast::value(RuntimeValue::Str(ParsedString::new_plain("hello"))),
+        )
+    );
+}
+
+#[test]
+fn test_typed_const() {
+    let result = parse_test!(declaration(), "const MAX: int = 100").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Constant,
+            Ast::value(RuntimeValue::IdentPath(vec!["MAX".to_string()])),
+            TypeAnnotation::Int,
+            Ast::value(RuntimeValue::Int(100)),
+        )
+    );
+}
+
+#[test]
+fn test_typed_global() {
+    let result = parse_test!(declaration(), "global score: int = 0").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Global,
+            Ast::value(RuntimeValue::IdentPath(vec!["score".to_string()])),
+            TypeAnnotation::Int,
+            Ast::value(RuntimeValue::Int(0)),
+        )
+    );
+}
+
+#[test]
+fn test_typed_named_user_type() {
+    // A user-defined type like an enum name
+    let result = parse_test!(declaration(), "let dir: Direction = Direction.North").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["dir".to_string()])),
+            TypeAnnotation::Named(vec!["Direction".to_string()]),
+            Ast::value(RuntimeValue::IdentPath(vec![
+                "Direction".to_string(),
+                "North".to_string()
+            ])),
+        )
+    );
+}
+
+#[test]
+fn test_typed_named_path_type() {
+    // A dotted module path type like `my_mod.Color`
+    let result = parse_test!(declaration(), "let c: my_mod.Color = my_mod.Color.Red").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["c".to_string()])),
+            TypeAnnotation::Named(vec!["my_mod".to_string(), "Color".to_string()]),
+            Ast::value(RuntimeValue::IdentPath(vec![
+                "my_mod".to_string(),
+                "Color".to_string(),
+                "Red".to_string()
+            ])),
+        )
+    );
+}
+
+#[test]
+fn test_typed_with_expression_rhs() {
+    // Type annotation with a non-trivial RHS expression
+    let result = parse_test!(declaration(), "let total: int = 1 + 2 * 3").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["total".to_string()])),
+            TypeAnnotation::Int,
+            Ast::binop(
+                Operator::Plus,
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::binop(
+                    Operator::Multiply,
+                    Ast::value(RuntimeValue::Int(2)),
+                    Ast::value(RuntimeValue::Int(3)),
+                )
+            ),
+        )
+    );
+}
+
+#[test]
+fn test_untyped_declaration_still_works() {
+    // Ensure existing untyped declarations are unaffected
+    let result = parse_test!(declaration(), "let x = 99").unwrap();
+    assert_eq!(
+        result,
+        Ast::decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
+            Ast::value(RuntimeValue::Int(99)),
+        )
+    );
+}
+
+#[test]
+fn test_typed_null_annotation() {
+    // `null` is a keyword token, make sure it works as a type name too
+    let result = parse_test!(declaration(), "let nothing: null = null").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["nothing".to_string()])),
+            TypeAnnotation::Null,
+            Ast::value(RuntimeValue::Null),
+        )
+    );
+}
+
+#[test]
+fn test_typed_declaration_error_missing_type_after_colon() {
+    // A colon with no following type name must fail
+    assert!(parse_test!(declaration(), "let x: = 5").is_err());
+}
+
+#[test]
+fn test_typed_let_list() {
+    let result = parse_test!(declaration(), "let items: list = [1, 2, 3]").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["items".to_string()])),
+            TypeAnnotation::List,
+            Ast::list(vec![
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2)),
+                Ast::value(RuntimeValue::Int(3)),
+            ]),
+        )
+    );
+}
+
+#[test]
+fn test_typed_let_map() {
+    let result = parse_test!(declaration(), "let data: map = :{\"a\": 1}").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["data".to_string()])),
+            TypeAnnotation::Map,
+            Ast::map(vec![(
+                Ast::value(RuntimeValue::Str(ParsedString::new_plain("a"))),
+                Ast::value(RuntimeValue::Int(1)),
+            )]),
+        )
+    );
+}
+
+#[test]
+fn test_typed_let_dice() {
+    let result = parse_test!(declaration(), "let roll: dice = 2d6").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Variable,
+            Ast::value(RuntimeValue::IdentPath(vec!["roll".to_string()])),
+            TypeAnnotation::Dice,
+            Ast::value(RuntimeValue::Dice(2, 6)),
+        )
+    );
+}
+
+#[test]
+fn test_typed_const_list() {
+    let result = parse_test!(declaration(), "const EMPTY: list = []").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Constant,
+            Ast::value(RuntimeValue::IdentPath(vec!["EMPTY".to_string()])),
+            TypeAnnotation::List,
+            Ast::list(vec![]),
+        )
+    );
+}
+
+#[test]
+fn test_typed_global_map() {
+    let result = parse_test!(declaration(), "global state: map = :{}").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Global,
+            Ast::value(RuntimeValue::IdentPath(vec!["state".to_string()])),
+            TypeAnnotation::Map,
+            Ast::map(vec![]),
+        )
+    );
+}
+
+#[test]
+fn test_typed_global_dice() {
+    let result = parse_test!(declaration(), "global damage: dice = 1d20").unwrap();
+    assert_eq!(
+        result,
+        Ast::typed_decl(
+            DeclKind::Global,
+            Ast::value(RuntimeValue::IdentPath(vec!["damage".to_string()])),
+            TypeAnnotation::Dice,
+            Ast::value(RuntimeValue::Dice(1, 20)),
+        )
+    );
 }

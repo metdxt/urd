@@ -18,7 +18,7 @@ use chumsky::{Parser, select};
 use super::aliases::{BoxedUrdParser, UrdInput, UrdParser};
 use super::ast::Ast;
 use crate::lexer::Token;
-use crate::parser::ast::DeclKind;
+use crate::parser::ast::{DeclKind, TypeAnnotation};
 use crate::runtime::value::RuntimeValue;
 
 /// Represents a value
@@ -190,11 +190,51 @@ fn comma_separated_kv_pairs_internal<'tok, I: UrdInput<'tok>>(
         .map(Ast::map)
 }
 
+/// Parser for an optional static type annotation: `: TypeName`.
+///
+/// Recognises the built-in primitive names (`int`, `float`, `bool`, `str`, `null`)
+/// as well as any user-defined identifier path (e.g. `Direction`, `my_mod.Color`).
+///
+/// This function returns a raw [`Parser`] rather than the [`UrdParser`] alias because its
+/// output type is [`TypeAnnotation`], not [`Ast`].
+fn type_annotation<'tok, I: UrdInput<'tok>>() -> impl Parser<
+    'tok,
+    I,
+    TypeAnnotation,
+    chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
+> + Clone {
+    just(Token::Colon).ignore_then(
+        select! {
+            // `null` is a keyword token in the lexer
+            Token::Null => TypeAnnotation::Null,
+            // Primitive type names arrive as plain IdentPath tokens
+            Token::IdentPath(path) if path == ["int"]   => TypeAnnotation::Int,
+            Token::IdentPath(path) if path == ["float"] => TypeAnnotation::Float,
+            Token::IdentPath(path) if path == ["bool"]  => TypeAnnotation::Bool,
+            Token::IdentPath(path) if path == ["str"]   => TypeAnnotation::Str,
+            Token::IdentPath(path) if path == ["list"]  => TypeAnnotation::List,
+            Token::IdentPath(path) if path == ["map"]   => TypeAnnotation::Map,
+            Token::IdentPath(path) if path == ["dice"]  => TypeAnnotation::Dice,
+            // Any other identifier path is a user-defined (named) type
+            Token::IdentPath(path) => TypeAnnotation::Named(path),
+        }
+        .labelled("type name"),
+    )
+}
+
 /// Parser for variable/constant declarations. Parses:
 ///
-/// - const ident = expr
-/// - let ident = expr
-/// - global ident = expr
+/// - `const ident = expr`
+/// - `let ident = expr`
+/// - `global ident = expr`
+///
+/// An optional type annotation between the name and `=` is also accepted:
+///
+/// - `let x: int = 5`
+/// - `const msg: str = "hello"`
+/// - `global flag: bool = true`
+/// - `let dir: Direction = Direction.North`
+/// - `let coord: my_mod.Point = make_point(1, 2)`
 pub fn declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     let decl_word = select! {
         Token::Const => DeclKind::Constant,
@@ -208,9 +248,13 @@ pub fn declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 
     decl_word
         .then(ident)
+        .then(type_annotation().or_not())
         .then_ignore(just(Token::Assign))
         .then(expr())
-        .map(|((decl, name), def)| Ast::decl(decl, name, def))
+        .map(|(((decl, name), annotation), def)| match annotation {
+            Some(ann) => Ast::typed_decl(decl, name, ann, def),
+            None => Ast::decl(decl, name, def),
+        })
         .labelled("declaration")
         .boxed()
 }

@@ -9,6 +9,7 @@
 //! - [`AstContent`]: Enum representing different types of AST nodes
 //! - [`Operator`]: Enum for binary operations
 //! - [`UnaryOperator`]: Enum for unary operations
+//! - [`TypeAnnotation`]: Enum for optional static type annotations
 
 use crate::runtime::value::RuntimeValue;
 
@@ -123,6 +124,33 @@ pub enum DeclKind {
     Variable,
 }
 
+/// Represents an optional static type annotation on a variable declaration or parameter.
+///
+/// Type annotations use `: TypeName` syntax, e.g. `let x: int = 5`.
+/// The annotation is purely informational at parse time; the runtime may use it for
+/// type-checking or documentation purposes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeAnnotation {
+    /// The `int` primitive type
+    Int,
+    /// The `float` primitive type
+    Float,
+    /// The `bool` primitive type
+    Bool,
+    /// The `str` primitive type
+    Str,
+    /// The `null` type
+    Null,
+    /// The `list` collection type
+    List,
+    /// The `map` collection type
+    Map,
+    /// The `dice` type (e.g. `2d6`)
+    Dice,
+    /// A named user-defined type, e.g. an enum variant path like `Direction`
+    Named(Vec<String>),
+}
+
 /// A pattern in a match arm.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MatchPattern {
@@ -180,6 +208,8 @@ pub enum AstContent {
         kind: DeclKind,
         /// Name(s) of variables/consts being declared, typically identifier(s)
         decl_name: Box<Ast>,
+        /// Optional static type annotation (`: TypeName`) placed between the name and `=`
+        type_annotation: Option<TypeAnnotation>,
         /// Definitions. Typically expressions to be computed
         decl_defs: Box<Ast>,
     },
@@ -420,11 +450,22 @@ impl Ast {
         Ast::unary(UnaryOperator::Negate, expr)
     }
 
-    /// Create declaration type node
+    /// Create declaration type node without a type annotation.
     pub fn decl(kind: DeclKind, name: Ast, def: Ast) -> Self {
         Ast::new(AstContent::Declaration {
             kind,
             decl_name: Box::new(name),
+            type_annotation: None,
+            decl_defs: Box::new(def),
+        })
+    }
+
+    /// Create declaration type node with an explicit type annotation.
+    pub fn typed_decl(kind: DeclKind, name: Ast, annotation: TypeAnnotation, def: Ast) -> Self {
+        Ast::new(AstContent::Declaration {
+            kind,
+            decl_name: Box::new(name),
+            type_annotation: Some(annotation),
             decl_defs: Box::new(def),
         })
     }
