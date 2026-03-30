@@ -6,6 +6,7 @@
 //! be inspected for source-location information.
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 use crate::analysis::{AnalysisError, analyze, render_errors};
 use crate::parse_test;
@@ -143,7 +144,7 @@ fn render_type_mismatch_has_nonzero_span() {
     let type_error = errors
         .iter()
         .find(|e| matches!(e, AnalysisError::TypeMismatch { .. }))
-        .expect("expected a TypeMismatch error");
+        .expect("expected a TypeMismatch error; got: {errors:?}");
 
     let span = type_error.span();
     assert!(
@@ -277,7 +278,10 @@ fn render_non_exhaustive_match_mentions_missing_variant() {
         .filter(|e| matches!(e, AnalysisError::NonExhaustiveMatch { .. }))
         .collect();
 
-    assert!(!match_errors.is_empty(), "expected NonExhaustiveMatch error");
+    assert!(
+        !match_errors.is_empty(),
+        "expected NonExhaustiveMatch error"
+    );
 
     let output = render_to_string(&match_errors, src);
 

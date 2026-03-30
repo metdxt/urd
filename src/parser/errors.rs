@@ -146,6 +146,7 @@ fn format_pattern(pattern: &RichPattern<'_, Token>) -> String {
 /// | 1     | `"expected foo"`                            |
 /// | 2     | `"expected foo or bar"`                     |
 /// | N     | `"expected one of: foo, bar, …, or baz"`    |
+#[allow(clippy::expect_used)]
 fn format_expected(patterns: &[RichPattern<'_, Token>]) -> String {
     let mut seen = HashSet::new();
     let mut items: Vec<String> = patterns
@@ -253,7 +254,7 @@ pub fn render_parse_errors<W: std::io::Write>(
         report
             .finish()
             .write(sources([(name.clone(), src.to_owned())]), &mut *writer)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
     }
 
     Ok(())

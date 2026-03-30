@@ -19,7 +19,14 @@
 //! The caller drives the loop by repeatedly calling [`Vm::next`], supplying
 //! `choice: Some(idx)` only when responding to a [`Event::Choice`].
 
+pub mod env;
+pub mod eval;
 pub mod loader;
+pub mod registry;
+
+pub use env::{CallFrame, Environment};
+pub use eval::{eval_expr, eval_expr_list};
+pub use registry::DecoratorRegistry;
 
 use std::collections::{HashMap, HashSet};
 
@@ -28,10 +35,12 @@ use thiserror::Error;
 use crate::{
     compiler::CompilerError,
     ir::{ChoiceEvent, Event, IrGraph, IrNodeKind, NODE_END, NodeId},
-    lexer::strings::{ParsedString, StringPart},
-    parser::ast::{AstContent, DeclKind, Decorator, MatchPattern, Operator, UnaryOperator},
+    parser::ast::{AstContent, DeclKind, Decorator, MatchPattern, Operator},
     runtime::value::RuntimeValue,
 };
+
+use self::eval::{is_truthy, values_equal};
+use self::registry::eval_decorator_args;
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -81,883 +90,24 @@ pub enum VmError {
     CompilerError(#[from] CompilerError),
 }
 
-// ─── Environment ──────────────────────────────────────────────────────────────
+// ─── Decorator validation helper ─────────────────────────────────────────────
 
-/// The runtime variable environment.
-///
-/// Variables live in a stack of scopes; each [`IrNodeKind::EnterScope`] pushes
-/// a new scope and the matching [`IrNodeKind::ExitScope`] pops it.  Globals
-/// (`global x = …`) are stored in a separate flat map and are never popped.
-#[derive(Debug, Default, Clone)]
-pub struct Environment {
-    /// Stack of local scopes; `scopes.last()` is the innermost one.
-    scopes: Vec<HashMap<String, RuntimeValue>>,
-    /// Registered enum types — maps enum name → ordered variant name list.
-    enums: HashMap<String, Vec<String>>,
-    /// Global variables declared with `global`.
-    /// These represent persistent game state (e.g. reputation, flags) and are
-    /// the values a save-file system would serialise and restore.
-    globals: HashMap<String, RuntimeValue>,
-    /// Names that were declared with `const` (immutable after first assignment).
-    constants: HashSet<String>,
-    /// Read-only structural values injected by the VM — never writable from
-    /// script code and never part of a save file.
-    ///
-    /// Currently used to expose compiled label names as [`RuntimeValue::Label`]
-    /// values so they can be passed as arguments (e.g. to decorators) without
-    /// being treated as saveable game state.
-    builtins: HashMap<String, RuntimeValue>,
-}
-
-impl Environment {
-    /// Creates a new environment with a single root scope pre-pushed.
-    pub fn new() -> Self {
-        Environment {
-            scopes: vec![HashMap::new()],
-            ..Default::default()
-        }
+/// Check that a single decorator name is registered (either in the Rust
+/// registry or as a script-defined decorator). Returns `Err` on the first
+/// unregistered name.
+fn check_decorator_known(
+    dec: &crate::parser::ast::Decorator,
+    registry: &DecoratorRegistry,
+    script_defined: &std::collections::HashSet<&str>,
+    node_id: NodeId,
+) -> Result<(), VmError> {
+    if !registry.handlers.contains_key(dec.name()) && !script_defined.contains(dec.name()) {
+        return Err(VmError::UnknownDecorator {
+            name: dec.name().to_string(),
+            node_id,
+        });
     }
-
-    /// Returns the current scope nesting depth (number of active scopes).
-    pub fn depth(&self) -> usize {
-        self.scopes.len()
-    }
-
-    /// Pushes a fresh local scope onto the scope stack.
-    pub fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
-    }
-
-    /// Pops the innermost local scope, discarding all variables in it.
-    ///
-    /// Always keeps at least one root scope alive.
-    pub fn pop_scope(&mut self) {
-        if self.scopes.len() > 1 {
-            self.scopes.pop();
-        }
-    }
-
-    /// Declares or assigns `name` according to `kind`.
-    ///
-    /// - [`DeclKind::Variable`] — update an existing binding (searching
-    ///   outward from the innermost scope, then globals) or create a new one in
-    ///   the innermost scope.
-    /// - [`DeclKind::Global`] — store in the globals map.
-    /// - [`DeclKind::Constant`] — store in the innermost scope; returns
-    ///   [`VmError::TypeError`] if the name was already declared as a constant.
-    pub fn set(&mut self, name: &str, value: RuntimeValue, kind: &DeclKind) -> Result<(), VmError> {
-        match kind {
-            DeclKind::Global => {
-                self.globals.insert(name.to_string(), value);
-            }
-            DeclKind::Constant => {
-                if self.constants.contains(name) {
-                    return Err(VmError::TypeError(format!(
-                        "cannot reassign constant '{}'",
-                        name
-                    )));
-                }
-                self.constants.insert(name.to_string());
-                let scope = self.scopes.last_mut().ok_or_else(|| {
-                    VmError::TypeError("no active scope for constant declaration".to_string())
-                })?;
-                scope.insert(name.to_string(), value);
-            }
-            DeclKind::Variable => {
-                // Update an existing binding in-place (innermost scope first,
-                // then globals) so that re-assignment respects the original scope.
-                if self.globals.contains_key(name) {
-                    self.globals.insert(name.to_string(), value);
-                    return Ok(());
-                }
-                for scope in self.scopes.iter_mut().rev() {
-                    if scope.contains_key(name) {
-                        scope.insert(name.to_string(), value);
-                        return Ok(());
-                    }
-                    // keep searching outward
-                }
-                // No existing binding — create in the innermost scope.
-                let scope = self
-                    .scopes
-                    .last_mut()
-                    .ok_or_else(|| VmError::TypeError("no active scope".to_string()))?;
-                scope.insert(name.to_string(), value);
-            }
-        }
-        Ok(())
-    }
-
-    /// Looks up `name`, searching from the innermost scope outward, then
-    /// globals, then builtins.
-    ///
-    /// Builtins are consulted last so that script-declared variables and globals
-    /// can shadow them, but builtins are never writable via [`Self::set`].
-    ///
-    /// # Errors
-    /// Returns [`VmError::UndefinedVariable`] if `name` is not found anywhere.
-    pub fn get(&self, name: &str) -> Result<RuntimeValue, VmError> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.get(name) {
-                return Ok(v.clone());
-            }
-        }
-        if let Some(v) = self.globals.get(name) {
-            return Ok(v.clone());
-        }
-        if let Some(v) = self.builtins.get(name) {
-            return Ok(v.clone());
-        }
-        Err(VmError::UndefinedVariable(name.to_string()))
-    }
-
-    /// Inserts a read-only builtin value.
-    ///
-    /// Builtins are structural values injected by the VM itself (e.g. label
-    /// references). They are never writable from script code and are never
-    /// serialised into a save file.
-    ///
-    /// Silently overwrites any previous builtin with the same name.
-    pub fn define_builtin(&mut self, name: impl Into<String>, value: RuntimeValue) {
-        self.builtins.insert(name.into(), value);
-    }
-
-    /// Registers an enum type with its ordered variant names.
-    pub fn define_enum(&mut self, name: String, variants: Vec<String>) {
-        self.enums.insert(name, variants);
-    }
-
-    /// Looks up an enum variant by `(enum_name, variant_name)`, returning the
-    /// variant as a [`RuntimeValue::Str`].
-    ///
-    /// # Errors
-    /// Returns [`VmError::UndefinedVariable`] if the enum or variant is missing.
-    pub fn get_enum_variant(
-        &self,
-        enum_name: &str,
-        variant_name: &str,
-    ) -> Result<RuntimeValue, VmError> {
-        let variants = self
-            .enums
-            .get(enum_name)
-            .ok_or_else(|| VmError::UndefinedVariable(format!("enum '{}'", enum_name)))?;
-        if variants.iter().any(|v| v == variant_name) {
-            Ok(RuntimeValue::Str(ParsedString::new_plain(variant_name)))
-        } else {
-            Err(VmError::UndefinedVariable(format!(
-                "variant '{}' on enum '{}'",
-                variant_name, enum_name
-            )))
-        }
-    }
-
-    /// Returns a reference to the registered enums (name → variant list).
-    pub fn enums(&self) -> &HashMap<String, Vec<String>> {
-        &self.enums
-    }
-}
-
-// ─── CallFrame ────────────────────────────────────────────────────────────────
-
-/// Saved execution context pushed when entering a labeled block.
-///
-/// When [`IrNodeKind::Return`] fires, the top frame is popped and execution
-/// resumes at `return_cursor`.
-#[derive(Debug, Clone)]
-pub struct CallFrame {
-    /// The node to resume execution at after the return.
-    pub return_cursor: NodeId,
-    /// The scope depth at the time the frame was pushed (used by Return to
-    /// unwind extra scopes).
-    pub scope_depth: usize,
-    /// If `Some(name)`, store the return value in this variable when returning.
-    pub assign_to_var: Option<String>,
-}
-
-// ─── DecoratorRegistry ────────────────────────────────────────────────────────
-
-/// Registry of named decorator handlers.
-///
-/// Decorator handlers are plain Rust closures that receive the evaluated
-/// decorator arguments and return a map of key → value pairs to be merged
-/// into the event's `fields`.
-/// Type alias for a boxed decorator handler function.
-type DecoratorHandler = Box<dyn Fn(&[RuntimeValue]) -> HashMap<String, RuntimeValue> + Send + Sync>;
-
-/// Registry of named decorator handlers used to evaluate `@decorator` annotations
-/// attached to [`IrNodeKind::Dialogue`] and [`IrNodeKind::Choice`] nodes.
-///
-/// Register handlers with [`DecoratorRegistry::register`] before constructing
-/// a [`Vm`]; the VM's validation pass will reject any decorator name that is
-/// not present in the registry.
-pub struct DecoratorRegistry {
-    handlers: HashMap<String, DecoratorHandler>,
-}
-
-impl std::fmt::Debug for DecoratorRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DecoratorRegistry")
-            .field("handlers", &self.handlers.keys().collect::<Vec<_>>())
-            .finish()
-    }
-}
-
-impl Default for DecoratorRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DecoratorRegistry {
-    /// Creates an empty decorator registry.
-    pub fn new() -> Self {
-        DecoratorRegistry {
-            handlers: HashMap::new(),
-        }
-    }
-
-    /// Registers a decorator handler under `name`.
-    ///
-    /// The handler receives a slice of evaluated [`RuntimeValue`] arguments
-    /// and returns a [`HashMap`] of fields to merge into the emitted event.
-    pub fn register(
-        &mut self,
-        name: impl Into<String>,
-        handler: impl Fn(&[RuntimeValue]) -> HashMap<String, RuntimeValue> + Send + Sync + 'static,
-    ) {
-        self.handlers.insert(name.into(), Box::new(handler));
-    }
-
-    /// Returns an iterator over all registered decorator names.
-    pub fn known_names(&self) -> impl Iterator<Item = &str> {
-        self.handlers.keys().map(String::as_str)
-    }
-
-    /// Registers a script-defined decorator by name so that the VM validation
-    /// pass accepts `@name(args)` usages in dialogue/choice nodes.
-    ///
-    /// The handler is a stub that returns an empty fields map; full body
-    /// evaluation at apply-time is a future VM extension.
-    ///
-    /// # Errors
-    /// Currently infallible; returns `Ok(())` always.  The `Result` return
-    /// type is kept for forward compatibility with richer error handling.
-    pub fn define_script_decorator(
-        &mut self,
-        name: String,
-        _event_constraint: crate::parser::ast::EventConstraint,
-        _params: Vec<String>,
-        _body: crate::parser::ast::Ast,
-    ) -> Result<(), VmError> {
-        // Register a stub handler so `@name` passes the validation pass in
-        // `Vm::new` and can be used in dialogue/choice nodes without a native
-        // Rust closure.  Full body evaluation is deferred to a future milestone.
-        self.handlers
-            .entry(name)
-            .or_insert_with(|| Box::new(|_args: &[RuntimeValue]| HashMap::new()));
-        Ok(())
-    }
-
-    /// Evaluates `decorator`'s arguments and invokes the registered handler.
-    ///
-    /// # Errors
-    /// Returns [`VmError::UnknownDecorator`] (with sentinel node id) if the
-    /// decorator name is not registered.  Callers that know the real node id
-    /// should override it in the error.
-    pub fn apply(
-        &self,
-        decorator: &Decorator,
-        env: &Environment,
-    ) -> Result<HashMap<String, RuntimeValue>, VmError> {
-        let handler = self.handlers.get(decorator.name()).ok_or_else(|| {
-            VmError::UnknownDecorator {
-                name: decorator.name().to_string(),
-                node_id: NODE_END, // sentinel; callers may override
-            }
-        })?;
-
-        // Evaluate every argument in the ExprList.
-        let args = match decorator.args().content() {
-            AstContent::ExprList(items) => {
-                let mut evaluated = Vec::with_capacity(items.len());
-                for item in items {
-                    evaluated.push(eval_expr(item, env)?);
-                }
-                evaluated
-            }
-            _ => vec![eval_expr(decorator.args(), env)?],
-        };
-
-        Ok(handler(&args))
-    }
-}
-
-// ─── Expression evaluator ─────────────────────────────────────────────────────
-
-/// Evaluate an [`crate::parser::ast::Ast`] expression to a [`RuntimeValue`].
-///
-/// This function is pure with respect to the *environment* — it does not
-/// mutate it.  Statement-level assignments are handled by
-/// [`IrNodeKind::Assign`] nodes and never reach this function in normal
-/// compiled code; the `Operator::Assign` arm in expression context simply
-/// evaluates the rhs and returns it without storing.
-///
-/// # Errors
-/// Returns [`VmError`] on type errors, undefined variables, or AST nodes that
-/// are invalid in an expression context.
-pub fn eval_expr(
-    ast: &crate::parser::ast::Ast,
-    env: &Environment,
-) -> Result<RuntimeValue, VmError> {
-    match ast.content() {
-        // ── Literal / identifier ─────────────────────────────────────────────
-        AstContent::Value(rv) => eval_runtime_value(rv, env),
-
-        // ── Binary operation ─────────────────────────────────────────────────
-        AstContent::BinOp { op, left, right } => eval_binop(op, left, right, env),
-
-        // ── Unary operation ──────────────────────────────────────────────────
-        AstContent::UnaryOp { op, expr } => {
-            let val = eval_expr(expr, env)?;
-            eval_unary(op, val)
-        }
-
-        // ── Expression list — evaluate each, return the last ─────────────────
-        AstContent::ExprList(items) => {
-            let mut last = RuntimeValue::Null;
-            for item in items {
-                last = eval_expr(item, env)?;
-            }
-            Ok(last)
-        }
-
-        // ── Function call — not yet implemented ──────────────────────────────
-        AstContent::Call { func_path, params } => {
-            // Evaluate arguments so their side-effects (if any) still run.
-            if let AstContent::ExprList(args) = params.content() {
-                for arg in args {
-                    let _ = eval_expr(arg, env)?;
-                }
-            }
-            let path_str = match func_path.content() {
-                AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
-                _ => "<unknown>".to_string(),
-            };
-            log::warn!(
-                "function call to '{}' is not yet implemented; returning Null",
-                path_str
-            );
-            Ok(RuntimeValue::Null)
-        }
-
-        // ── Collection literals — not yet supported ──────────────────────────
-        AstContent::List(_) => {
-            log::warn!("List literals are not yet supported; returning Null");
-            Ok(RuntimeValue::Null)
-        }
-        AstContent::Map(pairs) => {
-            let mut map = std::collections::HashMap::new();
-            for (key_ast, val_ast) in pairs {
-                // Map keys written as bare identifiers (e.g. `name:` in
-                // `:{name: "x"}`) must be treated as literal string keys, NOT
-                // as variable lookups.  Only fall through to full expression
-                // evaluation when the key is something else (e.g. a computed
-                // string expression).
-                let key_str = match key_ast.content() {
-                    AstContent::Value(RuntimeValue::IdentPath(p)) => {
-                        p.last().cloned().unwrap_or_default()
-                    }
-                    _ => {
-                        let key_val = eval_expr(key_ast, env)?;
-                        match &key_val {
-                            RuntimeValue::Str(ps) => ps.to_string(),
-                            RuntimeValue::IdentPath(p) => p.last().cloned().unwrap_or_default(),
-                            other => {
-                                return Err(VmError::TypeError(format!(
-                                    "map key must be Str or identifier, got {:?}",
-                                    other
-                                )));
-                            }
-                        }
-                    }
-                };
-                let val = eval_expr(val_ast, env)?;
-                map.insert(key_str, Box::new(val));
-            }
-            Ok(RuntimeValue::Map(map))
-        }
-
-        // ── Invalid expression contexts ──────────────────────────────────────
-        AstContent::Block(_) => Err(VmError::InvalidExpression(
-            "Block cannot appear in expression context".to_string(),
-        )),
-        AstContent::If { .. } => Err(VmError::InvalidExpression(
-            "If cannot appear in expression context".to_string(),
-        )),
-        AstContent::Declaration { .. } => Err(VmError::InvalidExpression(
-            "Declaration cannot appear in expression context".to_string(),
-        )),
-        AstContent::LabeledBlock { .. } => Err(VmError::InvalidExpression(
-            "LabeledBlock cannot appear in expression context".to_string(),
-        )),
-        AstContent::Dialogue { .. } => Err(VmError::InvalidExpression(
-            "Dialogue cannot appear in expression context".to_string(),
-        )),
-        AstContent::Menu { .. } => Err(VmError::InvalidExpression(
-            "Menu cannot appear in expression context".to_string(),
-        )),
-        AstContent::MenuOption { .. } => Err(VmError::InvalidExpression(
-            "MenuOption cannot appear in expression context".to_string(),
-        )),
-        AstContent::Return { .. } => Err(VmError::InvalidExpression(
-            "Return cannot appear in expression context".to_string(),
-        )),
-        AstContent::Jump { .. } => Err(VmError::InvalidExpression(
-            "Jump cannot appear in expression context".to_string(),
-        )),
-        AstContent::LetCall { .. } => Err(VmError::InvalidExpression(
-            "LetCall cannot appear in expression context".to_string(),
-        )),
-        AstContent::EnumDecl { .. } => Err(VmError::InvalidExpression(
-            "EnumDecl cannot appear in expression context".to_string(),
-        )),
-        AstContent::Match { .. } => Err(VmError::InvalidExpression(
-            "Match cannot appear in expression context".to_string(),
-        )),
-        AstContent::DecoratorDef { .. } => Err(VmError::InvalidExpression(
-            "DecoratorDef cannot appear in expression context".to_string(),
-        )),
-        AstContent::Subscript { object, key } => {
-            let obj_val = eval_expr(object, env)?;
-            let key_val = eval_expr(key, env)?;
-            let key_str = match &key_val {
-                RuntimeValue::Str(ps) => ps.to_string(),
-                RuntimeValue::Int(i) => i.to_string(),
-                other => {
-                    return Err(VmError::TypeError(format!(
-                        "subscript key must be Str or Int, got {:?}",
-                        other
-                    )));
-                }
-            };
-            match obj_val {
-                RuntimeValue::Map(map) => map.get(&key_str).map(|v| *v.clone()).ok_or_else(|| {
-                    VmError::UndefinedVariable(format!("key '{}' not found in map", key_str))
-                }),
-                other => Err(VmError::TypeError(format!(
-                    "subscript requires Map, got {:?}",
-                    other
-                ))),
-            }
-        }
-        AstContent::SubscriptAssign { .. } => Err(VmError::InvalidExpression(
-            "SubscriptAssign must be used as a statement, not in expression context".to_string(),
-        )),
-
-        // Import is a top-level directive, not an evaluable expression.
-        AstContent::Import { .. } => Err(VmError::InvalidExpression(
-            "Import is not allowed in expression context".to_string(),
-        )),
-        AstContent::StructDecl { .. } => Err(VmError::InvalidExpression(
-            "StructDecl cannot appear in expression context".to_string(),
-        )),
-    }
-}
-
-/// Fully evaluate an [`AstContent::ExprList`] (or any other node) as a
-/// `Vec<RuntimeValue>`, returning *all* elements rather than only the last.
-///
-/// Used when the IR stores an ExprList of speakers or dialogue lines and the
-/// consumer needs every individual value.
-pub fn eval_expr_list(
-    ast: &crate::parser::ast::Ast,
-    env: &Environment,
-) -> Result<Vec<RuntimeValue>, VmError> {
-    match ast.content() {
-        AstContent::ExprList(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(eval_expr(item, env)?);
-            }
-            Ok(out)
-        }
-        _ => Ok(vec![eval_expr(ast, env)?]),
-    }
-}
-
-// ── Internal expression helpers ───────────────────────────────────────────────
-
-/// Evaluate a [`RuntimeValue`] that may be an [`RuntimeValue::IdentPath`]
-/// (variable or enum-variant lookup) or a [`RuntimeValue::Str`] (which may
-/// contain interpolation segments).
-fn eval_runtime_value(rv: &RuntimeValue, env: &Environment) -> Result<RuntimeValue, VmError> {
-    match rv {
-        RuntimeValue::IdentPath(path) => match path.len() {
-            0 => Err(VmError::UndefinedVariable("<empty path>".to_string())),
-            1 => {
-                // Single-segment: try variable lookup first, then search all
-                // registered enums for a matching variant name.
-                match env.get(&path[0]) {
-                    Ok(v) => Ok(v),
-                    Err(VmError::UndefinedVariable(_)) => {
-                        // Try treating as a bare enum variant (e.g. `North`
-                        // when there is only one enum with that variant).
-                        for variants in env.enums().values() {
-                            if variants.iter().any(|v| v == &path[0]) {
-                                return Ok(RuntimeValue::Str(ParsedString::new_plain(&path[0])));
-                            }
-                        }
-                        Err(VmError::UndefinedVariable(path[0].clone()))
-                    }
-                    Err(e) => Err(e),
-                }
-            }
-            2 => {
-                // Two-segment: try `EnumName.Variant` first, then try
-                // module-namespaced variable "alias::var_name", then fall back
-                // to plain variable lookup of the first segment.
-                if let Ok(variant) = env.get_enum_variant(&path[0], &path[1]) {
-                    return Ok(variant);
-                }
-                // Try module-namespaced variable: `alias.var` → `alias::var`
-                let namespaced = format!("{}::{}", path[0], path[1]);
-                if let Ok(v) = env.get(&namespaced) {
-                    return Ok(v);
-                }
-                // Fallback: plain first-segment lookup (legacy behaviour).
-                env.get(&path[0])
-                    .map_err(|_| VmError::UndefinedVariable(format!("{}.{}", path[0], path[1])))
-            }
-            _ => {
-                // Multi-segment: treat first two as enum name + variant.
-                env.get_enum_variant(&path[0], &path[1])
-            }
-        },
-        RuntimeValue::Str(ps) => {
-            // Resolve any interpolation placeholders.
-            Ok(RuntimeValue::Str(interpolate_string(ps, env)))
-        }
-        other => Ok(other.clone()),
-    }
-}
-
-/// Resolve all [`StringPart::Interpolation`] segments in `ps` by looking up
-/// their variable paths in `env`.
-///
-/// Unresolvable paths emit a [`log::warn!`] and are left as their original
-/// `{path}` placeholder text.
-fn interpolate_string(ps: &ParsedString, env: &Environment) -> ParsedString {
-    use crate::lexer::strings::Interpolation;
-
-    let mut new_parts: Vec<StringPart> = Vec::new();
-
-    for part in ps.parts() {
-        match part {
-            StringPart::Interpolation(interp) => {
-                let segments: Vec<&str> = interp.path.split('.').collect();
-                let resolved = match segments.len() {
-                    0 => Err(VmError::UndefinedVariable("<empty>".to_string())),
-                    1 => env.get(segments[0]),
-                    2 => env
-                        .get_enum_variant(segments[0], segments[1])
-                        .or_else(|_| env.get(segments[0])),
-                    _ => env.get(segments[0]),
-                };
-
-                match resolved {
-                    Ok(val) => {
-                        let s = format_runtime_value(&val, interp.format.as_deref());
-                        new_parts.push(StringPart::Literal(s));
-                    }
-                    Err(_) => {
-                        log::warn!(
-                            "string interpolation: undefined variable path '{}'",
-                            interp.path
-                        );
-                        // Preserve the placeholder as-is.
-                        new_parts.push(StringPart::Interpolation(Interpolation {
-                            path: interp.path.clone(),
-                            format: interp.format.clone(),
-                        }));
-                    }
-                }
-            }
-            other => new_parts.push(other.clone()),
-        }
-    }
-
-    ParsedString::new_from_parts(new_parts)
-}
-
-/// Format a [`RuntimeValue`] as a string, applying a simple format specifier
-/// when provided.
-///
-/// Supported specifiers:
-/// - `"02"` → zero-pad integer to at-least-2 digits
-/// - `".2"` → float to 2 decimal places
-#[allow(clippy::collapsible_if)]
-fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> String {
-    match (val, format) {
-        (RuntimeValue::Int(i), Some(fmt)) => {
-            if let Some(width_str) = fmt.strip_prefix('0') {
-                if let Ok(width) = width_str.parse::<usize>() {
-                    return format!("{:0>width$}", i, width = width);
-                }
-            }
-            i.to_string()
-        }
-        (RuntimeValue::Float(f), Some(fmt)) => {
-            if let Some(prec_str) = fmt.strip_prefix('.') {
-                if let Ok(prec) = prec_str.parse::<usize>() {
-                    return format!("{:.prec$}", f, prec = prec);
-                }
-            }
-            f.to_string()
-        }
-        (rv, _) => match rv {
-            RuntimeValue::Null => "null".to_string(),
-            RuntimeValue::Bool(b) => b.to_string(),
-            RuntimeValue::Int(i) => i.to_string(),
-            RuntimeValue::Float(f) => f.to_string(),
-            RuntimeValue::Str(ps) => ps.to_string(),
-            RuntimeValue::Dice(count, sides) => format!("{}d{}", count, sides),
-            RuntimeValue::IdentPath(path) => path.join("."),
-            RuntimeValue::Label { name, .. } => name.clone(),
-            RuntimeValue::Map(m) => format!("map({})", m.len()),
-            RuntimeValue::ScriptDecorator { .. } => "<decorator>".to_string(),
-        },
-    }
-}
-
-/// Evaluate a binary operation node.
-fn eval_binop(
-    op: &Operator,
-    left: &crate::parser::ast::Ast,
-    right: &crate::parser::ast::Ast,
-    env: &Environment,
-) -> Result<RuntimeValue, VmError> {
-    // Short-circuit logical operators before evaluating both sides.
-    match op {
-        Operator::And => {
-            let lv = eval_expr(left, env)?;
-            if !is_truthy(&lv) {
-                return Ok(RuntimeValue::Bool(false));
-            }
-            let rv = eval_expr(right, env)?;
-            return Ok(RuntimeValue::Bool(is_truthy(&rv)));
-        }
-        Operator::Or => {
-            let lv = eval_expr(left, env)?;
-            if is_truthy(&lv) {
-                return Ok(RuntimeValue::Bool(true));
-            }
-            let rv = eval_expr(right, env)?;
-            return Ok(RuntimeValue::Bool(is_truthy(&rv)));
-        }
-        // Assignment in expression context: evaluate rhs, return it
-        // (mutation is handled by IrNodeKind::Assign; this path is a no-op store).
-        Operator::Assign => {
-            return eval_expr(right, env);
-        }
-        _ => {}
-    }
-
-    let lv = eval_expr(left, env)?;
-    let rv_val = eval_expr(right, env)?;
-
-    match op {
-        Operator::Plus => numeric_binop(lv, rv_val, |a, b| a + b, |a, b| a + b),
-        Operator::Minus => numeric_binop(lv, rv_val, |a, b| a - b, |a, b| a - b),
-        Operator::Multiply => numeric_binop(lv, rv_val, |a, b| a * b, |a, b| a * b),
-        Operator::Divide => numeric_div(lv, rv_val),
-        Operator::DoubleSlash => numeric_floordiv(lv, rv_val),
-        Operator::Percent => numeric_int_binop(lv, rv_val, |a, b| a % b),
-        Operator::Equals => Ok(RuntimeValue::Bool(values_equal(&lv, &rv_val))),
-        Operator::NotEquals => Ok(RuntimeValue::Bool(!values_equal(&lv, &rv_val))),
-        Operator::GreaterThan => numeric_cmp(lv, rv_val, |a, b| a > b, |a, b| a > b),
-        Operator::LessThan => numeric_cmp(lv, rv_val, |a, b| a < b, |a, b| a < b),
-        Operator::GreaterThanOrEquals => numeric_cmp(lv, rv_val, |a, b| a >= b, |a, b| a >= b),
-        Operator::LessThanOrEquals => numeric_cmp(lv, rv_val, |a, b| a <= b, |a, b| a <= b),
-        Operator::BitwiseAnd => int_bitop(lv, rv_val, |a, b| a & b),
-        Operator::BitwiseOr => int_bitop(lv, rv_val, |a, b| a | b),
-        Operator::BitwiseXor => int_bitop(lv, rv_val, |a, b| a ^ b),
-        Operator::LeftShift => int_bitop(lv, rv_val, |a, b| a << b),
-        Operator::RightShift => int_bitop(lv, rv_val, |a, b| a >> b),
-        // Handled above via early return.
-        Operator::And | Operator::Or | Operator::Assign => unreachable!(),
-    }
-}
-
-/// Evaluate a unary operation.
-fn eval_unary(op: &UnaryOperator, val: RuntimeValue) -> Result<RuntimeValue, VmError> {
-    match op {
-        UnaryOperator::Not => Ok(RuntimeValue::Bool(!is_truthy(&val))),
-        UnaryOperator::Negate => match val {
-            RuntimeValue::Int(i) => Ok(RuntimeValue::Int(-i)),
-            RuntimeValue::Float(f) => Ok(RuntimeValue::Float(-f)),
-            other => Err(VmError::TypeError(format!(
-                "cannot negate non-numeric value {:?}",
-                other
-            ))),
-        },
-        UnaryOperator::BitwiseNot => match val {
-            RuntimeValue::Int(i) => Ok(RuntimeValue::Int(!i)),
-            other => Err(VmError::TypeError(format!(
-                "bitwise NOT requires Int, got {:?}",
-                other
-            ))),
-        },
-    }
-}
-
-// ── Arithmetic helpers ────────────────────────────────────────────────────────
-
-fn to_float(v: &RuntimeValue) -> Option<f64> {
-    match v {
-        RuntimeValue::Float(f) => Some(*f),
-        RuntimeValue::Int(i) => Some(*i as f64),
-        _ => None,
-    }
-}
-
-fn numeric_binop(
-    lv: RuntimeValue,
-    rv: RuntimeValue,
-    int_op: impl Fn(i64, i64) -> i64,
-    float_op: impl Fn(f64, f64) -> f64,
-) -> Result<RuntimeValue, VmError> {
-    match (&lv, &rv) {
-        (RuntimeValue::Int(a), RuntimeValue::Int(b)) => Ok(RuntimeValue::Int(int_op(*a, *b))),
-        (RuntimeValue::Float(a), RuntimeValue::Float(b)) => {
-            Ok(RuntimeValue::Float(float_op(*a, *b)))
-        }
-        _ => {
-            let a = to_float(&lv)
-                .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", lv)))?;
-            let b = to_float(&rv)
-                .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", rv)))?;
-            Ok(RuntimeValue::Float(float_op(a, b)))
-        }
-    }
-}
-
-fn numeric_int_binop(
-    lv: RuntimeValue,
-    rv: RuntimeValue,
-    op: impl Fn(i64, i64) -> i64,
-) -> Result<RuntimeValue, VmError> {
-    match (&lv, &rv) {
-        (RuntimeValue::Int(a), RuntimeValue::Int(b)) => Ok(RuntimeValue::Int(op(*a, *b))),
-        _ => Err(VmError::TypeError(format!(
-            "integer-only operation requires two Int values, got {:?} and {:?}",
-            lv, rv
-        ))),
-    }
-}
-
-fn numeric_div(lv: RuntimeValue, rv: RuntimeValue) -> Result<RuntimeValue, VmError> {
-    match (&lv, &rv) {
-        (RuntimeValue::Int(a), RuntimeValue::Int(b)) => {
-            if *b == 0 {
-                return Err(VmError::TypeError("integer division by zero".to_string()));
-            }
-            Ok(RuntimeValue::Int(a / b))
-        }
-        (RuntimeValue::Float(a), RuntimeValue::Float(b)) => Ok(RuntimeValue::Float(a / b)),
-        _ => {
-            let a = to_float(&lv)
-                .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", lv)))?;
-            let b = to_float(&rv)
-                .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", rv)))?;
-            Ok(RuntimeValue::Float(a / b))
-        }
-    }
-}
-
-fn numeric_floordiv(lv: RuntimeValue, rv: RuntimeValue) -> Result<RuntimeValue, VmError> {
-    match (&lv, &rv) {
-        (RuntimeValue::Int(a), RuntimeValue::Int(b)) => {
-            if *b == 0 {
-                return Err(VmError::TypeError("floor division by zero".to_string()));
-            }
-            Ok(RuntimeValue::Int(a.div_euclid(*b)))
-        }
-        _ => {
-            let a = to_float(&lv)
-                .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", lv)))?;
-            let b = to_float(&rv)
-                .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", rv)))?;
-            Ok(RuntimeValue::Float((a / b).floor()))
-        }
-    }
-}
-
-fn numeric_cmp(
-    lv: RuntimeValue,
-    rv: RuntimeValue,
-    int_cmp: impl Fn(i64, i64) -> bool,
-    float_cmp: impl Fn(f64, f64) -> bool,
-) -> Result<RuntimeValue, VmError> {
-    match (&lv, &rv) {
-        (RuntimeValue::Int(a), RuntimeValue::Int(b)) => Ok(RuntimeValue::Bool(int_cmp(*a, *b))),
-        (RuntimeValue::Float(a), RuntimeValue::Float(b)) => {
-            Ok(RuntimeValue::Bool(float_cmp(*a, *b)))
-        }
-        _ => {
-            let a = to_float(&lv)
-                .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", lv)))?;
-            let b = to_float(&rv)
-                .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", rv)))?;
-            Ok(RuntimeValue::Bool(float_cmp(a, b)))
-        }
-    }
-}
-
-fn int_bitop(
-    lv: RuntimeValue,
-    rv: RuntimeValue,
-    op: impl Fn(i64, i64) -> i64,
-) -> Result<RuntimeValue, VmError> {
-    match (&lv, &rv) {
-        (RuntimeValue::Int(a), RuntimeValue::Int(b)) => Ok(RuntimeValue::Int(op(*a, *b))),
-        _ => Err(VmError::TypeError(format!(
-            "bitwise operation requires two Int values, got {:?} and {:?}",
-            lv, rv
-        ))),
-    }
-}
-
-/// Returns `true` if `v` is truthy.
-///
-/// - `Null` → `false`
-/// - `Bool(b)` → `b`
-/// - `Int(0)` → `false`; any other `Int` → `true`
-/// - `Float(0.0)` → `false`; any other `Float` → `true`
-/// - Everything else → `true`
-fn is_truthy(v: &RuntimeValue) -> bool {
-    match v {
-        RuntimeValue::Null => false,
-        RuntimeValue::Bool(b) => *b,
-        RuntimeValue::Int(i) => *i != 0,
-        RuntimeValue::Float(f) => *f != 0.0,
-        _ => true,
-    }
-}
-
-/// Returns `true` if two [`RuntimeValue`]s are structurally equal.
-fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
-    match (a, b) {
-        (RuntimeValue::Null, RuntimeValue::Null) => true,
-        (RuntimeValue::Bool(x), RuntimeValue::Bool(y)) => x == y,
-        (RuntimeValue::Int(x), RuntimeValue::Int(y)) => x == y,
-        (RuntimeValue::Float(x), RuntimeValue::Float(y)) => x == y,
-        // Cross-type numeric equality.
-        (RuntimeValue::Int(x), RuntimeValue::Float(y)) => (*x as f64) == *y,
-        (RuntimeValue::Float(x), RuntimeValue::Int(y)) => *x == (*y as f64),
-        (RuntimeValue::Str(x), RuntimeValue::Str(y)) => x.to_string() == y.to_string(),
-        (RuntimeValue::Label { node_id: x, .. }, RuntimeValue::Label { node_id: y, .. }) => x == y,
-        _ => false,
-    }
+    Ok(())
 }
 
 // ─── Vm ──────────────────────────────────────────────────────────────────────
@@ -1012,14 +162,7 @@ impl Vm {
             match &node.kind {
                 IrNodeKind::Dialogue { decorators, .. } => {
                     for dec in decorators {
-                        if !registry.handlers.contains_key(dec.name())
-                            && !script_defined.contains(dec.name())
-                        {
-                            return Err(VmError::UnknownDecorator {
-                                name: dec.name().to_string(),
-                                node_id: node.id,
-                            });
-                        }
+                        check_decorator_known(dec, &registry, &script_defined, node.id)?;
                     }
                 }
                 IrNodeKind::Choice {
@@ -1027,25 +170,11 @@ impl Vm {
                     options,
                 } => {
                     for dec in decorators {
-                        if !registry.handlers.contains_key(dec.name())
-                            && !script_defined.contains(dec.name())
-                        {
-                            return Err(VmError::UnknownDecorator {
-                                name: dec.name().to_string(),
-                                node_id: node.id,
-                            });
-                        }
+                        check_decorator_known(dec, &registry, &script_defined, node.id)?;
                     }
                     for opt in options {
                         for dec in &opt.decorators {
-                            if !registry.handlers.contains_key(dec.name())
-                                && !script_defined.contains(dec.name())
-                            {
-                                return Err(VmError::UnknownDecorator {
-                                    name: dec.name().to_string(),
-                                    node_id: node.id,
-                                });
-                            }
+                            check_decorator_known(dec, &registry, &script_defined, node.id)?;
                         }
                     }
                 }
@@ -1085,6 +214,7 @@ impl Vm {
     /// pass `None` for all other steps.
     ///
     /// Returns `None` when the script has ended.
+    #[allow(clippy::collapsible_if)]
     pub fn next(&mut self, choice: Option<usize>) -> Option<Result<Event, VmError>> {
         loop {
             // NODE_END sentinel → treat as End.
@@ -1099,10 +229,12 @@ impl Vm {
             // a raw pointer to the node kind, which is safe because graph.nodes
             // is never resized during execution.
             let node_kind: &IrNodeKind = {
-                let node = self.graph.nodes.get(node_id.0 as usize)?;
+                let node = self.graph.nodes.get(node_id.as_index())?;
                 // SAFETY: `self.graph.nodes` is a Vec that is never pushed to or
                 // truncated during VM execution, so the reference stays valid
                 // for the duration of the match arm below.
+                // FIXME: replace with a safe split-borrow pattern once the graph is
+                // behind an inner-mutability wrapper so the compiler can verify the invariant.
                 unsafe { &*(&node.kind as *const IrNodeKind) }
             };
 
@@ -1275,7 +407,7 @@ impl Vm {
                     // Resolve body_entry: if the target is an EnterScope node,
                     // jump past it into the body directly.
                     let body_entry =
-                        match self.graph.nodes.get(target_id.0 as usize).map(|n| &n.kind) {
+                        match self.graph.nodes.get(target_id.as_index()).map(|n| &n.kind) {
                             Some(IrNodeKind::EnterScope { next: body, .. }) => *body,
                             _ => target_id, // fallback: jump to target as-is
                         };
@@ -1713,13 +845,7 @@ fn apply_decorator(
     match env.get(dec.name()) {
         Ok(RuntimeValue::ScriptDecorator { params, body, .. }) => {
             // Evaluate arguments.
-            let args = match dec.args().content() {
-                AstContent::ExprList(items) => items
-                    .iter()
-                    .map(|a| eval_expr(a, env))
-                    .collect::<Result<Vec<_>, _>>()?,
-                _ => vec![eval_expr(dec.args(), env)?],
-            };
+            let args = eval_decorator_args(dec, env)?;
             apply_script_decorator(&params, &body, &args, env, existing_fields)
         }
         Ok(_) => Err(VmError::TypeError(format!(
@@ -2781,7 +1907,7 @@ mod tests {
     fn test_todo_bang_ends_script() {
         // A script consisting of only `todo!()` should terminate immediately
         // (return None from next()) without error.
-        use crate::ir::{IrGraph, IrNodeKind, NODE_END};
+        use crate::ir::{IrGraph, IrNodeKind};
         let mut graph = IrGraph::new();
         let todo_id = graph.push(IrNodeKind::Todo);
         graph.entry = todo_id;
@@ -2796,7 +1922,7 @@ mod tests {
 
     #[test]
     fn test_end_bang_ends_script() {
-        use crate::ir::{IrGraph, IrNodeKind, NODE_END};
+        use crate::ir::{IrGraph, IrNodeKind};
         let mut graph = IrGraph::new();
         let end_id = graph.push(IrNodeKind::End);
         graph.entry = end_id;

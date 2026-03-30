@@ -314,9 +314,7 @@ pub fn callee_to_rets(graph: &IrGraph) -> HashMap<NodeId, Vec<NodeId>> {
 /// The returned map borrows label names from `clusters` for zero-copy
 /// efficiency.  If a node somehow appears in multiple clusters (which should
 /// not happen in a well-formed graph) the last one wins.
-pub fn node_to_cluster<'a>(
-    clusters: &'a HashMap<String, HashSet<NodeId>>,
-) -> HashMap<NodeId, &'a str> {
+pub fn node_to_cluster(clusters: &HashMap<String, HashSet<NodeId>>) -> HashMap<NodeId, &str> {
     clusters
         .iter()
         .flat_map(|(name, members)| members.iter().map(move |&id| (id, name.as_str())))
@@ -427,7 +425,10 @@ mod tests {
     fn reachable_excludes_dead_nodes() {
         let g = two_node_graph_with_dead();
         let r = reachable_nodes(&g);
-        assert!(!r.contains(&NodeId(2)), "N2 is unreachable and must be excluded");
+        assert!(
+            !r.contains(&NodeId(2)),
+            "N2 is unreachable and must be excluded"
+        );
     }
 
     // ── compute_clusters ────────────────────────────────────────────────────
@@ -471,7 +472,10 @@ mod tests {
         let clusters = compute_clusters(&g, &r);
 
         // Find the LetCall node
-        let letcall_node = g.nodes.iter().find(|n| matches!(&n.kind, IrNodeKind::LetCall { .. }));
+        let letcall_node = g
+            .nodes
+            .iter()
+            .find(|n| matches!(&n.kind, IrNodeKind::LetCall { .. }));
         assert!(letcall_node.is_some(), "must have a LetCall node");
 
         let letcall_id = letcall_node.unwrap().id;
@@ -484,9 +488,10 @@ mod tests {
         );
 
         // Find the Assign(x=1) node — it comes after the LetCall
-        let assign_x = g.nodes.iter().find(|n| {
-            matches!(&n.kind, IrNodeKind::Assign { var, .. } if var == "x")
-        });
+        let assign_x = g
+            .nodes
+            .iter()
+            .find(|n| matches!(&n.kind, IrNodeKind::Assign { var, .. } if var == "x"));
         if let Some(ax) = assign_x {
             assert!(
                 start_cluster.contains(&ax.id),
@@ -532,7 +537,10 @@ mod tests {
             "#,
         );
         let name = entry_cluster_name(&g);
-        assert!(name.is_none(), "no labels → entry_cluster_name must be None");
+        assert!(
+            name.is_none(),
+            "no labels → entry_cluster_name must be None"
+        );
     }
 
     // ── callee_to_rets ───────────────────────────────────────────────────────
@@ -567,7 +575,10 @@ mod tests {
             "#,
         );
         let map = callee_to_rets(&g);
-        assert!(map.is_empty(), "no LetCall nodes → callee_to_rets must be empty");
+        assert!(
+            map.is_empty(),
+            "no LetCall nodes → callee_to_rets must be empty"
+        );
     }
 
     // ── node_to_cluster ──────────────────────────────────────────────────────

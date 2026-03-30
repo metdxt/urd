@@ -139,7 +139,7 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> BoxedUrdParser<'tokens, I> {
             // Addition/subtraction (precedence 9)
             infix(left(9), just(Token::Plus), |l, _, r, _| Ast::add_op(l, r)),
             infix(left(9), just(Token::Minus), |l, _, r, _| {
-                Ast::substract_op(l, r)
+                Ast::subtract_op(l, r)
             }),
             // Bitwise shifts (precedence 8)
             infix(left(8), just(Token::LeftShift), |l, _, r, _| {
@@ -306,7 +306,7 @@ pub fn declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
     use crate::parse_test;

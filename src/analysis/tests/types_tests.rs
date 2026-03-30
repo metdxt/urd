@@ -5,9 +5,9 @@
 
 #![allow(clippy::unwrap_used)]
 
+use crate::analysis::AnalysisError;
 use crate::analysis::context::AnalysisContext;
 use crate::analysis::types;
-use crate::analysis::AnalysisError;
 use crate::parser::ast::{Ast, DeclKind, TypeAnnotation};
 use crate::runtime::value::RuntimeValue;
 
@@ -24,7 +24,8 @@ fn make_ctx(enums: &[(&str, &[&str])], vars: &[(&str, TypeAnnotation)]) -> Analy
         );
     }
     for (var_name, ann) in vars {
-        ctx.top_level_vars.insert((*var_name).to_owned(), ann.clone());
+        ctx.top_level_vars
+            .insert((*var_name).to_owned(), ann.clone());
     }
     ctx
 }
@@ -139,11 +140,7 @@ fn bool_not_compatible_with_int_annotation() {
 #[test]
 fn str_literal_incompatible_with_int_annotation() {
     let ctx = make_ctx(&[], &[]);
-    let ast = Ast::block(vec![typed_decl(
-        "x",
-        TypeAnnotation::Int,
-        str_lit("hello"),
-    )]);
+    let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Int, str_lit("hello"))]);
     assert_type_mismatch(&types::check(&ast, &ctx), "x");
 }
 
@@ -161,7 +158,7 @@ fn null_not_compatible_with_int_annotation() {
 #[test]
 fn float_annotation_accepts_float_literal() {
     let ctx = make_ctx(&[], &[]);
-    let ast = Ast::block(vec![typed_decl("f", TypeAnnotation::Float, float_lit(3.14))]);
+    let ast = Ast::block(vec![typed_decl("f", TypeAnnotation::Float, float_lit(2.5))]);
     assert_no_errors(&types::check(&ast, &ctx));
 }
 
@@ -182,7 +179,11 @@ fn float_annotation_accepts_zero_int() {
 #[test]
 fn float_annotation_rejects_bool() {
     let ctx = make_ctx(&[], &[]);
-    let ast = Ast::block(vec![typed_decl("f", TypeAnnotation::Float, bool_lit(false))]);
+    let ast = Ast::block(vec![typed_decl(
+        "f",
+        TypeAnnotation::Float,
+        bool_lit(false),
+    )]);
     assert_type_mismatch(&types::check(&ast, &ctx), "f");
 }
 
@@ -221,11 +222,7 @@ fn int_not_compatible_with_bool_annotation() {
 #[test]
 fn str_not_compatible_with_bool_annotation() {
     let ctx = make_ctx(&[], &[]);
-    let ast = Ast::block(vec![typed_decl(
-        "b",
-        TypeAnnotation::Bool,
-        str_lit("true"),
-    )]);
+    let ast = Ast::block(vec![typed_decl("b", TypeAnnotation::Bool, str_lit("true"))]);
     assert_type_mismatch(&types::check(&ast, &ctx), "b");
 }
 
@@ -254,11 +251,7 @@ fn int_not_compatible_with_str_annotation() {
 #[test]
 fn bool_not_compatible_with_str_annotation() {
     let ctx = make_ctx(&[], &[]);
-    let ast = Ast::block(vec![typed_decl(
-        "s",
-        TypeAnnotation::Str,
-        bool_lit(false),
-    )]);
+    let ast = Ast::block(vec![typed_decl("s", TypeAnnotation::Str, bool_lit(false))]);
     assert_type_mismatch(&types::check(&ast, &ctx), "s");
 }
 
@@ -305,7 +298,10 @@ fn enum_variant_compatible_with_named_annotation() {
 
 #[test]
 fn all_enum_variants_compatible_with_named_annotation() {
-    let ctx = make_ctx(&[("Season", &["Spring", "Summer", "Autumn", "Winter"])], &[]);
+    let ctx = make_ctx(
+        &[("Season", &["Spring", "Summer", "Autumn", "Winter"])],
+        &[],
+    );
     for variant in &["Spring", "Summer", "Autumn", "Winter"] {
         let val = Ast::value(RuntimeValue::IdentPath(vec![(*variant).to_owned()]));
         let ast = Ast::block(vec![typed_decl(
@@ -584,9 +580,9 @@ fn variable_as_rhs_is_silently_accepted() {
 #[test]
 fn multiple_mismatches_all_reported() {
     let ctx = make_ctx(&[], &[]);
-    let d1 = typed_decl("a", TypeAnnotation::Int, bool_lit(true));   // mismatch
-    let d2 = typed_decl("b", TypeAnnotation::Bool, int_lit(0));      // mismatch
-    let d3 = typed_decl("c", TypeAnnotation::Str, str_lit("ok"));    // ok
+    let d1 = typed_decl("a", TypeAnnotation::Int, bool_lit(true)); // mismatch
+    let d2 = typed_decl("b", TypeAnnotation::Bool, int_lit(0)); // mismatch
+    let d3 = typed_decl("c", TypeAnnotation::Str, str_lit("ok")); // ok
     let d4 = typed_decl("d", TypeAnnotation::Float, str_lit("bad")); // mismatch
     let ast = Ast::block(vec![d1, d2, d3, d4]);
     let errors = types::check(&ast, &ctx);
@@ -676,10 +672,7 @@ fn typed_decl_inside_if_else_branch_is_checked() {
 fn typed_decl_inside_menu_option_is_checked() {
     let ctx = make_ctx(&[], &[]);
     let bad_decl = typed_decl("choice", TypeAnnotation::Bool, int_lit(1)); // mismatch
-    let option = Ast::menu_option(
-        "Option A".to_owned(),
-        Ast::block(vec![bad_decl]),
-    );
+    let option = Ast::menu_option("Option A".to_owned(), Ast::block(vec![bad_decl]));
     let menu = Ast::menu(vec![option]);
     let ast = Ast::block(vec![menu]);
     assert_type_mismatch(&types::check(&ast, &ctx), "choice");
@@ -695,10 +688,7 @@ fn typed_decl_inside_match_arm_is_checked() {
 
     let ctx = make_ctx(&[], &[]);
     let bad_decl = typed_decl("result", TypeAnnotation::Float, str_lit("nan")); // mismatch
-    let arm = MatchArm::new(
-        MatchPattern::Wildcard,
-        Ast::block(vec![bad_decl]),
-    );
+    let arm = MatchArm::new(MatchPattern::Wildcard, Ast::block(vec![bad_decl]));
     let scrutinee = Ast::value(RuntimeValue::IdentPath(vec!["x".to_owned()]));
     let match_node = Ast::match_stmt(scrutinee, vec![arm]);
     let ast = Ast::block(vec![match_node]);

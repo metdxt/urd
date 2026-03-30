@@ -176,6 +176,17 @@ impl AnalysisError {
         span.start == 0 && span.end == 0
     }
 
+    /// Format a span as a human-readable location string.
+    ///
+    /// Returns `"(unknown location)"` for zero spans and `"byte S..E"` otherwise.
+    fn format_span_loc(span: &SimpleSpan) -> String {
+        if Self::is_zero_span(span) {
+            "(unknown location)".to_owned()
+        } else {
+            format!("byte {}..{}", span.start, span.end)
+        }
+    }
+
     /// Returns a short human-readable message for this error (used in `Display`
     /// and as the ariadne report message).
     fn message(&self) -> String {
@@ -185,11 +196,7 @@ impl AnalysisError {
                 missing_variants,
                 span,
             } => {
-                let loc = if Self::is_zero_span(span) {
-                    "(unknown location)".to_owned()
-                } else {
-                    format!("byte {}..{}", span.start, span.end)
-                };
+                let loc = Self::format_span_loc(span);
                 format!(
                     "Non-exhaustive match on enum '{enum_name}' at {loc}: \
                      missing variants: {}",
@@ -203,11 +210,7 @@ impl AnalysisError {
                 got,
                 span,
             } => {
-                let loc = if Self::is_zero_span(span) {
-                    "(unknown location)".to_owned()
-                } else {
-                    format!("byte {}..{}", span.start, span.end)
-                };
+                let loc = Self::format_span_loc(span);
                 format!(
                     "Type mismatch for '{variable}' at {loc}: \
                      expected {expected:?}, got {got}"
@@ -220,11 +223,7 @@ impl AnalysisError {
                 field_errors,
                 span,
             } => {
-                let loc = if Self::is_zero_span(span) {
-                    "(unknown location)".to_owned()
-                } else {
-                    format!("byte {}..{}", span.start, span.end)
-                };
+                let loc = Self::format_span_loc(span);
                 let details: Vec<String> = field_errors
                     .iter()
                     .map(|fe| match fe {
@@ -366,7 +365,7 @@ pub fn render_errors<W: std::io::Write>(
 
         report
             .write(sources([(name_owned, src.to_owned())]), &mut *writer)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
     }
 
     Ok(())

@@ -5,8 +5,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use crate::analysis::dead_end;
 use crate::analysis::AnalysisError;
+use crate::analysis::dead_end;
 use crate::parser::ast::{Ast, MatchArm, MatchPattern};
 use crate::runtime::value::RuntimeValue;
 
@@ -56,11 +56,7 @@ fn assert_no_errors(errors: &[AnalysisError]) {
 }
 
 fn assert_single_dead_end(errors: &[AnalysisError], fragment: &str) {
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly 1 error, got: {errors:?}"
-    );
+    assert_eq!(errors.len(), 1, "expected exactly 1 error, got: {errors:?}");
     assert!(
         has_dead_end_at(errors, fragment),
         "expected dead-end error containing '{fragment}', got: {errors:?}"
@@ -220,7 +216,10 @@ fn if_with_only_then_terminating_is_dead_end() {
 fn menu_all_options_terminate_is_ok() {
     let opt_a = Ast::menu_option("Yes".to_owned(), Ast::block(vec![return_node()]));
     let opt_b = Ast::menu_option("No".to_owned(), Ast::block(vec![end_call()]));
-    let opt_c = Ast::menu_option("Maybe".to_owned(), Ast::block(vec![jump_one_way("elsewhere")]));
+    let opt_c = Ast::menu_option(
+        "Maybe".to_owned(),
+        Ast::block(vec![jump_one_way("elsewhere")]),
+    );
     let ast = Ast::block(vec![Ast::menu(vec![opt_a, opt_b, opt_c])]);
     assert_no_errors(&dead_end::check(&ast));
 }
@@ -237,7 +236,7 @@ fn menu_one_option_open_is_dead_end() {
     let errors = dead_end::check(&ast);
     // Two errors: one for "Disagree" option, one for the top-level block (not fully terminated).
     assert!(
-        errors.len() >= 1,
+        !errors.is_empty(),
         "expected at least 1 error, got: {errors:?}"
     );
     assert!(
@@ -392,11 +391,7 @@ fn terminator_early_in_block_stops_analysis() {
 fn deeply_nested_block_without_terminator_surfaces_error() {
     // top → if → then_block → if → then_block (no terminator, no else)
     let deepest = Ast::block(vec![dialogue()]);
-    let inner_if = Ast::if_stmt(
-        Ast::value(RuntimeValue::Bool(true)),
-        deepest,
-        None,
-    );
+    let inner_if = Ast::if_stmt(Ast::value(RuntimeValue::Bool(true)), deepest, None);
     let outer_if = Ast::if_stmt(
         Ast::value(RuntimeValue::Bool(false)),
         Ast::block(vec![inner_if]),

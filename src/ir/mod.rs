@@ -40,6 +40,14 @@ pub struct NodeId(pub u32);
 /// execution stops (or returns) at that point.
 pub const NODE_END: NodeId = NodeId(u32::MAX);
 
+impl NodeId {
+    /// Converts this node id to a `usize` index into the node arena.
+    #[inline]
+    pub fn as_index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 // ─── IrGraph ─────────────────────────────────────────────────────────────────
 
 /// The compiled form of an Urd script.
@@ -50,7 +58,7 @@ pub const NODE_END: NodeId = NodeId(u32::MAX);
 /// node whose `next` is [`NODE_END`]).
 #[derive(Debug)]
 pub struct IrGraph {
-    /// Flat arena of all nodes.  `nodes[id.0 as usize]` is the node for `id`.
+    /// Flat arena of all nodes.  `nodes[id.as_index()]` is the node for `id`.
     pub nodes: Vec<IrNode>,
     /// The [`NodeId`] at which execution begins.
     pub entry: NodeId,
@@ -81,7 +89,7 @@ impl IrGraph {
     /// # Panics
     /// Panics if `id` is out of bounds (should never happen inside the compiler).
     pub(crate) fn node_mut(&mut self, id: NodeId) -> &mut IrNode {
-        &mut self.nodes[id.0 as usize]
+        &mut self.nodes[id.as_index()]
     }
 
     /// Merge `other` into `self`, renumbering all `NodeId`s in `other` by an
@@ -108,11 +116,17 @@ impl IrGraph {
 
         // Insert all of other's labels under "alias::label_name".
         for (label_name, node_id) in other.labels {
-            let namespaced = format!("{}::{}", alias, label_name);
+            let namespaced = namespace(alias, &label_name);
             self.labels.insert(namespaced, NodeId(node_id.0 + offset));
         }
 
         offset
+    }
+}
+
+impl Default for IrGraph {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -407,6 +421,13 @@ fn remap_node_kind(kind: &mut IrNodeKind, offset: u32) {
     }
 }
 
+/// Format a cross-module namespaced label: `"alias::label_name"`.
+///
+/// Used consistently wherever a module-qualified name is stored or resolved.
+pub fn namespace(alias: &str, name: &str) -> String {
+    format!("{alias}::{name}")
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -417,7 +438,7 @@ mod tests {
     fn todo_node_has_no_successors() {
         let mut graph = IrGraph::new();
         let id = graph.push(IrNodeKind::Todo);
-        assert!(matches!(graph.nodes[id.0 as usize].kind, IrNodeKind::Todo));
+        assert!(matches!(graph.nodes[id.as_index()].kind, IrNodeKind::Todo));
     }
 
     /// Build a trivial one-node graph (just an End node) with a given entry.

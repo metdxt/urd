@@ -72,11 +72,8 @@ pub fn render_sequence(graph: &IrGraph) -> String {
         .collect();
 
     // Sort labels by their entry NodeId (ascending = compilation order).
-    let mut sorted_labels: Vec<(&String, NodeId)> = graph
-        .labels
-        .iter()
-        .map(|(name, &id)| (name, id))
-        .collect();
+    let mut sorted_labels: Vec<(&String, NodeId)> =
+        graph.labels.iter().map(|(name, &id)| (name, id)).collect();
     sorted_labels.sort_by_key(|(_, id)| id.0);
 
     // Emit participant declarations.
@@ -90,13 +87,7 @@ pub fn render_sequence(graph: &IrGraph) -> String {
 
     // Emit the entry label, recursively expanding calls.
     let mut visited: HashSet<String> = HashSet::new();
-    if emit_label(
-        &entry_label,
-        graph,
-        &label_by_entry,
-        &mut visited,
-        &mut out,
-    ) {
+    if emit_label(&entry_label, graph, &label_by_entry, &mut visited, &mut out) {
         writeln!(out, "    deactivate {}", pid(&entry_label)).ok();
     }
 
@@ -161,14 +152,7 @@ fn emit_label(
     };
 
     writeln!(out, "    activate {}", pid(label_name)).ok();
-    walk(
-        entry_id,
-        label_name,
-        graph,
-        label_by_entry,
-        visited,
-        out,
-    );
+    walk(entry_id, label_name, graph, label_by_entry, visited, out);
     true
 }
 
@@ -431,7 +415,7 @@ fn find_entry_label(graph: &IrGraph) -> String {
 ///
 /// Replaces `"::"` → `"_"`, `"."` → `"_"`, `" "` → `"_"`.
 fn pid(s: &str) -> String {
-    s.replace("::", "_").replace('.', "_").replace(' ', "_")
+    s.replace("::", "_").replace(['.', ' '], "_")
 }
 
 /// Truncates `s` to at most `max` Unicode scalar values, appending `…` when
@@ -457,10 +441,7 @@ fn first_str(ast: &crate::parser::ast::Ast) -> String {
     match ast.content() {
         AstContent::Value(RuntimeValue::Str(ps)) => ps.to_string(),
         AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
-        AstContent::ExprList(items) => items
-            .first()
-            .map(first_str)
-            .unwrap_or_default(),
+        AstContent::ExprList(items) => items.first().map(first_str).unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -469,10 +450,7 @@ fn first_str(ast: &crate::parser::ast::Ast) -> String {
 /// the first line's text.
 fn first_str_from_list(ast: &crate::parser::ast::Ast) -> String {
     match ast.content() {
-        AstContent::ExprList(items) => items
-            .first()
-            .map(scalar_str)
-            .unwrap_or_default(),
+        AstContent::ExprList(items) => items.first().map(scalar_str).unwrap_or_default(),
         _ => scalar_str(ast),
     }
 }
@@ -590,8 +568,14 @@ label callee {
 }
 "#;
         let out = compile_script(script).to_sequence_mermaid();
-        assert!(out.contains("participant caller"), "caller participant missing");
-        assert!(out.contains("participant callee"), "callee participant missing");
+        assert!(
+            out.contains("participant caller"),
+            "caller participant missing"
+        );
+        assert!(
+            out.contains("participant callee"),
+            "callee participant missing"
+        );
     }
 
     // ── Call pairs ──────────────────────────────────────────────────────────

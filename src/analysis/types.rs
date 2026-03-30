@@ -319,7 +319,7 @@ fn check_value_compat(
                                 span,
                             });
                         }
-                    } else if ctx.enums.get(struct_name).is_none() {
+                    } else if !ctx.enums.contains_key(struct_name) {
                         // Neither a known enum nor a known struct — report mismatch.
                         errors.push(AnalysisError::TypeMismatch {
                             variable: variable.to_owned(),
@@ -463,14 +463,14 @@ fn check_struct_compat(
                 });
             }
             Some(val_ast) => {
-                if let AstContent::Value(rv) = val_ast.content() {
-                    if !is_compatible_simple(rv, &field.type_annotation) {
-                        field_errors.push(StructFieldError::WrongFieldType {
-                            field_name: field.name.clone(),
-                            expected_type: field.type_annotation.clone(),
-                            got: runtime_value_type_name(rv),
-                        });
-                    }
+                if let AstContent::Value(rv) = val_ast.content()
+                    && !is_compatible_simple(rv, &field.type_annotation)
+                {
+                    field_errors.push(StructFieldError::WrongFieldType {
+                        field_name: field.name.clone(),
+                        expected_type: field.type_annotation.clone(),
+                        got: runtime_value_type_name(rv),
+                    });
                 }
                 // Non-literal field value — silently accept (best-effort).
             }
@@ -628,11 +628,7 @@ mod tests {
     #[test]
     fn float_literal_compatible_with_float_annotation() {
         let ctx = make_ctx(&[]);
-        let ast = Ast::block(vec![typed_decl(
-            "f",
-            TypeAnnotation::Float,
-            float_lit(3.14),
-        )]);
+        let ast = Ast::block(vec![typed_decl("f", TypeAnnotation::Float, float_lit(2.5))]);
         assert_no_errors(&check(&ast, &ctx));
     }
 

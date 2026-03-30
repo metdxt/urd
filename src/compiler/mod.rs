@@ -12,6 +12,8 @@
 //!    [`NodeId`] of the sub-graph it just emitted; callers thread a `next` continuation
 //!    through every call so that every chain is fully linked on the first pass.
 
+pub(crate) mod loader;
+
 use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
@@ -96,7 +98,7 @@ impl Compiler {
         // subsequent imports of the same path (diamond dependencies).
         let mut in_progress = HashSet::new();
         let mut completed = HashSet::new();
-        compile_recursive(ast, loader, &mut in_progress, &mut completed)
+        loader::compile_recursive(ast, loader, &mut in_progress, &mut completed)
     }
 }
 
@@ -217,7 +219,7 @@ impl CompilerState {
                     AstContent::Value(crate::runtime::value::RuntimeValue::IdentPath(path))
                         if path.len() == 2 =>
                     {
-                        (format!("{}::{}", path[0], path[1]), DeclKind::Global)
+                        (crate::ir::namespace(&path[0], &path[1]), DeclKind::Global)
                     }
                     _ => (extract_name(left)?, DeclKind::Variable),
                 };
@@ -320,23 +322,7 @@ impl CompilerState {
                 expects_return,
             } => {
                 // Check for cross-module dot-notation: "alias.label_name"
-                let target = if let Some(dot_pos) = label.find('.') {
-                    let alias = &label[..dot_pos];
-                    let label_name = &label[dot_pos + 1..];
-                    let namespaced = format!("{}::{}", alias, label_name);
-                    // Cross-module labels are in the graph's labels map (merged in pass 0).
-                    self.graph
-                        .labels
-                        .get(&namespaced)
-                        .copied()
-                        .ok_or_else(|| CompilerError::UnknownLabel(label.clone()))?
-                } else {
-                    // Local jump: use label_placeholders (from pass 1 scan).
-                    self.label_placeholders
-                        .get(label)
-                        .copied()
-                        .ok_or_else(|| CompilerError::UnknownLabel(label.clone()))?
-                };
+                let target = resolve_label(label, &self.label_placeholders, &self.graph.labels)?;
 
                 if *expects_return {
                     // `jump label and return` — subroutine call without a binding.
@@ -356,21 +342,8 @@ impl CompilerState {
             // ── LetCall ───────────────────────────────────────────────────────
             AstContent::LetCall { name, target } => {
                 // Check for cross-module dot-notation: "alias.label_name"
-                let target_id = if let Some(dot_pos) = target.find('.') {
-                    let alias = &target[..dot_pos];
-                    let label_name = &target[dot_pos + 1..];
-                    let namespaced = format!("{}::{}", alias, label_name);
-                    self.graph
-                        .labels
-                        .get(&namespaced)
-                        .copied()
-                        .ok_or_else(|| CompilerError::UnknownLabel(target.clone()))?
-                } else {
-                    self.label_placeholders
-                        .get(target)
-                        .copied()
-                        .ok_or_else(|| CompilerError::UnknownLabel(target.clone()))?
-                };
+                let target_id =
+                    resolve_label(target, &self.label_placeholders, &self.graph.labels)?;
 
                 let id = self.graph.push(IrNodeKind::LetCall {
                     var: name.clone(),
@@ -567,7 +540,7 @@ fn extract_name(ast: &Ast) -> Result<String, CompilerError> {
         AstContent::Value(crate::runtime::value::RuntimeValue::IdentPath(path))
             if path.len() == 2 =>
         {
-            Ok(format!("{}::{}", path[0], path[1]))
+            Ok(crate::ir::namespace(&path[0], &path[1]))
         }
         other => Err(CompilerError::InvalidStatement(format!(
             "expected an identifier for variable name, got {:?}",
@@ -576,166 +549,31 @@ fn extract_name(ast: &Ast) -> Result<String, CompilerError> {
     }
 }
 
-// ─── Multi-file compilation helpers ──────────────────────────────────────────
-
-/// Compile `ast` recursively, resolving `import` statements via `loader`.
+/// Resolve a label string to a [`NodeId`], handling both local and cross-module
+/// (dot-notation `alias.label_name`) references.
 ///
-/// A fresh [`CompilerState`] is created for each module. Pass 0 merges all
-/// imported modules before the label-scan and emit passes so that cross-module
-/// labels are visible throughout.
-fn compile_recursive(
-    ast: &Ast,
-    loader: &dyn crate::vm::loader::FileLoader,
-    in_progress: &mut HashSet<String>,
-    completed: &mut HashSet<String>,
-) -> Result<IrGraph, CompilerError> {
-    let mut state = CompilerState::new();
-
-    // Pass 0: collect all imports and pre-merge them into the graph BEFORE
-    // the label scan pass. This ensures cross-module labels are in the graph's
-    // labels map before pass 2 tries to resolve jumps to them.
-    collect_imports(ast, &mut state, loader, in_progress, completed)?;
-
-    // Pass 1: scan local labels (imports are already merged).
-    state.scan_labels(ast);
-
-    // Pass 2: emit IR nodes.
-    let entry = state.compile_node(ast, NODE_END)?;
-    state.graph.entry = entry;
-
-    Ok(state.graph)
-}
-
-/// Pass 0: walk the AST looking for `Import` nodes. For each one, load, parse,
-/// and compile the imported module, then merge it into `state.graph`.
-fn collect_imports(
-    ast: &Ast,
-    state: &mut CompilerState,
-    loader: &dyn crate::vm::loader::FileLoader,
-    in_progress: &mut HashSet<String>,
-    completed: &mut HashSet<String>,
-) -> Result<(), CompilerError> {
-    match ast.content() {
-        AstContent::Block(stmts) => {
-            for stmt in stmts {
-                collect_imports(stmt, state, loader, in_progress, completed)?;
-            }
-        }
-        AstContent::Import { path, alias } => {
-            // True cycle: this module is already on the current call stack.
-            if in_progress.contains(path.as_str()) {
-                return Err(CompilerError::CircularImport(path.clone()));
-            }
-            // Diamond / repeated import: already compiled successfully, skip.
-            // The caller can still merge it under a different alias if needed,
-            // but we don't re-compile it.  For now we treat a repeated import
-            // under the same or a different alias as a no-op on the second
-            // encounter (the labels were already merged the first time under
-            // the first alias; a second merge under the same alias is fine too,
-            // but the most common case is simply "both A and B import C").
-            if completed.contains(path.as_str()) {
-                // Re-load and re-merge so the alias mapping is registered even
-                // for the second importer, but don't recurse into it again.
-                let src = loader
-                    .load(path)
-                    .map_err(|msg| CompilerError::ModuleLoadError {
-                        path: path.clone(),
-                        message: msg,
-                    })?;
-                let module_ast =
-                    parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
-                        path: path.clone(),
-                        message: msg,
-                    })?;
-                // Compile without recursion (no imports re-processed).
-                let mut inner = CompilerState::new();
-                inner.scan_labels(&module_ast);
-                let entry = inner.compile_node(&module_ast, NODE_END)?;
-                inner.graph.entry = entry;
-                state.graph.merge(inner.graph, alias);
-                return Ok(());
-            }
-
-            // Mark as in-progress before descending.
-            in_progress.insert(path.clone());
-
-            // Load the source text.
-            let src = loader
-                .load(path)
-                .map_err(|msg| CompilerError::ModuleLoadError {
-                    path: path.clone(),
-                    message: msg,
-                })?;
-
-            // Parse the source into an AST.
-            let module_ast = parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
-                path: path.clone(),
-                message: msg,
-            })?;
-
-            // Compile the module recursively (handles transitive imports).
-            let module_graph = compile_recursive(&module_ast, loader, in_progress, completed)?;
-
-            // Pop from in-progress and mark as completed.
-            in_progress.remove(path.as_str());
-            completed.insert(path.clone());
-
-            // Merge into our graph, namespacing all labels as "alias::label".
-            state.graph.merge(module_graph, alias);
-        }
-        // Recurse into other block-like constructs so that nested imports are found.
-        AstContent::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_imports(then_block, state, loader, in_progress, completed)?;
-            if let Some(eb) = else_block {
-                collect_imports(eb, state, loader, in_progress, completed)?;
-            }
-        }
-        AstContent::Menu { options } => {
-            for opt in options {
-                if let AstContent::MenuOption { content, .. } = opt.content() {
-                    collect_imports(content, state, loader, in_progress, completed)?;
-                }
-            }
-        }
-        AstContent::Match { arms, .. } => {
-            for arm in arms {
-                collect_imports(&arm.body, state, loader, in_progress, completed)?;
-            }
-        }
-        _ => {}
+/// Local labels are looked up in `label_placeholders` (populated by the label scan pass).
+/// Cross-module labels (`alias.name`) are looked up in the graph's `labels` map, which
+/// is pre-populated by the import pass.
+fn resolve_label(
+    label: &str,
+    label_placeholders: &HashMap<String, NodeId>,
+    graph_labels: &HashMap<String, NodeId>,
+) -> Result<NodeId, CompilerError> {
+    if let Some(dot_pos) = label.find('.') {
+        let alias = &label[..dot_pos];
+        let label_name = &label[dot_pos + 1..];
+        let namespaced = crate::ir::namespace(alias, label_name);
+        graph_labels
+            .get(&namespaced)
+            .copied()
+            .ok_or_else(|| CompilerError::UnknownLabel(label.to_owned()))
+    } else {
+        label_placeholders
+            .get(label)
+            .copied()
+            .ok_or_else(|| CompilerError::UnknownLabel(label.to_owned()))
     }
-    Ok(())
-}
-
-/// Parse a raw Urd source string into an [`Ast`]. Returns `Err(message)` on
-/// parse failure, collecting all parse errors into a single semicolon-separated
-/// string.
-fn parse_source(src: &str) -> Result<Ast, String> {
-    use chumsky::input::Stream;
-    use chumsky::prelude::*;
-    use chumsky::span::SimpleSpan;
-
-    use crate::lexer::{Token, lex_src};
-    use crate::parser::block::script;
-
-    let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
-        Ok(tok) => (tok, span.into()),
-        Err(e) => (Token::Error(e), span.into()),
-    });
-
-    let stream =
-        Stream::from_iter(lexer).map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
-
-    script().parse(stream).into_result().map_err(|errs| {
-        errs.iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("; ")
-    })
 }
 
 // ─── Unit tests ───────────────────────────────────────────────────────────────

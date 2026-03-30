@@ -16,7 +16,7 @@ use chumsky::span::{SimpleSpan, Span};
 use crate::runtime::value::RuntimeValue;
 
 /// Represents a node in the Abstract Syntax Tree.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Ast {
     /// A list of decorators for event. Only makes sense for Block, LabeledBlock, Dialogue, Menu, MenuOption. Ignored otherwise.
     decorators: Vec<Decorator>,
@@ -24,6 +24,18 @@ pub struct Ast {
     content: AstContent,
     /// The source span this node was parsed from. Zero span when constructed outside the parser.
     span: SimpleSpan,
+}
+
+impl PartialEq for Ast {
+    /// Compares two AST nodes for structural equality, **ignoring source spans**.
+    ///
+    /// Spans are source-location metadata injected by the parser; manually-constructed
+    /// nodes (e.g. in tests) carry a zero span `0..0`, while parsed nodes carry real
+    /// byte-offset spans. Excluding spans from equality makes test assertions robust
+    /// to this difference.
+    fn eq(&self, other: &Self) -> bool {
+        self.decorators == other.decorators && self.content == other.content
+    }
 }
 
 /// A decorator applied to an AST node, using Python-like `@name` or `@name(args)` syntax.
@@ -395,6 +407,7 @@ pub enum AstContent {
     },
 }
 
+#[allow(missing_docs)]
 impl Ast {
     /// Creates a new AST node with the given content and a zero span.
     pub fn new(content: AstContent) -> Self {
@@ -463,97 +476,74 @@ impl Ast {
         &self.content
     }
 
-    #[allow(missing_docs)]
     pub fn add_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Plus, l, r)
     }
-    #[allow(missing_docs)]
-    pub fn substract_op(l: Ast, r: Ast) -> Self {
+    pub fn subtract_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Minus, l, r)
     }
-    #[allow(missing_docs)]
     pub fn multiply_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Multiply, l, r)
     }
-    #[allow(missing_docs)]
     pub fn divide_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Divide, l, r)
     }
-    #[allow(missing_docs)]
     pub fn floordiv_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::DoubleSlash, l, r)
     }
-    #[allow(missing_docs)]
     pub fn modulo_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Percent, l, r)
     }
-    #[allow(missing_docs)]
     pub fn equals_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Equals, l, r)
     }
-    #[allow(missing_docs)]
     pub fn not_equals_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::NotEquals, l, r)
     }
-    #[allow(missing_docs)]
     pub fn greater_than_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::GreaterThan, l, r)
     }
-    #[allow(missing_docs)]
     pub fn less_than_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::LessThan, l, r)
     }
-    #[allow(missing_docs)]
     pub fn greater_than_or_equals_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::GreaterThanOrEquals, l, r)
     }
-    #[allow(missing_docs)]
     pub fn less_than_or_equals_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::LessThanOrEquals, l, r)
     }
-    #[allow(missing_docs)]
     pub fn bitwise_and_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::BitwiseAnd, l, r)
     }
-    #[allow(missing_docs)]
     pub fn bitwise_or_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::BitwiseOr, l, r)
     }
-    #[allow(missing_docs)]
     pub fn bitwise_xor_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::BitwiseXor, l, r)
     }
-    #[allow(missing_docs)]
     pub fn left_shift_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::LeftShift, l, r)
     }
-    #[allow(missing_docs)]
     pub fn right_shift_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::RightShift, l, r)
     }
-    #[allow(missing_docs)]
     pub fn and_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::And, l, r)
     }
-    #[allow(missing_docs)]
     pub fn or_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Or, l, r)
     }
-    #[allow(missing_docs)]
     pub fn not_op(expr: Ast) -> Self {
         Ast::unary(UnaryOperator::Not, expr)
     }
-    #[allow(missing_docs)]
     pub fn assign_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Assign, l, r)
     }
 
-    #[allow(missing_docs)]
     pub fn bitwise_not_op(expr: Ast) -> Self {
         Ast::unary(UnaryOperator::BitwiseNot, expr)
     }
 
-    #[allow(missing_docs)]
     pub fn negate_op(expr: Ast) -> Self {
         Ast::unary(UnaryOperator::Negate, expr)
     }

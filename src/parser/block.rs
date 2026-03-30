@@ -545,9 +545,22 @@ fn match_parser<'tok, I: UrdInput<'tok>>(
         .boxed()
 }
 
+/// Parser for a bare script body (list of statements without braces).
+pub fn script<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
+    let separator = just(Token::Newline).or(just(Token::Semicolon));
+
+    statement()
+        .separated_by(separator.repeated().at_least(1))
+        .allow_leading()
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .map_with(|stmts, extra| Ast::block(stmts).with_span(extra.span()))
+        .boxed()
+}
+
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
     use crate::{parse_test, parser::ast::AstContent};
@@ -835,17 +848,4 @@ mod tests {
             ast.content()
         );
     }
-}
-
-/// Parser for a bare script body (list of statements without braces).
-pub fn script<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
-    let separator = just(Token::Newline).or(just(Token::Semicolon));
-
-    statement()
-        .separated_by(separator.repeated().at_least(1))
-        .allow_leading()
-        .allow_trailing()
-        .collect::<Vec<_>>()
-        .map_with(|stmts, extra| Ast::block(stmts).with_span(extra.span()))
-        .boxed()
 }
