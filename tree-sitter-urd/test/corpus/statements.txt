@@ -1,0 +1,1730 @@
+================================================================================
+Declaration let simple
+================================================================================
+
+let x = 42
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    value: (integer)))
+
+================================================================================
+Declaration const simple
+================================================================================
+
+const MAX = 100
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    value: (integer)))
+
+================================================================================
+Declaration global simple
+================================================================================
+
+global score = 0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    value: (integer)))
+
+================================================================================
+Declaration let with type annotation int
+================================================================================
+
+let hp: int = 100
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (integer)))
+
+================================================================================
+Declaration let with type annotation float
+================================================================================
+
+let ratio: float = 0.5
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (float)))
+
+================================================================================
+Declaration let with type annotation bool
+================================================================================
+
+let flag: bool = true
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (boolean)))
+
+================================================================================
+Declaration let with type annotation str
+================================================================================
+
+let msg: str = "hello"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (string
+      (string_literal_fragment))))
+
+================================================================================
+Declaration let with type annotation null
+================================================================================
+
+let nothing: null = null
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (null)))
+
+================================================================================
+Declaration let with type annotation list
+================================================================================
+
+let items: list = []
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (list_expr)))
+
+================================================================================
+Declaration let with type annotation map
+================================================================================
+
+let data: map = :{}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (map_expr)))
+
+================================================================================
+Declaration let with type annotation dice
+================================================================================
+
+let roll: dice = 2d6
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (dice)))
+
+================================================================================
+Declaration let with type annotation label
+================================================================================
+
+let target: label = intro
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (identifier_path (identifier))))
+
+================================================================================
+Declaration let with named user type
+================================================================================
+
+let dir: Direction = North
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name
+        (identifier_path (identifier))))
+    value: (identifier_path (identifier))))
+
+================================================================================
+Declaration let with qualified named user type
+================================================================================
+
+let pt: my_mod.Point = make_point(1, 2)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name
+        (identifier_path
+          (identifier)
+          (identifier))))
+    value: (call_expr
+      function: (identifier_path (identifier))
+      argument: (integer)
+      argument: (integer))))
+
+================================================================================
+Declaration const with string value
+================================================================================
+
+const greeting: str = "Good morning"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name))
+    value: (string
+      (string_literal_fragment))))
+
+================================================================================
+Declaration global with struct map value
+================================================================================
+
+const aria: Character = :{ name: "ARIA", name_color: "cyan" }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    type: (type_annotation
+      (type_name
+        (identifier_path (identifier))))
+    value: (map_expr
+      key: (identifier_path (identifier))
+      value: (string (string_literal_fragment))
+      key: (identifier_path (identifier))
+      value: (string (string_literal_fragment)))))
+
+================================================================================
+Declaration with expression value
+================================================================================
+
+let damage = base * multiplier + bonus
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    value: (binary_expr
+      left: (binary_expr
+        left: (identifier_path (identifier))
+        operator: (binary_operator)
+        right: (identifier_path (identifier)))
+      operator: (binary_operator)
+      right: (identifier_path (identifier)))))
+
+================================================================================
+Assignment simple
+================================================================================
+
+gold = 50
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (assignment
+    target: (identifier_path (identifier))
+    value: (integer)))
+
+================================================================================
+Assignment with expression
+================================================================================
+
+health = health - 30
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (assignment
+    target: (identifier_path (identifier))
+    value: (binary_expr
+      left: (identifier_path (identifier))
+      operator: (binary_operator)
+      right: (integer))))
+
+================================================================================
+Assignment to path identifier
+================================================================================
+
+player.score = 100
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (assignment
+    target: (identifier_path
+      (identifier)
+      (identifier))
+    value: (integer)))
+
+================================================================================
+Assignment boolean
+================================================================================
+
+has_key = true
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (assignment
+    target: (identifier_path (identifier))
+    value: (boolean)))
+
+================================================================================
+Assignment enum variant
+================================================================================
+
+heading = North
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (assignment
+    target: (identifier_path (identifier))
+    value: (identifier_path (identifier))))
+
+================================================================================
+Subscript assignment
+================================================================================
+
+inventory[0] = "sword"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (subscript_assignment
+    object: (identifier_path (identifier))
+    key: (integer)
+    value: (string
+      (string_literal_fragment))))
+
+================================================================================
+Subscript assignment with expression key
+================================================================================
+
+grid[row] = new_row
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (subscript_assignment
+    object: (identifier_path (identifier))
+    key: (identifier_path (identifier))
+    value: (identifier_path (identifier))))
+
+================================================================================
+Subscript assignment with expression value
+================================================================================
+
+stats[level] = base + bonus
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (subscript_assignment
+    object: (identifier_path (identifier))
+    key: (identifier_path (identifier))
+    value: (binary_expr
+      left: (identifier_path (identifier))
+      operator: (binary_operator)
+      right: (identifier_path (identifier)))))
+
+================================================================================
+If statement simple
+================================================================================
+
+if x > 0 {
+  jump win
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    condition: (binary_expr
+      left: (identifier_path (identifier))
+      operator: (binary_operator)
+      right: (integer))
+    consequence: (block
+      (jump_statement
+        label: (identifier_path (identifier))))))
+
+================================================================================
+If statement with else
+================================================================================
+
+if health > 0 {
+  jump alive
+} else {
+  jump dead
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    condition: (binary_expr
+      left: (identifier_path (identifier))
+      operator: (binary_operator)
+      right: (integer))
+    consequence: (block
+      (jump_statement
+        label: (identifier_path (identifier))))
+    else_clause: (else_clause
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+If statement with elif
+================================================================================
+
+if gold >= 60 {
+  jump rich_ending
+} elif gold >= 10 {
+  jump ok_ending
+} else {
+  jump poor_ending
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    condition: (binary_expr
+      left: (identifier_path (identifier))
+      operator: (binary_operator)
+      right: (integer))
+    consequence: (block
+      (jump_statement
+        label: (identifier_path (identifier))))
+    elif_clause: (elif_clause
+      condition: (binary_expr
+        left: (identifier_path (identifier))
+        operator: (binary_operator)
+        right: (integer))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    else_clause: (else_clause
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+If statement multiple elif
+================================================================================
+
+if a {
+  jump x
+} elif b {
+  jump y
+} elif c {
+  jump z
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    condition: (identifier_path (identifier))
+    consequence: (block
+      (jump_statement
+        label: (identifier_path (identifier))))
+    elif_clause: (elif_clause
+      condition: (identifier_path (identifier))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    elif_clause: (elif_clause
+      condition: (identifier_path (identifier))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+If with declaration inside block
+================================================================================
+
+if has_key {
+  let reward: int = 50
+  gold = gold + reward
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    condition: (identifier_path (identifier))
+    consequence: (block
+      (declaration
+        name: (identifier_path (identifier))
+        type: (type_annotation (type_name))
+        value: (integer))
+      (assignment
+        target: (identifier_path (identifier))
+        value: (binary_expr
+          left: (identifier_path (identifier))
+          operator: (binary_operator)
+          right: (identifier_path (identifier)))))))
+
+================================================================================
+Match statement single arm
+================================================================================
+
+match heading {
+  North {
+    jump north_route
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (match_statement
+    scrutinee: (identifier_path (identifier))
+    arm: (match_arm
+      pattern: (identifier_path (identifier))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Match statement multiple arms
+================================================================================
+
+match heading {
+  North {
+    jump north
+  }
+  South {
+    jump south
+  }
+  East {
+    jump east
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (match_statement
+    scrutinee: (identifier_path (identifier))
+    arm: (match_arm
+      pattern: (identifier_path (identifier))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    arm: (match_arm
+      pattern: (identifier_path (identifier))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    arm: (match_arm
+      pattern: (identifier_path (identifier))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Match statement wildcard arm
+================================================================================
+
+match result {
+  _ {
+    jump fallback
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (match_statement
+    scrutinee: (identifier_path (identifier))
+    arm: (match_arm
+      pattern: (wildcard)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Match statement with literal patterns
+================================================================================
+
+match score {
+  0 {
+    jump zero_score
+  }
+  100 {
+    jump perfect
+  }
+  _ {
+    jump normal
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (match_statement
+    scrutinee: (identifier_path (identifier))
+    arm: (match_arm
+      pattern: (integer)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    arm: (match_arm
+      pattern: (integer)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    arm: (match_arm
+      pattern: (wildcard)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Match statement with boolean pattern
+================================================================================
+
+match flag {
+  true {
+    jump enabled
+  }
+  false {
+    jump disabled
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (match_statement
+    scrutinee: (identifier_path (identifier))
+    arm: (match_arm
+      pattern: (boolean)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    arm: (match_arm
+      pattern: (boolean)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Match statement with null pattern
+================================================================================
+
+match val {
+  null {
+    jump handle_null
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (match_statement
+    scrutinee: (identifier_path (identifier))
+    arm: (match_arm
+      pattern: (null)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Match statement with string pattern
+================================================================================
+
+match mode {
+  "easy" {
+    jump easy_mode
+  }
+  "hard" {
+    jump hard_mode
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (match_statement
+    scrutinee: (identifier_path (identifier))
+    arm: (match_arm
+      pattern: (string (string_literal_fragment))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    arm: (match_arm
+      pattern: (string (string_literal_fragment))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Return statement no value
+================================================================================
+
+return
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (return_statement))
+
+================================================================================
+Return statement with integer value
+================================================================================
+
+return 42
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (return_statement
+    value: (integer)))
+
+================================================================================
+Return statement with expression
+================================================================================
+
+return gold + bonus
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (return_statement
+    value: (binary_expr
+      left: (identifier_path (identifier))
+      operator: (binary_operator)
+      right: (identifier_path (identifier)))))
+
+================================================================================
+Return statement with boolean
+================================================================================
+
+return true
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (return_statement
+    value: (boolean)))
+
+================================================================================
+Return statement with null
+================================================================================
+
+return null
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (return_statement
+    value: (null)))
+
+================================================================================
+Jump statement simple
+================================================================================
+
+jump intro
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (jump_statement
+    label: (identifier_path (identifier))))
+
+================================================================================
+Jump statement underscore label
+================================================================================
+
+jump _end
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (jump_statement
+    label: (identifier_path (identifier))))
+
+================================================================================
+Jump statement and return
+================================================================================
+
+jump calc_damage and return
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (jump_statement
+    label: (identifier_path
+      (identifier))))
+
+================================================================================
+Jump statement cross-module dot path
+================================================================================
+
+jump quest.intro
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (jump_statement
+    label: (identifier_path
+      (identifier)
+      (identifier))))
+
+================================================================================
+Let call statement
+================================================================================
+
+let result = jump compute and return
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_call_statement
+    name: (identifier)
+    target: (identifier_path
+      (identifier))))
+
+================================================================================
+Let call statement cross-module target
+================================================================================
+
+let val = jump math.clamp and return
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_call_statement
+    name: (identifier)
+    target: (identifier_path
+      (identifier)
+      (identifier))))
+
+================================================================================
+Label statement empty body
+================================================================================
+
+label _end {
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (label_statement
+    name: (identifier)
+    body: (block)))
+
+================================================================================
+Label statement with jump
+================================================================================
+
+label intro {
+  jump main_menu
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (label_statement
+    name: (identifier)
+    body: (block
+      (jump_statement
+        label: (identifier_path (identifier))))))
+
+================================================================================
+Label statement with multiple statements
+================================================================================
+
+label start {
+  global turn = 0
+  global alive = true
+  jump opening
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (label_statement
+    name: (identifier)
+    body: (block
+      (declaration
+        name: (identifier_path (identifier))
+        value: (integer))
+      (declaration
+        name: (identifier_path (identifier))
+        value: (boolean))
+      (jump_statement
+        label: (identifier_path (identifier))))))
+
+================================================================================
+Dialogue statement single speaker string content
+================================================================================
+
+<narrator>: "Hello, traveler."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (dialogue_statement
+    speaker: (identifier_path (identifier))
+    content: (string
+      (string_literal_fragment))))
+
+================================================================================
+Dialogue statement single speaker interpolated string
+================================================================================
+
+<aria>: "Hull integrity: {hull_integrity} percent."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (dialogue_statement
+    speaker: (identifier_path (identifier))
+    content: (string
+      (string_literal_fragment)
+      (interpolation
+        (interpolation_path))
+      (string_literal_fragment))))
+
+================================================================================
+Dialogue statement with block content single line
+================================================================================
+
+<narrator>: {
+  "You stand at the crossroads."
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (dialogue_statement
+    speaker: (identifier_path (identifier))
+    content: (dialogue_block
+      line: (string
+        (string_literal_fragment)))))
+
+================================================================================
+Dialogue statement with block content multiple lines
+================================================================================
+
+<aria>: {
+  "Good morning, Commander."
+  "All primary systems are nominal."
+  "Shall we chart a course?"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (dialogue_statement
+    speaker: (identifier_path (identifier))
+    content: (dialogue_block
+      line: (string (string_literal_fragment))
+      line: (string (string_literal_fragment))
+      line: (string (string_literal_fragment)))))
+
+================================================================================
+Dialogue statement multiple speakers
+================================================================================
+
+<aria, commander>: "We have a situation."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (dialogue_statement
+    speaker: (identifier_path (identifier))
+    speaker: (identifier_path (identifier))
+    content: (string
+      (string_literal_fragment))))
+
+================================================================================
+Dialogue statement speaker is a path
+================================================================================
+
+<ship.captain>: "Full speed ahead."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (dialogue_statement
+    speaker: (identifier_path
+      (identifier)
+      (identifier))
+    content: (string
+      (string_literal_fragment))))
+
+================================================================================
+Dialogue statement with escape sequence in string
+================================================================================
+
+<narrator>: "Line one.\nLine two."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (dialogue_statement
+    speaker: (identifier_path (identifier))
+    content: (string
+      (string_literal_fragment)
+      (escape_sequence)
+      (string_literal_fragment))))
+
+================================================================================
+Menu statement single option
+================================================================================
+
+menu {
+  "Continue" {
+    jump next
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (menu_statement
+    option: (menu_option
+      label: (string (string_literal_fragment))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Menu statement multiple options
+================================================================================
+
+menu {
+  "Go north" {
+    jump north
+  }
+  "Go south" {
+    jump south
+  }
+  "Turn back" {
+    jump entrance
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (menu_statement
+    option: (menu_option
+      label: (string (string_literal_fragment))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    option: (menu_option
+      label: (string (string_literal_fragment))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))
+    option: (menu_option
+      label: (string (string_literal_fragment))
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Menu option body with multiple statements
+================================================================================
+
+menu {
+  "Take the torch" {
+    has_torch = true
+    gold = gold - 5
+    jump cave
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (menu_statement
+    option: (menu_option
+      label: (string (string_literal_fragment))
+      body: (block
+        (assignment
+          target: (identifier_path (identifier))
+          value: (boolean))
+        (assignment
+          target: (identifier_path (identifier))
+          value: (binary_expr
+            left: (identifier_path (identifier))
+            operator: (binary_operator)
+            right: (integer)))
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Enum declaration single variant
+================================================================================
+
+enum Status { Active }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (enum_declaration
+    name: (identifier)
+    variant: (identifier)))
+
+================================================================================
+Enum declaration comma separated
+================================================================================
+
+enum Direction { North, South, East, West }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (enum_declaration
+    name: (identifier)
+    variant: (identifier)
+    variant: (identifier)
+    variant: (identifier)
+    variant: (identifier)))
+
+================================================================================
+Enum declaration newline separated
+================================================================================
+
+enum Phase {
+  Intro
+  Rising
+  Climax
+  Resolution
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (enum_declaration
+    name: (identifier)
+    variant: (identifier)
+    variant: (identifier)
+    variant: (identifier)
+    variant: (identifier)))
+
+================================================================================
+Enum declaration trailing comma
+================================================================================
+
+enum Color { Red, Green, Blue, }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (enum_declaration
+    name: (identifier)
+    variant: (identifier)
+    variant: (identifier)
+    variant: (identifier)))
+
+================================================================================
+Struct declaration single field
+================================================================================
+
+struct Point {
+  x: int
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (struct_declaration
+    name: (identifier)
+    field: (struct_field
+      name: (identifier)
+      type: (type_annotation (type_name)))))
+
+================================================================================
+Struct declaration multiple fields newline separated
+================================================================================
+
+struct Character {
+  name: str
+  name_color: str
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (struct_declaration
+    name: (identifier)
+    field: (struct_field
+      name: (identifier)
+      type: (type_annotation (type_name)))
+    field: (struct_field
+      name: (identifier)
+      type: (type_annotation (type_name)))))
+
+================================================================================
+Struct declaration with int and bool fields
+================================================================================
+
+struct SystemReport {
+  status: str
+  integrity: int
+  critical: bool
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (struct_declaration
+    name: (identifier)
+    field: (struct_field
+      name: (identifier)
+      type: (type_annotation (type_name)))
+    field: (struct_field
+      name: (identifier)
+      type: (type_annotation (type_name)))
+    field: (struct_field
+      name: (identifier)
+      type: (type_annotation (type_name)))))
+
+================================================================================
+Struct declaration comma separated fields
+================================================================================
+
+struct Vec2 { x: float, y: float }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (struct_declaration
+    name: (identifier)
+    field: (struct_field
+      name: (identifier)
+      type: (type_annotation (type_name)))
+    field: (struct_field
+      name: (identifier)
+      type: (type_annotation (type_name)))))
+
+================================================================================
+Struct declaration with named type field
+================================================================================
+
+struct Party {
+  leader: Character
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (struct_declaration
+    name: (identifier)
+    field: (struct_field
+      name: (identifier)
+      type: (type_annotation
+        (type_name
+          (identifier_path (identifier)))))))
+
+================================================================================
+Decorator definition bare no params no constraint
+================================================================================
+
+decorator log() {
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorator_definition
+    name: (identifier)
+    body: (block
+      (return_statement))))
+
+================================================================================
+Decorator definition with dialogue event constraint no params
+================================================================================
+
+decorator shout<event: dialogue>() {
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorator_definition
+    name: (identifier)
+    event_constraint: (event_constraint)
+    body: (block
+      (return_statement))))
+
+================================================================================
+Decorator definition with choice event constraint
+================================================================================
+
+decorator highlight<event: choice>() {
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorator_definition
+    name: (identifier)
+    event_constraint: (event_constraint)
+    body: (block
+      (return_statement))))
+
+================================================================================
+Decorator definition with typed param
+================================================================================
+
+decorator color<event: dialogue>(hue: str) {
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorator_definition
+    name: (identifier)
+    event_constraint: (event_constraint)
+    param: (decorator_param
+      name: (identifier)
+      type: (type_annotation (type_name)))
+    body: (block
+      (return_statement))))
+
+================================================================================
+Decorator definition with multiple params
+================================================================================
+
+decorator format<event: dialogue>(fg: str, bg: str, bold: bool) {
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorator_definition
+    name: (identifier)
+    event_constraint: (event_constraint)
+    param: (decorator_param
+      name: (identifier)
+      type: (type_annotation (type_name)))
+    param: (decorator_param
+      name: (identifier)
+      type: (type_annotation (type_name)))
+    param: (decorator_param
+      name: (identifier)
+      type: (type_annotation (type_name)))
+    body: (block
+      (return_statement))))
+
+================================================================================
+Decorator definition param without type annotation
+================================================================================
+
+decorator tag(value) {
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorator_definition
+    name: (identifier)
+    param: (decorator_param
+      name: (identifier))
+    body: (block
+      (return_statement))))
+
+================================================================================
+Decorator application bare
+================================================================================
+
+@bold
+label hero_speech {
+  jump speech
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (identifier))
+    (label_statement
+      name: (identifier)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Decorator application with no arguments
+================================================================================
+
+@flash()
+label alert {
+  jump danger
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (identifier))
+    (label_statement
+      name: (identifier)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Decorator application with string argument
+================================================================================
+
+@color("red")
+<aria>: "Warning!"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (identifier)
+      argument: (string (string_literal_fragment)))
+    (dialogue_statement
+      speaker: (identifier_path (identifier))
+      content: (string (string_literal_fragment)))))
+
+================================================================================
+Decorator application with multiple arguments
+================================================================================
+
+@format("cyan", "black", true)
+<narrator>: "System message."
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (identifier)
+      argument: (string (string_literal_fragment))
+      argument: (string (string_literal_fragment))
+      argument: (boolean))
+    (dialogue_statement
+      speaker: (identifier_path (identifier))
+      content: (string (string_literal_fragment)))))
+
+================================================================================
+Multiple decorators stacked
+================================================================================
+
+@bold
+@color("yellow")
+label warning {
+  jump caution
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (identifier))
+    (decorator
+      name: (identifier)
+      argument: (string (string_literal_fragment)))
+    (label_statement
+      name: (identifier)
+      body: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Decorator applied to menu statement
+================================================================================
+
+@important
+menu {
+  "Proceed" {
+    jump next
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (identifier))
+    (menu_statement
+      option: (menu_option
+        label: (string (string_literal_fragment))
+        body: (block
+          (jump_statement
+            label: (identifier_path (identifier))))))))
+
+================================================================================
+Decorator applied to bare block
+================================================================================
+
+@trace
+{
+  let x = 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (identifier))
+    (block
+      (declaration
+        name: (identifier_path (identifier))
+        value: (integer)))))
+
+================================================================================
+Import statement simple path
+================================================================================
+
+import "items" as items
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    path: (string (string_literal_fragment))
+    alias: (identifier)))
+
+================================================================================
+Import statement nested path
+================================================================================
+
+import "quests/cave" as cave
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    path: (string (string_literal_fragment))
+    alias: (identifier)))
+
+================================================================================
+Import statement with underscore alias
+================================================================================
+
+import "utils/math" as _math
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    path: (string (string_literal_fragment))
+    alias: (identifier)))
+
+================================================================================
+Block empty
+================================================================================
+
+{}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block))
+
+================================================================================
+Block single statement
+================================================================================
+
+{ jump intro }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block
+    (jump_statement
+      label: (identifier_path (identifier)))))
+
+================================================================================
+Block multiple statements
+================================================================================
+
+{
+  let x = 1
+  let y = 2
+  return x + y
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block
+    (declaration
+      name: (identifier_path (identifier))
+      value: (integer))
+    (declaration
+      name: (identifier_path (identifier))
+      value: (integer))
+    (return_statement
+      value: (binary_expr
+        left: (identifier_path (identifier))
+        operator: (binary_operator)
+        right: (identifier_path (identifier))))))
+
+================================================================================
+Block with semicolon separator
+================================================================================
+
+{ let a = 1; let b = 2; return a }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block
+    (declaration
+      name: (identifier_path (identifier))
+      value: (integer))
+    (declaration
+      name: (identifier_path (identifier))
+      value: (integer))
+    (return_statement
+      value: (identifier_path (identifier)))))
+
+================================================================================
+Full label with dialogue and menu
+================================================================================
+
+label cave_entrance {
+  <narrator>: "You stand at the cave entrance."
+
+  menu {
+    "Enter" {
+      jump depths
+    }
+    "Leave" {
+      jump road
+    }
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (label_statement
+    name: (identifier)
+    body: (block
+      (dialogue_statement
+        speaker: (identifier_path (identifier))
+        content: (string (string_literal_fragment)))
+      (menu_statement
+        option: (menu_option
+          label: (string (string_literal_fragment))
+          body: (block
+            (jump_statement
+              label: (identifier_path (identifier)))))
+        option: (menu_option
+          label: (string (string_literal_fragment))
+          body: (block
+            (jump_statement
+              label: (identifier_path (identifier)))))))))
+
+================================================================================
+Multiple top-level statements
+================================================================================
+
+global hp = 100
+global gold = 0
+jump start
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    value: (integer))
+  (declaration
+    name: (identifier_path (identifier))
+    value: (integer))
+  (jump_statement
+    label: (identifier_path (identifier))))
+
+================================================================================
+Comments between statements
+================================================================================
+
+# define state
+global alive = true
+# begin
+jump intro
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (declaration
+    name: (identifier_path (identifier))
+    value: (boolean))
+  (line_comment)
+  (jump_statement
+    label: (identifier_path (identifier))))

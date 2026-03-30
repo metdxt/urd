@@ -1,0 +1,18 @@
+{
+    "grammars": [
+        {
+            "name": "urd",
+            "scope": "source.urd",
+            "path": ".",
+            "file-types": ["urd"],
+            "highlights": "queries/highlights.scm",
+            "locals": "queries/locals.scm",
+            "indents": "queries/indents.scm",
+            "injection-regex": "^urd$"
+        }
+    ],
+    "metadata": {
+        "version": "0.1.0",
+        "description": "Tree-sitter grammar for the Urd dialogue scripting language"
+    }
+}
