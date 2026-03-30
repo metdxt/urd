@@ -222,11 +222,16 @@ impl WorkspaceIndex {
             if let Some(ast) = &module.ast {
                 let symbols = collect_symbols(ast);
                 // We don't have a byte offset here, so use find_definition to
-                // get the span and then ask for hover at that position.
+                // get the span and then locate the *name* inside it (to avoid
+                // landing on a keyword like `label` which hover_info now
+                // suppresses).
                 if let Some(span) = crate::semantic::find_definition(ast, local_name) {
-                    // Use the start of the definition span as the query offset.
+                    let name_offset = module.source[span.start..span.end]
+                        .find(local_name)
+                        .map(|rel| span.start + rel)
+                        .unwrap_or(span.start);
                     if let Some(md) =
-                        crate::semantic::hover_info(ast, &symbols, &module.source, span.start)
+                        crate::semantic::hover_info(ast, &symbols, &module.source, name_offset)
                     {
                         return Some(md);
                     }

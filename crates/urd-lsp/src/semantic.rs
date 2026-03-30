@@ -628,6 +628,12 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
             return None;
         }
 
+        // If the cursor is on a keyword, operator, or punctuation there's
+        // nothing useful to show — suppress the container hover.
+        if is_keyword_or_syntax(src, byte_offset) {
+            return None;
+        }
+
         // Nothing more specific — show the container symbol itself.
         return Some(hover_for_symbol(sym, ast));
     }
@@ -739,19 +745,58 @@ fn hover_from_ast(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
         AstContent::Value(RuntimeValue::Dice(count, sides)) => {
             Some(format!("**dice** `{count}d{sides}`"))
         }
-        AstContent::Jump {
-            label,
-            expects_return,
-        } => {
-            if *expects_return {
-                Some(format!("**jump** `{label}` and return"))
-            } else {
-                Some(format!("**jump** `{label}`"))
-            }
+        // These nodes are self-evident from the source text — suppress hover
+        // and claim the position so the label/decorator fallback doesn't fire.
+        AstContent::Jump { .. } | AstContent::Menu { .. } | AstContent::MenuOption { .. } => {
+            Some(String::new())
         }
         // Recurse into children to find the innermost match.
         _ => hover_from_ast_children(ast.content(), symbols, src, byte_offset),
     }
+}
+
+/// Return `true` when `byte_offset` sits on a language keyword, operator, or
+/// punctuation — anything that doesn't benefit from a hover tooltip.
+fn is_keyword_or_syntax(src: &str, byte_offset: usize) -> bool {
+    let bytes = src.as_bytes();
+    if byte_offset >= bytes.len() {
+        return false;
+    }
+
+    // Non-identifier byte → operator / punctuation / whitespace.
+    let b = bytes[byte_offset];
+    let is_ident = b.is_ascii_alphanumeric() || b == b'_';
+    if !is_ident {
+        return true;
+    }
+
+    // Extract the full word surrounding the offset.
+    let mut start = byte_offset;
+    while start > 0 && {
+        let p = bytes[start - 1];
+        p.is_ascii_alphanumeric() || p == b'_'
+    } {
+        start -= 1;
+    }
+    let mut end = byte_offset + 1;
+    while end < bytes.len() && {
+        let p = bytes[end];
+        p.is_ascii_alphanumeric() || p == b'_'
+    } {
+        end += 1;
+    }
+    let word = &src[start..end];
+
+    // Check against known keywords (including `end!` / `todo!`).
+    KEYWORDS.iter().any(|kw| *kw == word)
+        || word == "elif"
+        || word == "else"
+        || word == "event"
+        || word == "as"
+        || word == "dialogue"
+        || word == "choice"
+        || word == "end"
+        || word == "todo"
 }
 
 /// Check whether `byte_offset` falls inside a string interpolation `{…}` and,
@@ -1853,7 +1898,8 @@ mod tests {
         let ast = parse(src);
         let syms = collect_symbols(&ast);
         let label_sym = syms.iter().find(|s| s.kind == SymbolKind::Label).unwrap();
-        let mid = label_sym.span.start + 1;
+        // Point at the label *name* ("greet"), not the "label" keyword.
+        let mid = src.find("greet").unwrap() + 1;
         let info = hover_info(&ast, &syms, src, mid);
         assert!(info.is_some());
         let text = info.unwrap();

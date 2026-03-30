@@ -74,6 +74,9 @@ label intro {
         "Abort mission" {
             jump abort
         }
+        "Test" {
+            jump test_label
+        }
     }
 }
 
