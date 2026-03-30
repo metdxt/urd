@@ -1,0 +1,160 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Release LSP — build urd-lsp binaries for Linux & Windows (x86_64 + aarch64)
+# and attach them to the GitHub Release.
+#
+# Asset naming convention (must match the Zed extension fetch logic):
+#   urd-lsp-{arch}-{os}[.exe]
+#
+# Darwin/macOS is excluded — Apple cross-builds require codesigning and a
+# macOS runner with Xcode, which is a whole different beast.
+# ──────────────────────────────────────────────────────────────────────────────
+name: Release LSP Binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to upload assets to (leave empty for artifact-only dry run)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ── Build matrix ──────────────────────────────────────────────────────────
+  build:
+    name: ${{ matrix.asset_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Linux ───────────────────────────────────────────────────────
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            asset_name: urd-lsp-x86_64-linux
+            use_cross: false
+
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            asset_name: urd-lsp-aarch64-linux
+            use_cross: true
+
+          # ── Windows ─────────────────────────────────────────────────────
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            asset_name: urd-lsp-x86_64-windows.exe
+            use_cross: false
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            asset_name: urd-lsp-aarch64-windows.exe
+            use_cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nightly is required for cargo-features = ["profile-rustflags"]
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # The workspace .cargo/config.toml expects mold + clang for this target
+      - name: Install mold and clang (Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mold clang
+
+      # cross handles Docker-based cross-compilation for Linux aarch64
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }} -p urd-lsp
+
+      - name: Build (cargo)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --target ${{ matrix.target }} -p urd-lsp
+
+      # Rename the binary to match the asset name the Zed extension expects
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          src="target/${{ matrix.target }}/release/urd-lsp"
+          echo "Packaging $src -> ${{ matrix.asset_name }}"
+          ls -lh "$src"
+          cp "$src" "${{ matrix.asset_name }}"
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $src = "target\${{ matrix.target }}\release\urd-lsp.exe"
+          Write-Host "Packaging $src -> ${{ matrix.asset_name }}"
+          Get-Item $src | Format-List Length
+          Copy-Item $src "${{ matrix.asset_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+          if-no-files-found: error
+          retention-days: 3
+
+  # ── Attach binaries to the GitHub Release ─────────────────────────────────
+  upload-release:
+    name: Attach assets to release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only upload when there is an actual release (or a manual tag was given)
+    if: >-
+      github.event_name == 'release'
+      || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "value=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.tag.outputs.value }}"
+          echo "==> Uploading to release: ${tag}"
+          for dir in artifacts/*/; do
+            file="$(find "$dir" -maxdepth 1 -type f | head -n1)"
+            [ -z "$file" ] && continue
+            name="$(basename "$file")"
+            echo "  -> ${name}"
+            gh release upload "${tag}" "$file" \
+              --repo "${{ github.repository }}" \
+              --clobber
+          done
+          echo "==> Done"
