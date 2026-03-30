@@ -1,14 +1,22 @@
+# cave.urd — a short fantasy adventure set inside the Forgotten Cave.
+# Demonstrates: global state, menus, conditionals, match, string interpolation.
+
+# ── Characters ────────────────────────────────────────────────────────────────
 const narrator = :{ name: "Narrator", name_color: "white" }
 const zara     = :{ name: "Zara",     name_color: "cyan"  }
 
-global gold = 0
-global health = 100
+# ── Global state ──────────────────────────────────────────────────────────────
+global gold      = 0
+global health    = 100
 global has_torch = false
-global has_key = false
+global has_key   = false
 
 jump start
 
+# ── Labels ────────────────────────────────────────────────────────────────────
+
 label start {
+    # Opening scene: the player meets Zara outside the cave.
     <narrator>: {
         "The wind howls across the barren moor."
         "Before you yawns the entrance to an ancient cave,"
@@ -43,6 +51,7 @@ label start {
 label cave_entrance {
     <narrator>: "You stand inside the cave entrance. The stone walls glisten with moisture."
 
+    # Torchlight changes the atmosphere and foreshadows the goblin-sneak branch.
     if has_torch {
         <narrator>: {
             "Your torch blazes to life, pushing back the darkness."
@@ -69,6 +78,7 @@ label cave_entrance {
 }
 
 label search_entrance {
+    # Grants the rusty key and some gold — both matter later in cave_depths.
     <narrator>: "You run your hands along the walls and sift through old debris on the floor."
     <narrator>: "Behind a loose stone you discover a small pouch of coins."
 
@@ -84,6 +94,7 @@ label search_entrance {
 }
 
 label cave_depths {
+    # Central chamber: the chest, the goblin, and three ways to handle them.
     <narrator>: {
         "The passage opens into a wide, domed chamber."
         "In the centre sits a heavy iron-banded chest, its lock thick with rust."
@@ -108,6 +119,7 @@ label cave_depths {
 }
 
 label open_chest {
+    # The key picked up in search_entrance unlocks the big gold reward here.
     if has_key {
         <narrator>: "The rusty key fits! The lock pops open with a resonant clunk."
         <narrator>: "Inside, nestled on rotting velvet, lies a fortune in old coins."
@@ -126,6 +138,7 @@ label open_chest {
 }
 
 label goblin_sneak {
+    # Torchlight is a liability here — it wakes the goblin and forces a fight.
     if has_torch {
         <narrator>: {
             "You creep forward — but the torchlight dances across the goblin's eyelids."
@@ -146,6 +159,7 @@ label goblin_sneak {
 }
 
 label goblin_fight {
+    # Combat is deterministic: the player always wins but pays 30 health.
     <narrator>: "The goblin attacks! It swings its crude club in a wild arc."
     <narrator>: "You take 30 damage!"
 
@@ -171,6 +185,7 @@ label goblin_fight {
 }
 
 label victory {
+    # Three tiers of ending flavour based on total gold collected.
     <narrator>: "You burst out of the cave's far mouth, gasping in fresh night air."
     <narrator>: "You escaped the Forgotten Cave with {gold} gold!"
 
@@ -187,6 +202,7 @@ label victory {
 }
 
 label road_end {
+    # The player walked away — a quiet, non-violent ending.
     <narrator>: {
         "You turn your back on the cave and walk away."
         "The wind swallows the sound of whatever lurks within."
@@ -206,6 +222,7 @@ label game_over {
     jump _end
 }
 
+# ── Terminal label — all paths converge here ──────────────────────────────────
 label _end {
     end!()
 }

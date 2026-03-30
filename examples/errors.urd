@@ -1,20 +1,30 @@
+# errors.urd — deliberately contains errors to demonstrate Urd's error reporting.
+# The script is otherwise a fully playable sci-fi dialogue scenario aboard a starship.
+
+# ── Characters ────────────────────────────────────────────────────────────────
 const aria        = :{ name: "ARIA",        name_color: "cyan"   }
 const commander   = :{ name: "Commander",   name_color: "yellow" }
 const nav_console = :{ name: "NAV CONSOLE", name_color: "gray"   }
 
+# ── Global state ───────────────────────────────────────────────────────────────
 global hull_integrity = 100
 global oxygen_level   = 80
 global power_cells    = 3
 global docking_clear  = false
 
-let mood: int   = "cheerful"
-let score: bool = 42
+# ── Intentional type errors (for error-reporting demos) ───────────────────────
+let mood: int   = "cheerful"  # error: expected int, got string
+let score: bool = 42          # error: expected bool, got int
 
+# ── Heading enum ──────────────────────────────────────────────────────────────
 enum Direction { North, South, East, West }
 
 let heading: Direction = North
 
+# ── Labels ────────────────────────────────────────────────────────────────────
+
 label signal_lost {
+    # Played when the player chooses to broadcast a distress signal in low_power.
     <aria>: {
         "Commander, I am losing signal integrity."
         "Static is bleeding across all communication channels."
@@ -46,6 +56,7 @@ label intro {
 }
 
 label hull_check {
+    # Read out the current hull value via string interpolation.
     <aria>: "Hull integrity reading: {hull_integrity} percent."
 
     if hull_integrity >= 80 {
@@ -70,6 +81,7 @@ label nav_briefing {
         "AWAITING HEADING SELECTION FROM FLIGHT OFFICER."
     }
 
+    # Player picks a heading; nav_route reacts to the stored value.
     menu {
         "Set heading: North" {
             heading = North
@@ -91,6 +103,7 @@ label nav_briefing {
 }
 
 label nav_route {
+    # Branch on the Direction enum value set in nav_briefing.
     match heading {
         North {
             <aria>: {
@@ -125,6 +138,7 @@ label debris_field {
         "Collision avoidance systems are active."
     }
 
+    # Consume one power cell to raise shields; fall back to low_power if empty.
     if power_cells > 1 {
         <aria>: "Shields at full power. We can handle some turbulence."
         power_cells = power_cells - 1
@@ -180,5 +194,6 @@ label abort {
     jump _end
 }
 
+# ── Terminal label — all paths converge here ──────────────────────────────────
 label _end {
 }

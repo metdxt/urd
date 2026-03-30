@@ -19,6 +19,7 @@ use crate::erro::LexerError;
 #[derive(Logos, Display, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
 #[logos(skip r"[ \t\r]+")] // Skip whitespace
+#[logos(skip r"#[^\n]*")] // Skip # line comments
 pub enum Token {
     /// When error occurs on lexer level it is packed into Error kind token.
     /// We want parsing to be recoverable and not fail at the lexing stage.
@@ -426,5 +427,28 @@ mod tests {
         assert!(matches!(lex("&&"), Token::And));
         assert!(matches!(lex("or"), Token::Or));
         assert!(matches!(lex("||"), Token::Or));
+    }
+
+    #[test]
+    fn line_comments() {
+        // A standalone comment produces no tokens
+        let tokens: Vec<_> = Token::lexer("# this is a comment").collect();
+        assert!(tokens.is_empty());
+
+        // A comment after code is ignored; only the token before it is emitted
+        let tokens: Vec<_> = Token::lexer("42 # inline comment").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(&tokens[0], Ok(Token::IntLit(42))));
+
+        // Code on the next line after a comment is still lexed correctly
+        let tokens: Vec<_> = Token::lexer("# comment\n42")
+            .filter(|t| !matches!(t, Ok(Token::Newline)))
+            .collect();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(&tokens[0], Ok(Token::IntLit(42))));
+
+        // A `#` inside a string literal is NOT treated as a comment
+        let tok = lex(r#""hello # world""#);
+        assert!(matches!(tok, Token::StrLit(_)));
     }
 }
