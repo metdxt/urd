@@ -16,6 +16,7 @@
 pub mod context;
 pub mod dead_end;
 pub mod exhaustiveness;
+pub mod labels;
 pub mod types;
 
 #[cfg(test)]
@@ -144,6 +145,15 @@ pub enum AnalysisError {
         span: SimpleSpan,
     },
 
+    /// A `jump` statement references a label that is not defined anywhere in
+    /// the script.
+    UndefinedLabel {
+        /// The name used in the `jump` (or `let … = jump … and return`).
+        label: String,
+        /// Source span of the jump statement.
+        span: SimpleSpan,
+    },
+
     /// An execution path reaches its end without a recognised terminator.
     ///
     /// Valid terminators are `end!`, `todo!`, a bare `return`, or a `jump`.
@@ -167,6 +177,7 @@ impl AnalysisError {
             AnalysisError::NonExhaustiveMatch { span, .. } => *span,
             AnalysisError::TypeMismatch { span, .. } => *span,
             AnalysisError::StructMismatch { span, .. } => *span,
+            AnalysisError::UndefinedLabel { span, .. } => *span,
             AnalysisError::DeadEnd { span, .. } => *span,
         }
     }
@@ -245,6 +256,11 @@ impl AnalysisError {
                 )
             }
 
+            AnalysisError::UndefinedLabel { label, span } => {
+                let loc = Self::format_span_loc(span);
+                format!("Undefined label '{label}' at {loc}")
+            }
+
             AnalysisError::DeadEnd { span, description } => {
                 let loc = if Self::is_zero_span(span) {
                     description.to_string()
@@ -287,6 +303,10 @@ impl AnalysisError {
                 "'{variable}' expects struct '{struct_name}' but has {} field error(s)",
                 field_errors.len()
             ),
+
+            AnalysisError::UndefinedLabel { label, .. } => {
+                format!("jump to undefined label '{label}'")
+            }
 
             AnalysisError::DeadEnd { description, .. } => {
                 format!("{description}: no terminator on this path")
@@ -394,6 +414,7 @@ pub fn analyze(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors: Vec<AnalysisError> = Vec::new();
     errors.extend(exhaustiveness::check(ast, &ctx));
     errors.extend(types::check(ast, &ctx));
+    errors.extend(labels::check(ast, &ctx));
     errors.extend(dead_end::check(ast));
     errors
 }

@@ -4,7 +4,7 @@
 //! over the AST, and [`ScopeStack`], used per-pass for tracking variable type
 //! annotations as blocks are entered and exited.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::parser::ast::{Ast, AstContent, DeclKind, StructField, TypeAnnotation};
 use crate::runtime::value::RuntimeValue;
@@ -49,6 +49,9 @@ pub struct AnalysisContext {
     /// Only variables declared as direct children of the outermost `Block` that
     /// carry an explicit `: TypeAnnotation` are recorded here.
     pub top_level_vars: HashMap<String, TypeAnnotation>,
+
+    /// All label names defined anywhere in the script.
+    pub labels: HashSet<String>,
 }
 
 impl AnalysisContext {
@@ -63,6 +66,7 @@ impl AnalysisContext {
         collect_enums(root, &mut ctx.enums);
         collect_structs(root, &mut ctx.structs);
         collect_top_level_vars(root, &mut ctx.top_level_vars);
+        collect_labels(root, &mut ctx.labels);
         ctx
     }
 }
@@ -70,6 +74,50 @@ impl AnalysisContext {
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+/// Recursively walks the entire subtree rooted at `node` and collects every
+/// label name into `labels`.
+fn collect_labels(node: &Ast, labels: &mut HashSet<String>) {
+    match node.content() {
+        AstContent::LabeledBlock { label, block } => {
+            labels.insert(label.clone());
+            collect_labels(block, labels);
+        }
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                collect_labels(stmt, labels);
+            }
+        }
+        AstContent::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_labels(condition, labels);
+            collect_labels(then_block, labels);
+            if let Some(eb) = else_block {
+                collect_labels(eb, labels);
+            }
+        }
+        AstContent::Match { arms, .. } => {
+            for arm in arms {
+                collect_labels(&arm.body, labels);
+            }
+        }
+        AstContent::Menu { options } => {
+            for opt in options {
+                collect_labels(opt, labels);
+            }
+        }
+        AstContent::MenuOption { content, .. } => {
+            collect_labels(content, labels);
+        }
+        AstContent::DecoratorDef { body, .. } => {
+            collect_labels(body, labels);
+        }
+        _ => {}
+    }
+}
 
 /// Recursively walks the entire subtree rooted at `node` and inserts every
 /// [`AstContent::EnumDecl`] it finds into `enums`.

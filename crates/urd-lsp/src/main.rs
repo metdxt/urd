@@ -17,6 +17,8 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tracing::{debug, info};
 
 use document::{Document, byte_span_to_lsp_range, position_to_byte_offset};
+use urd::analysis::AnalysisError;
+
 use semantic::{
     SemanticTokenType as UrdTokenType, Symbol, SymbolKind as UrdSymbolKind, collect_symbols,
     completion_items, find_definition, find_references, find_rename_spans, hover_info,
@@ -232,6 +234,14 @@ impl LanguageServer for Backend {
                     prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 })),
+
+                // ── Code actions ─────────────────────────────────────────
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                        ..Default::default()
+                    },
+                )),
 
                 // ── Semantic tokens ──────────────────────────────────────
                 semantic_tokens_provider: Some(
@@ -683,6 +693,70 @@ impl LanguageServer for Backend {
             changes: Some(changes),
             ..Default::default()
         }))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri;
+
+        let doc = match self.documents.get(&uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let src = doc.rope.to_string();
+        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+
+        // Offer "Create label 'name'" for every UndefinedLabel diagnostic
+        // whose span overlaps the requested range.
+        for err in &doc.analysis_errors {
+            if let AnalysisError::UndefinedLabel { label, span } = err {
+                let diag_range = byte_span_to_lsp_range(&src, *span);
+
+                // Check that the diagnostic overlaps the editor's requested range.
+                if diag_range.end < params.range.start || diag_range.start > params.range.end {
+                    continue;
+                }
+
+                // Build the snippet to insert: a new label block after the end of the file.
+                let eof_pos = byte_offset_to_lsp_position(&src, src.len());
+                let insert_text = format!("\nlabel {label} {{\n    todo!()\n}}\n");
+
+                let mut changes = std::collections::HashMap::new();
+                changes.insert(
+                    uri.clone(),
+                    vec![TextEdit {
+                        range: Range::new(eof_pos, eof_pos),
+                        new_text: insert_text,
+                    }],
+                );
+
+                let action = CodeAction {
+                    title: format!("Create label '{label}'"),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![Diagnostic {
+                        range: diag_range,
+                        severity: Some(DiagnosticSeverity::ERROR),
+                        source: Some("urd".into()),
+                        message: err.to_string(),
+                        ..Default::default()
+                    }]),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        ..Default::default()
+                    }),
+                    is_preferred: Some(true),
+                    ..Default::default()
+                };
+
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
+        }
+
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
     }
 }
 
