@@ -21,10 +21,35 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-use chumsky::span::SimpleSpan;
 use ariadne::{Label, Report, ReportKind, sources};
+use chumsky::span::SimpleSpan;
 
 use crate::parser::ast::{Ast, TypeAnnotation};
+
+// ---------------------------------------------------------------------------
+// StructFieldError
+// ---------------------------------------------------------------------------
+
+/// A single field-level problem in a struct type mismatch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StructFieldError {
+    /// A required field is absent from the map literal.
+    MissingField {
+        /// The name of the field that is missing.
+        field_name: String,
+        /// The type that the missing field was expected to have.
+        expected_type: TypeAnnotation,
+    },
+    /// A field is present but its literal value has the wrong type.
+    WrongFieldType {
+        /// The name of the field whose value has the wrong type.
+        field_name: String,
+        /// The type that was declared for this field.
+        expected_type: TypeAnnotation,
+        /// A human-readable description of the actual value's type.
+        got: String,
+    },
+}
 use context::AnalysisContext;
 
 // ---------------------------------------------------------------------------
@@ -107,6 +132,18 @@ pub enum AnalysisError {
         span: SimpleSpan,
     },
 
+    /// A map literal assigned to a struct-typed variable has field errors.
+    StructMismatch {
+        /// The variable being assigned to.
+        variable: String,
+        /// The struct type name expected.
+        struct_name: String,
+        /// Each field-level problem found.
+        field_errors: Vec<StructFieldError>,
+        /// Source span.
+        span: SimpleSpan,
+    },
+
     /// An execution path reaches its end without a recognised terminator.
     ///
     /// Valid terminators are `end!`, `todo!`, a bare `return`, or a `jump`.
@@ -129,6 +166,7 @@ impl AnalysisError {
         match self {
             AnalysisError::NonExhaustiveMatch { span, .. } => *span,
             AnalysisError::TypeMismatch { span, .. } => *span,
+            AnalysisError::StructMismatch { span, .. } => *span,
             AnalysisError::DeadEnd { span, .. } => *span,
         }
     }
@@ -176,6 +214,38 @@ impl AnalysisError {
                 )
             }
 
+            AnalysisError::StructMismatch {
+                variable,
+                struct_name,
+                field_errors,
+                span,
+            } => {
+                let loc = if Self::is_zero_span(span) {
+                    "(unknown location)".to_owned()
+                } else {
+                    format!("byte {}..{}", span.start, span.end)
+                };
+                let details: Vec<String> = field_errors
+                    .iter()
+                    .map(|fe| match fe {
+                        StructFieldError::MissingField {
+                            field_name,
+                            expected_type,
+                        } => format!("missing field '{field_name}': {expected_type:?}"),
+                        StructFieldError::WrongFieldType {
+                            field_name,
+                            expected_type,
+                            got,
+                        } => format!("field '{field_name}': expected {expected_type:?}, got {got}"),
+                    })
+                    .collect();
+                format!(
+                    "Struct mismatch for '{variable}' at {loc}: \
+                     expected struct '{struct_name}': {}",
+                    details.join("; ")
+                )
+            }
+
             AnalysisError::DeadEnd { span, description } => {
                 let loc = if Self::is_zero_span(span) {
                     description.to_string()
@@ -207,13 +277,21 @@ impl AnalysisError {
                 expected,
                 got,
                 ..
+            } => format!("'{variable}' expects {expected:?} but got {got}"),
+
+            AnalysisError::StructMismatch {
+                variable,
+                struct_name,
+                field_errors,
+                ..
             } => format!(
-                "'{variable}' expects {expected:?} but got {got}"
+                "'{variable}' expects struct '{struct_name}' but has {} field error(s)",
+                field_errors.len()
             ),
 
-            AnalysisError::DeadEnd { description, .. } => format!(
-                "{description}: no terminator on this path"
-            ),
+            AnalysisError::DeadEnd { description, .. } => {
+                format!("{description}: no terminator on this path")
+            }
         }
     }
 }
@@ -233,6 +311,28 @@ impl std::fmt::Display for AnalysisError {
 /// For errors with a real source span the output is a colourful annotated
 /// code snippet (ariadne style).  For **zero-span** errors (AST nodes built in
 /// tests without parser spans) a plain `writeln!` fallback is used instead.
+/// Convert a byte offset into a Unicode codepoint (char) offset within `src`.
+///
+/// Ariadne's `sources()` helper indexes source text by codepoint, not by byte.
+/// Logos, on the other hand, produces byte-based spans. This function bridges
+/// the two by counting codepoints up to `byte_offset`.
+///
+/// If `byte_offset` falls in the middle of a multi-byte codepoint (which should
+/// never happen for well-formed source), it is clamped to the nearest codepoint
+/// boundary.
+fn byte_to_char(src: &str, byte_offset: usize) -> usize {
+    let clamped = byte_offset.min(src.len());
+    src[..clamped].chars().count()
+}
+
+/// Render all diagnostics as rich ariadne reports, writing to `writer`.
+///
+/// For errors with a real source span the output is a colourful annotated
+/// code snippet (ariadne style).  For **zero-span** errors (AST nodes built in
+/// tests without parser spans) a plain `writeln!` fallback is used instead.
+///
+/// Byte offsets stored in spans are converted to Unicode codepoint offsets
+/// before being passed to ariadne, which indexes source text by codepoint.
 pub fn render_errors<W: std::io::Write>(
     errors: &[AnalysisError],
     src: &str,
@@ -248,8 +348,10 @@ pub fn render_errors<W: std::io::Write>(
             continue;
         }
 
-        let start = span.start;
-        let end = span.end;
+        // Logos produces byte offsets; ariadne's `sources()` indexes by
+        // Unicode codepoint. Convert before building the report.
+        let start = byte_to_char(src, span.start);
+        let end = byte_to_char(src, span.end);
         let range = start..end;
 
         let name_owned = source_name.to_owned();
@@ -259,10 +361,7 @@ pub fn render_errors<W: std::io::Write>(
             (name_owned.clone(), range.clone()),
         )
         .with_message(error.message())
-        .with_label(
-            Label::new((name_owned.clone(), range))
-                .with_message(error.label_message()),
-        )
+        .with_label(Label::new((name_owned.clone(), range)).with_message(error.label_message()))
         .finish();
 
         report

@@ -558,6 +558,9 @@ pub fn eval_expr(
         AstContent::Import { .. } => Err(VmError::InvalidExpression(
             "Import is not allowed in expression context".to_string(),
         )),
+        AstContent::StructDecl { .. } => Err(VmError::InvalidExpression(
+            "StructDecl cannot appear in expression context".to_string(),
+        )),
     }
 }
 
@@ -1241,12 +1244,9 @@ impl Vm {
                                 self.env.pop_scope();
                             }
                             // Store return value if the call frame has a binding.
-                            if let (Some(var_name), Some(val)) =
-                                (&frame.assign_to_var, return_val)
+                            if let (Some(var_name), Some(val)) = (&frame.assign_to_var, return_val)
                             {
-                                if let Err(e) =
-                                    self.env.set(var_name, val, &DeclKind::Variable)
-                                {
+                                if let Err(e) = self.env.set(var_name, val, &DeclKind::Variable) {
                                     return Some(Err(e));
                                 }
                             }
@@ -1644,6 +1644,7 @@ fn exec_block_sync(ast: &crate::parser::ast::Ast, env: &mut Environment) -> Resu
         | AC::DecoratorDef { .. }
         | AC::Match { .. }
         | AC::EnumDecl { .. }
+        | AC::StructDecl { .. }
         | AC::Import { .. } => Err(VmError::InvalidExpression(format!(
             "{:?} is not allowed inside a decorator body",
             std::mem::discriminant(ast.content())
@@ -2693,7 +2694,10 @@ mod tests {
         let mut vm = build_vm(ast);
 
         // First event: dialogue emitted from inside greet.
-        let ev1 = vm.next(None).expect("expected first event").expect("no error");
+        let ev1 = vm
+            .next(None)
+            .expect("expected first event")
+            .expect("no error");
         match ev1 {
             Event::Dialogue { lines, .. } => match &lines[0] {
                 RuntimeValue::Str(ps) => assert_eq!(
@@ -2707,7 +2711,10 @@ mod tests {
         }
 
         // Second event: the continuation dialogue after the call returns.
-        let ev2 = vm.next(None).expect("expected second event").expect("no error");
+        let ev2 = vm
+            .next(None)
+            .expect("expected second event")
+            .expect("no error");
         match ev2 {
             Event::Dialogue { lines, .. } => match &lines[0] {
                 RuntimeValue::Str(ps) => assert_eq!(
@@ -2720,7 +2727,10 @@ mod tests {
             other => panic!("expected Dialogue after return, got {:?}", other),
         }
 
-        assert!(vm.next(None).is_none(), "script should end after second dialogue");
+        assert!(
+            vm.next(None).is_none(),
+            "script should end after second dialogue"
+        );
     }
 
     /// `let result = jump double and return` binds the subroutine's return
@@ -2778,7 +2788,10 @@ mod tests {
         let registry = DecoratorRegistry::new();
         let mut vm = Vm::new(graph, registry).unwrap();
         let result = vm.next(None);
-        assert!(result.is_none(), "todo!() should end the script, got: {result:?}");
+        assert!(
+            result.is_none(),
+            "todo!() should end the script, got: {result:?}"
+        );
     }
 
     #[test]
@@ -2790,7 +2803,10 @@ mod tests {
         let registry = DecoratorRegistry::new();
         let mut vm = Vm::new(graph, registry).unwrap();
         let result = vm.next(None);
-        assert!(result.is_none(), "end!() should end the script, got: {result:?}");
+        assert!(
+            result.is_none(),
+            "end!() should end the script, got: {result:?}"
+        );
     }
 
     #[test]

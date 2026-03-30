@@ -103,7 +103,11 @@ fn termination_of(
     // Resolve the span to use for any errors emitted for this node.
     let span = {
         let s = ast.span();
-        if s.start == 0 && s.end == 0 { parent_span } else { s }
+        if s.start == 0 && s.end == 0 {
+            parent_span
+        } else {
+            s
+        }
     };
     match ast.content() {
         // ── Explicit terminators ──────────────────────────────────────────
@@ -123,12 +127,10 @@ fn termination_of(
         AstContent::LetCall { .. } => Termination::Open,
 
         // `end!` and `todo!` are terminating calls; everything else is open.
-        AstContent::Call { func_path, .. } => {
-            match extract_call_name(func_path) {
-                Some("end!") | Some("todo!") => Termination::Terminates,
-                _ => Termination::Open,
-            }
-        }
+        AstContent::Call { func_path, .. } => match extract_call_name(func_path) {
+            Some("end!") | Some("todo!") => Termination::Terminates,
+            _ => Termination::Open,
+        },
 
         // ── Block ─────────────────────────────────────────────────────────
         AstContent::Block(stmts) => {
@@ -190,7 +192,11 @@ fn termination_of(
         }
 
         // ── If ────────────────────────────────────────────────────────────
-        AstContent::If { then_block, else_block: Some(else_block), .. } => {
+        AstContent::If {
+            then_block,
+            else_block: Some(else_block),
+            ..
+        } => {
             let t_then = termination_of(then_block, errors, span, location);
             let t_else = termination_of(else_block, errors, span, location);
 
@@ -201,7 +207,11 @@ fn termination_of(
             }
         }
 
-        AstContent::If { then_block, else_block: None, .. } => {
+        AstContent::If {
+            then_block,
+            else_block: None,
+            ..
+        } => {
             // Recurse into the then-block only to surface any *nested* errors.
             let _t = termination_of(then_block, errors, span, location);
             // Without an else branch the overall if is always MayTerminate: the
@@ -252,9 +262,7 @@ fn termination_of(
         }
 
         // MenuOption: delegate to its content block.
-        AstContent::MenuOption { content, .. } => {
-            termination_of(content, errors, span, location)
-        }
+        AstContent::MenuOption { content, .. } => termination_of(content, errors, span, location),
 
         // ── Match ─────────────────────────────────────────────────────────
         AstContent::Match { arms, .. } => {
@@ -292,6 +300,7 @@ fn termination_of(
         | AstContent::Map(_)
         | AstContent::Dialogue { .. }
         | AstContent::EnumDecl { .. }
+        | AstContent::StructDecl { .. }
         | AstContent::DecoratorDef { .. }
         | AstContent::Subscript { .. }
         | AstContent::SubscriptAssign { .. }
@@ -323,9 +332,9 @@ fn extract_call_name(func_path: &Ast) -> Option<&str> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use chumsky::span::{SimpleSpan, Span};
     use crate::parser::ast::{MatchArm, MatchPattern};
     use crate::runtime::value::RuntimeValue;
+    use chumsky::span::{SimpleSpan, Span};
 
     // ── helpers ─────────────────────────────────────────────────────────────
 
@@ -388,7 +397,12 @@ mod tests {
     fn return_node_terminates() {
         let ast = return_node();
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -399,7 +413,12 @@ mod tests {
     fn one_way_jump_terminates() {
         let ast = jump_one_way("scene_b");
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -408,7 +427,12 @@ mod tests {
     fn jump_and_return_is_open() {
         let ast = jump_and_return("sub");
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
         assert!(errors.is_empty());
     }
@@ -419,7 +443,12 @@ mod tests {
     fn let_call_is_open() {
         let ast = Ast::let_call("result".to_owned(), "sub".to_owned());
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
         assert!(errors.is_empty());
     }
@@ -430,7 +459,12 @@ mod tests {
     fn end_call_terminates() {
         let ast = end_call();
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -439,7 +473,12 @@ mod tests {
     fn todo_call_terminates() {
         let ast = todo_call();
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -449,7 +488,12 @@ mod tests {
         let func = Ast::value(RuntimeValue::IdentPath(vec!["say".to_owned()]));
         let ast = Ast::call(func, Ast::expr_list(vec![]));
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
     }
 
@@ -459,7 +503,12 @@ mod tests {
     fn empty_block_is_open() {
         let ast = Ast::block(vec![]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
         assert!(errors.is_empty());
     }
@@ -468,7 +517,12 @@ mod tests {
     fn block_ending_with_return_terminates() {
         let ast = Ast::block(vec![dialogue_node(), return_node()]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -477,7 +531,12 @@ mod tests {
     fn block_ending_with_jump_terminates() {
         let ast = Ast::block(vec![dialogue_node(), jump_one_way("end")]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -486,7 +545,12 @@ mod tests {
     fn block_ending_with_end_call_terminates() {
         let ast = Ast::block(vec![dialogue_node(), end_call()]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -495,7 +559,12 @@ mod tests {
     fn block_with_only_dialogue_is_open() {
         let ast = Ast::block(vec![dialogue_node()]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
         assert!(errors.is_empty()); // no nested errors; the open is surfaced by the caller
     }
@@ -505,7 +574,12 @@ mod tests {
         // return is the first statement; remaining statements are unreachable
         let ast = Ast::block(vec![return_node(), dialogue_node(), dialogue_node()]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -517,7 +591,12 @@ mod tests {
         let inner = Ast::block(vec![return_node()]);
         let ast = Ast::labeled_block("intro".to_owned(), inner);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -527,7 +606,12 @@ mod tests {
         let inner = Ast::block(vec![dialogue_node()]);
         let ast = Ast::labeled_block("intro".to_owned(), inner);
         let mut errors = vec![];
-        let _t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let _t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(errors.len(), 1);
         match &errors[0] {
             AnalysisError::DeadEnd { description, .. } => {
@@ -546,7 +630,12 @@ mod tests {
         let else_b = Ast::block(vec![end_call()]);
         let ast = Ast::if_stmt(cond, then_b, Some(else_b));
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -557,7 +646,12 @@ mod tests {
         let then_b = Ast::block(vec![return_node()]);
         let ast = Ast::if_stmt(cond, then_b, None);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::MayTerminate);
         assert!(errors.is_empty());
     }
@@ -569,7 +663,12 @@ mod tests {
         let else_b = Ast::block(vec![dialogue_node()]);
         let ast = Ast::if_stmt(cond, then_b, Some(else_b));
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::MayTerminate);
     }
 
@@ -580,7 +679,12 @@ mod tests {
         let else_b = Ast::block(vec![dialogue_node()]);
         let ast = Ast::if_stmt(cond, then_b, Some(else_b));
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
     }
 
@@ -592,7 +696,12 @@ mod tests {
         let opt_b = Ast::menu_option("B".to_owned(), Ast::block(vec![end_call()]));
         let ast = Ast::menu(vec![opt_a, opt_b]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -603,7 +712,12 @@ mod tests {
         let opt_b = Ast::menu_option("No".to_owned(), Ast::block(vec![dialogue_node()]));
         let ast = Ast::menu(vec![opt_a, opt_b]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
         assert_eq!(errors.len(), 1);
         match &errors[0] {
@@ -618,7 +732,12 @@ mod tests {
     fn menu_empty_is_open() {
         let ast = Ast::menu(vec![]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
     }
 
@@ -634,7 +753,12 @@ mod tests {
         let arm_b = MatchArm::new(MatchPattern::Wildcard, Ast::block(vec![end_call()]));
         let ast = Ast::match_stmt(scrutinee, vec![arm_a, arm_b]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Terminates);
         assert!(errors.is_empty());
     }
@@ -649,7 +773,12 @@ mod tests {
         );
         let ast = Ast::match_stmt(scrutinee, vec![arm_a, arm_b]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
         // No immediate DeadEnd pushed from inside match (the caller handles it)
         assert!(errors.is_empty());
@@ -660,7 +789,12 @@ mod tests {
         let scrutinee = Ast::value(RuntimeValue::IdentPath(vec!["x".to_owned()]));
         let ast = Ast::match_stmt(scrutinee, vec![]);
         let mut errors = vec![];
-        let t = termination_of(&ast, &mut errors, SimpleSpan::new((), 0..0), &NodeDescription::top_level());
+        let t = termination_of(
+            &ast,
+            &mut errors,
+            SimpleSpan::new((), 0..0),
+            &NodeDescription::top_level(),
+        );
         assert_eq!(t, Termination::Open);
     }
 
@@ -701,7 +835,10 @@ mod tests {
             AnalysisError::DeadEnd { description, .. } => description.0.contains("scene"),
             _ => false,
         });
-        assert!(has_label_error, "expected a dead-end error mentioning 'scene'");
+        assert!(
+            has_label_error,
+            "expected a dead-end error mentioning 'scene'"
+        );
     }
 
     #[test]
@@ -731,12 +868,14 @@ mod tests {
         let ast = Ast::block(vec![
             jump_one_way("start"),
             Ast::labeled_block("start".to_string(), Ast::block(vec![return_node()])),
-            Ast::labeled_block("_end".to_string(), Ast::block(vec![])),  // empty — no terminator
+            Ast::labeled_block("_end".to_string(), Ast::block(vec![])), // empty — no terminator
         ]);
         let errors = check(&ast);
         assert_eq!(errors.len(), 1, "expected exactly 1 error; got: {errors:?}");
         assert!(
-            errors.iter().any(|e| matches!(e, AnalysisError::DeadEnd { description, .. }
+            errors
+                .iter()
+                .any(|e| matches!(e, AnalysisError::DeadEnd { description, .. }
                 if description.0.contains("_end"))),
             "expected a dead-end error for label '_end'; got: {errors:?}"
         );
@@ -759,14 +898,16 @@ mod tests {
         // All labels after a jump are visited; only the open ones are reported.
         let ast = Ast::block(vec![
             jump_one_way("a"),
-            Ast::labeled_block("a".to_string(),    Ast::block(vec![return_node()])),  // ok
-            Ast::labeled_block("b".to_string(),    Ast::block(vec![end_call()])),     // ok
-            Ast::labeled_block("dead".to_string(), Ast::block(vec![])),               // error
+            Ast::labeled_block("a".to_string(), Ast::block(vec![return_node()])), // ok
+            Ast::labeled_block("b".to_string(), Ast::block(vec![end_call()])),    // ok
+            Ast::labeled_block("dead".to_string(), Ast::block(vec![])),           // error
         ]);
         let errors = check(&ast);
         assert_eq!(errors.len(), 1, "expected exactly 1 error; got: {errors:?}");
         assert!(
-            errors.iter().any(|e| matches!(e, AnalysisError::DeadEnd { description, .. }
+            errors
+                .iter()
+                .any(|e| matches!(e, AnalysisError::DeadEnd { description, .. }
                 if description.0.contains("dead"))),
             "expected dead-end for label 'dead'; got: {errors:?}"
         );
@@ -785,7 +926,11 @@ mod tests {
         assert_eq!(errors.len(), 1);
         match &errors[0] {
             AnalysisError::DeadEnd { description, .. } => {
-                assert!(description.0.contains("sub"), "expected 'sub' in '{}'", description.0);
+                assert!(
+                    description.0.contains("sub"),
+                    "expected 'sub' in '{}'",
+                    description.0
+                );
             }
             other => panic!("unexpected: {other:?}"),
         }

@@ -536,6 +536,11 @@ impl CompilerState {
             // Import nodes are fully resolved during pass 0 (collect_imports).
             // At compile-node time they are no-ops that simply fall through.
             AstContent::Import { .. } => Ok(self.graph.push(IrNodeKind::Nop { next })),
+
+            // ── StructDecl ───────────────────────────────────────────────────
+            // Struct declarations are analysis-only — no runtime representation
+            // is needed. They compile to a Nop so execution flows through them.
+            AstContent::StructDecl { .. } => Ok(self.graph.push(IrNodeKind::Nop { next })),
         }
     }
 }
@@ -1282,7 +1287,10 @@ mod tests {
 
         let graph = Compiler::compile(&script_ast).expect("compile failed");
         assert!(
-            graph.nodes.iter().any(|n| matches!(n.kind, IrNodeKind::End)),
+            graph
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, IrNodeKind::End)),
             "expected an End node in the graph, got: {:?}",
             graph.nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
         );
@@ -1298,7 +1306,10 @@ mod tests {
 
         let graph = Compiler::compile(&script_ast).expect("compile failed");
         assert!(
-            graph.nodes.iter().any(|n| matches!(n.kind, IrNodeKind::Todo)),
+            graph
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, IrNodeKind::Todo)),
             "expected a Todo node in the graph, got: {:?}",
             graph.nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
         );

@@ -8,7 +8,9 @@ use chumsky::prelude::*;
 use crate::{
     lexer::Token,
     parser::{
-        ast::{Ast, Decorator, DecoratorParam, EventConstraint, MatchArm, MatchPattern},
+        ast::{
+            Ast, Decorator, DecoratorParam, EventConstraint, MatchArm, MatchPattern, StructField,
+        },
         expr::{comma_separated_exprs, declaration, expr, type_annotation},
     },
     runtime::value::RuntimeValue,
@@ -164,11 +166,12 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
         .or(dialogue())
         .or(block.clone());
 
-    let decorated = decorators_parser()
-        .then(decoratable.clone())
-        .map_with(|(decorators, node), extra| {
-            node.with_decorators(decorators).with_span(extra.span())
-        });
+    let decorated =
+        decorators_parser()
+            .then(decoratable.clone())
+            .map_with(|(decorators, node), extra| {
+                node.with_decorators(decorators).with_span(extra.span())
+            });
 
     // let_call_statement must come FIRST (before declaration) because it also
     // starts with `let` but is a statement form that must not yield mid-expression.
@@ -183,6 +186,7 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
         .or(jump_statement())
         .or(import_statement())
         .or(enum_decl_parser())
+        .or(struct_decl_parser())
         .or(match_parser(block.clone()))
         .or(decorator_def_parser(block))
         .or(decorated)
@@ -330,9 +334,7 @@ fn labeled_block_parser<'tok, I: UrdInput<'tok>>(
     just(Token::Label)
         .ignore_then(ident)
         .then(block)
-        .map_with(|(label, body), extra| {
-            Ast::labeled_block(label, body).with_span(extra.span())
-        })
+        .map_with(|(label, body), extra| Ast::labeled_block(label, body).with_span(extra.span()))
         .boxed()
 }
 
@@ -389,6 +391,11 @@ pub fn enum_decl<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     enum_decl_parser().boxed()
 }
 
+/// Parses a struct declaration: `struct Name { field: Type ... }`
+pub fn struct_decl<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
+    struct_decl_parser().boxed()
+}
+
 /// Parser for match statements: `match expr { pattern { ... } ... }`
 pub fn match_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     match_parser(code_block()).boxed()
@@ -406,10 +413,12 @@ fn menu_parser<'tok, I: UrdInput<'tok>>(
         Token::StrLit(s) => s,
     };
 
-    let option = option_label.then(block).map_with(|(label, code_block), extra| {
-        // Use Display trait to convert ParsedString to String
-        Ast::menu_option(format!("{}", label), code_block).with_span(extra.span())
-    });
+    let option = option_label
+        .then(block)
+        .map_with(|(label, code_block), extra| {
+            // Use Display trait to convert ParsedString to String
+            Ast::menu_option(format!("{}", label), code_block).with_span(extra.span())
+        });
 
     let options = option
         .separated_by(just(Token::Newline).repeated().at_least(1))
@@ -453,9 +462,49 @@ fn enum_decl_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     just(Token::Enum)
         .ignore_then(name)
         .then(variants.delimited_by(just(Token::LeftCurly), just(Token::RightCurly)))
-        .map_with(|(name, variants), extra| {
-            Ast::enum_decl(name, variants).with_span(extra.span())
+        .map_with(|(name, variants), extra| Ast::enum_decl(name, variants).with_span(extra.span()))
+        .boxed()
+}
+
+/// Parses a struct declaration: `struct Name { field: Type, ... }`
+///
+/// Fields can be separated by commas, newlines, or a mix of both.
+/// Trailing separators are allowed.
+fn struct_decl_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    // Separator: comma or newline, at least one, trailing allowed
+    let sep = just(Token::Comma)
+        .or(just(Token::Newline))
+        .repeated()
+        .at_least(1);
+
+    let field_name = select! {
+        Token::IdentPath(path) if path.len() == 1 => path[0].clone()
+    }
+    .labelled("field name");
+
+    let field = field_name
+        .then(type_annotation())
+        .map(|(name, type_annotation)| StructField {
+            name,
+            type_annotation,
         })
+        .labelled("struct field");
+
+    let fields = field
+        .separated_by(sep)
+        .allow_leading()
+        .allow_trailing()
+        .collect::<Vec<_>>();
+
+    let struct_name = select! {
+        Token::IdentPath(path) if path.len() == 1 => path[0].clone()
+    }
+    .labelled("struct name");
+
+    just(Token::Struct)
+        .ignore_then(struct_name)
+        .then(fields.delimited_by(just(Token::LeftCurly), just(Token::RightCurly)))
+        .map_with(|(name, fields), extra| Ast::struct_decl(name, fields).with_span(extra.span()))
         .boxed()
 }
 
@@ -540,7 +589,10 @@ mod tests {
         } = ast.content()
         {
             assert_eq!(label, "my_label");
-            assert!(!expects_return, "plain jump should have expects_return=false");
+            assert!(
+                !expects_return,
+                "plain jump should have expects_return=false"
+            );
         } else {
             panic!("Expected AstContent::Jump, got {:?}", ast.content());
         }
@@ -703,7 +755,7 @@ mod tests {
         let todo_result = parse_test!(statement(), "todo!()").expect("todo!() should parse");
 
         // Both should be Call nodes.
-        assert!(matches!(end_result.content(),  AstContent::Call { .. }));
+        assert!(matches!(end_result.content(), AstContent::Call { .. }));
         assert!(matches!(todo_result.content(), AstContent::Call { .. }));
 
         // The func_path of each should be a single-segment IdentPath.
@@ -724,8 +776,64 @@ mod tests {
             unreachable!()
         };
 
-        assert_eq!(end_name,  "end!");
+        assert_eq!(end_name, "end!");
         assert_eq!(todo_name, "todo!");
+    }
+
+    #[test]
+    fn struct_decl_parses_basic() {
+        use crate::parser::ast::{StructField, TypeAnnotation};
+        let result = parse_test!(
+            struct_decl_parser(),
+            "struct Player {\n    name: str\n    health: int\n}"
+        );
+        let ast = result.expect("basic struct decl should parse");
+        if let AstContent::StructDecl { name, fields } = ast.content() {
+            assert_eq!(name, "Player");
+            assert_eq!(
+                fields,
+                &vec![
+                    StructField {
+                        name: "name".into(),
+                        type_annotation: TypeAnnotation::Str,
+                    },
+                    StructField {
+                        name: "health".into(),
+                        type_annotation: TypeAnnotation::Int,
+                    },
+                ]
+            );
+        } else {
+            panic!("Expected AstContent::StructDecl, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn struct_decl_parses_comma_separated() {
+        use crate::parser::ast::TypeAnnotation;
+        let result = parse_test!(struct_decl_parser(), "struct Vec2 { x: float, y: float }");
+        let ast = result.expect("comma-separated struct decl should parse");
+        if let AstContent::StructDecl { name, fields } = ast.content() {
+            assert_eq!(name, "Vec2");
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].name, "x");
+            assert_eq!(fields[0].type_annotation, TypeAnnotation::Float);
+            assert_eq!(fields[1].name, "y");
+            assert_eq!(fields[1].type_annotation, TypeAnnotation::Float);
+        } else {
+            panic!("Expected AstContent::StructDecl, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn struct_decl_accessible_via_statement() {
+        let result = parse_test!(statement(), "struct Empty {}");
+        let ast = result.expect("struct decl via statement() should parse");
+        assert!(
+            matches!(ast.content(), AstContent::StructDecl { .. }),
+            "expected AstContent::StructDecl, got {:?}",
+            ast.content()
+        );
     }
 }
 

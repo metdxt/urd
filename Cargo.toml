@@ -31,15 +31,15 @@ cli = ["dep:crossterm", "dep:env_logger"]
 incremental=true
 
 [profile.test]
-opt-level=1
-incremental=true
+opt-level = 0
+incremental = false
 debug = 0
-codegen-units = 256
+codegen-units = 1
 rustflags = ["-Z", "codegen-backend=cranelift"]
 
 [profile.test.build-override]
 opt-level = 0
-codegen-units = 256
+codegen-units = 1
 debug = false
 
 [lints]

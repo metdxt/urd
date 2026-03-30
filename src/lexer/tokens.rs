@@ -202,6 +202,9 @@ pub enum Token {
     #[token("enum")]
     Enum,
 
+    #[token("struct")]
+    Struct,
+
     #[token("match")]
     Match,
 
@@ -394,6 +397,13 @@ mod tests {
         assert!(matches!(lex("as"), Token::As));
         // "asset" (with extra chars) must still lex as IdentPath
         assert!(matches!(lex("asset"), Token::IdentPath(_)));
+    }
+
+    #[test]
+    fn struct_keyword() {
+        assert!(matches!(lex("struct"), Token::Struct));
+        // "structure" (with extra chars) must still lex as IdentPath
+        assert!(matches!(lex("structure"), Token::IdentPath(_)));
     }
 
     #[test]

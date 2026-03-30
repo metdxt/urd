@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::parser::ast::{Ast, AstContent, DeclKind, TypeAnnotation};
+use crate::parser::ast::{Ast, AstContent, DeclKind, StructField, TypeAnnotation};
 use crate::runtime::value::RuntimeValue;
 
 // ---------------------------------------------------------------------------
@@ -41,6 +41,9 @@ pub struct AnalysisContext {
     /// All enum declarations found anywhere in the script: `enum_name -> [variant, ...]`.
     pub enums: HashMap<String, Vec<String>>,
 
+    /// All struct declarations found anywhere in the script: `struct_name -> [field, ...]`.
+    pub structs: HashMap<String, Vec<StructField>>,
+
     /// Top-level typed variable declarations: `variable_name -> TypeAnnotation`.
     ///
     /// Only variables declared as direct children of the outermost `Block` that
@@ -58,6 +61,7 @@ impl AnalysisContext {
     pub fn build(root: &Ast) -> Self {
         let mut ctx = AnalysisContext::default();
         collect_enums(root, &mut ctx.enums);
+        collect_structs(root, &mut ctx.structs);
         collect_top_level_vars(root, &mut ctx.top_level_vars);
         ctx
     }
@@ -181,7 +185,127 @@ fn collect_enums(node: &Ast, enums: &mut HashMap<String, Vec<String>>) {
         AstContent::Value(_)
         | AstContent::Jump { .. }
         | AstContent::LetCall { .. }
-        | AstContent::Import { .. } => {}
+        | AstContent::Import { .. }
+        | AstContent::StructDecl { .. } => {}
+    }
+}
+
+/// Recursively walks the entire subtree rooted at `node` and inserts every
+/// [`AstContent::StructDecl`] it finds into `structs`.
+fn collect_structs(node: &Ast, structs: &mut HashMap<String, Vec<StructField>>) {
+    match node.content() {
+        AstContent::StructDecl { name, fields } => {
+            structs.insert(name.clone(), fields.clone());
+        }
+
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                collect_structs(stmt, structs);
+            }
+        }
+
+        AstContent::LabeledBlock { block, .. } => {
+            collect_structs(block, structs);
+        }
+
+        AstContent::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_structs(condition, structs);
+            collect_structs(then_block, structs);
+            if let Some(eb) = else_block {
+                collect_structs(eb, structs);
+            }
+        }
+
+        AstContent::Declaration { decl_defs, .. } => {
+            collect_structs(decl_defs, structs);
+        }
+
+        AstContent::Menu { options } => {
+            for opt in options {
+                collect_structs(opt, structs);
+            }
+        }
+
+        AstContent::MenuOption { content, .. } => {
+            collect_structs(content, structs);
+        }
+
+        AstContent::Match { scrutinee, arms } => {
+            collect_structs(scrutinee, structs);
+            for arm in arms {
+                collect_structs(&arm.body, structs);
+            }
+        }
+
+        AstContent::DecoratorDef { body, .. } => {
+            collect_structs(body, structs);
+        }
+
+        AstContent::Return { value } => {
+            if let Some(v) = value {
+                collect_structs(v, structs);
+            }
+        }
+
+        AstContent::BinOp { left, right, .. } => {
+            collect_structs(left, structs);
+            collect_structs(right, structs);
+        }
+
+        AstContent::UnaryOp { expr, .. } => {
+            collect_structs(expr, structs);
+        }
+
+        AstContent::ExprList(exprs) => {
+            for e in exprs {
+                collect_structs(e, structs);
+            }
+        }
+
+        AstContent::List(items) => {
+            for item in items {
+                collect_structs(item, structs);
+            }
+        }
+
+        AstContent::Call { func_path, params } => {
+            collect_structs(func_path, structs);
+            collect_structs(params, structs);
+        }
+
+        AstContent::Subscript { object, key } => {
+            collect_structs(object, structs);
+            collect_structs(key, structs);
+        }
+
+        AstContent::SubscriptAssign { object, key, value } => {
+            collect_structs(object, structs);
+            collect_structs(key, structs);
+            collect_structs(value, structs);
+        }
+
+        AstContent::Dialogue { speakers, content } => {
+            collect_structs(speakers, structs);
+            collect_structs(content, structs);
+        }
+
+        AstContent::Map(pairs) => {
+            for (k, v) in pairs {
+                collect_structs(k, structs);
+                collect_structs(v, structs);
+            }
+        }
+
+        // Leaf nodes that cannot contain a StructDecl.
+        AstContent::Value(_)
+        | AstContent::Jump { .. }
+        | AstContent::LetCall { .. }
+        | AstContent::Import { .. }
+        | AstContent::EnumDecl { .. } => {}
     }
 }
 
@@ -294,7 +418,7 @@ impl ScopeStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{DeclKind, TypeAnnotation};
+    use crate::parser::ast::{AstContent, DeclKind, StructField, TypeAnnotation};
     use crate::runtime::value::RuntimeValue;
 
     // -----------------------------------------------------------------------
@@ -387,6 +511,45 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // AnalysisContext::build -- struct collection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_collects_top_level_struct() {
+        let fields = vec![
+            StructField {
+                name: "name".into(),
+                type_annotation: TypeAnnotation::Str,
+            },
+            StructField {
+                name: "health".into(),
+                type_annotation: TypeAnnotation::Int,
+            },
+        ];
+        let root = Ast::block(vec![Ast::new(AstContent::StructDecl {
+            name: "Player".into(),
+            fields: fields.clone(),
+        })]);
+        let ctx = AnalysisContext::build(&root);
+        assert_eq!(ctx.structs.get("Player"), Some(&fields));
+    }
+
+    #[test]
+    fn build_collects_struct_nested_in_label() {
+        let fields = vec![StructField {
+            name: "x".into(),
+            type_annotation: TypeAnnotation::Float,
+        }];
+        let inner = Ast::new(AstContent::StructDecl {
+            name: "Vec2".into(),
+            fields: fields.clone(),
+        });
+        let root = Ast::labeled_block("scene".into(), Ast::block(vec![inner]));
+        let ctx = AnalysisContext::build(&root);
+        assert_eq!(ctx.structs.get("Vec2"), Some(&fields));
+    }
+
+    // -----------------------------------------------------------------------
     // AnalysisContext::build -- top-level variable collection
     // -----------------------------------------------------------------------
 
@@ -395,10 +558,7 @@ mod tests {
         let decl = typed_decl_node("score", TypeAnnotation::Int, int_val());
         let root = Ast::block(vec![decl]);
         let ctx = AnalysisContext::build(&root);
-        assert_eq!(
-            ctx.top_level_vars.get("score"),
-            Some(&TypeAnnotation::Int)
-        );
+        assert_eq!(ctx.top_level_vars.get("score"), Some(&TypeAnnotation::Int));
     }
 
     #[test]
@@ -435,10 +595,7 @@ mod tests {
         let decl = typed_decl_node("x", TypeAnnotation::Float, int_val());
         let root = Ast::labeled_block("main".to_owned(), Ast::block(vec![decl]));
         let ctx = AnalysisContext::build(&root);
-        assert_eq!(
-            ctx.top_level_vars.get("x"),
-            Some(&TypeAnnotation::Float)
-        );
+        assert_eq!(ctx.top_level_vars.get("x"), Some(&TypeAnnotation::Float));
     }
 
     // -----------------------------------------------------------------------

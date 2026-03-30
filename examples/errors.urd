@@ -1,18 +1,41 @@
-# errors.urd — deliberately contains errors to demonstrate Urd's error reporting.
+# errors.urd — deliberately contains type errors to demonstrate Urd's error reporting.
 # The script is otherwise a fully playable sci-fi dialogue scenario aboard a starship.
 
+# ── Struct definitions ────────────────────────────────────────────────────────
+
+# A named character that can appear in dialogue.
+struct Character {
+    name: str
+    name_color: str
+}
+
+# A snapshot report produced when hull diagnostics are run.
+struct SystemReport {
+    status: str
+    integrity: int
+    recommendation: str
+}
+
 # ── Characters ────────────────────────────────────────────────────────────────
-const aria        = :{ name: "ARIA",        name_color: "cyan"   }
-const commander   = :{ name: "Commander",   name_color: "yellow" }
-const nav_console = :{ name: "NAV CONSOLE", name_color: "gray"   }
+const aria:        Character = :{ name: "ARIA",        name_color: "cyan"   }
+const commander:   Character = :{ name: "Commander",   name_color: "yellow" }
+const nav_console: Character = :{ name: "NAV CONSOLE", name_color: "gray"   }
+
+# ── Intentional struct errors (for error-reporting demos) ─────────────────────
+
+# error: missing required field `name_color`
+let broken_crew: Character = :{ name: "Unknown" }
+
+# error: field `integrity` expected int, got str; field `status` expected str, got int
+let garbled_report: SystemReport = :{ status: 99, integrity: "nominal", recommendation: "proceed" }
 
 # ── Global state ───────────────────────────────────────────────────────────────
-global hull_integrity = 100
-global oxygen_level   = 80
-global power_cells    = 3
-global docking_clear  = false
+global hull_integrity: int  = 100
+global oxygen_level: int    = 80
+global power_cells: int     = 3
+global docking_clear: bool  = false
 
-# ── Intentional type errors (for error-reporting demos) ───────────────────────
+# ── Intentional primitive type errors (for error-reporting demos) ─────────────
 let mood: int   = "cheerful"  # error: expected int, got string
 let score: bool = 42          # error: expected bool, got int
 
@@ -24,7 +47,6 @@ let heading: Direction = North
 # ── Labels ────────────────────────────────────────────────────────────────────
 
 label signal_lost {
-    # Played when the player chooses to broadcast a distress signal in low_power.
     <aria>: {
         "Commander, I am losing signal integrity."
         "Static is bleeding across all communication channels."
@@ -56,15 +78,20 @@ label intro {
 }
 
 label hull_check {
-    # Read out the current hull value via string interpolation.
     <aria>: "Hull integrity reading: {hull_integrity} percent."
 
     if hull_integrity >= 80 {
+        # A well-formed SystemReport — all fields present with correct types.
+        let report: SystemReport = :{ status: "nominal", integrity: hull_integrity, recommendation: "cleared to proceed" }
+
         <aria>: {
             "All structural panels are within tolerance."
             "We are cleared to proceed."
         }
     } else {
+        # error: missing required field `recommendation`
+        let report: SystemReport = :{ status: "critical", integrity: hull_integrity }
+
         <aria>: {
             "Hull integrity is below safe operational thresholds."
             "I strongly recommend docking for repairs before we continue."
@@ -81,7 +108,6 @@ label nav_briefing {
         "AWAITING HEADING SELECTION FROM FLIGHT OFFICER."
     }
 
-    # Player picks a heading; nav_route reacts to the stored value.
     menu {
         "Set heading: North" {
             heading = North
@@ -103,7 +129,6 @@ label nav_briefing {
 }
 
 label nav_route {
-    # Branch on the Direction enum value set in nav_briefing.
     match heading {
         North {
             <aria>: {
@@ -138,7 +163,6 @@ label debris_field {
         "Collision avoidance systems are active."
     }
 
-    # Consume one power cell to raise shields; fall back to low_power if empty.
     if power_cells > 1 {
         <aria>: "Shields at full power. We can handle some turbulence."
         power_cells = power_cells - 1

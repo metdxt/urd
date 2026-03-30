@@ -56,7 +56,11 @@ fn check_node(
     // parent's span so nested errors have the most specific location available.
     let span = {
         let s = ast.span();
-        if s.start == 0 && s.end == 0 { parent_span } else { s }
+        if s.start == 0 && s.end == 0 {
+            parent_span
+        } else {
+            s
+        }
     };
 
     match ast.content() {
@@ -168,6 +172,7 @@ fn check_node(
         | AstContent::Jump { .. }
         | AstContent::LetCall { .. }
         | AstContent::EnumDecl { .. }
+        | AstContent::StructDecl { .. }
         | AstContent::Import { .. }
         | AstContent::Return { value: None } => {}
     }
@@ -336,7 +341,6 @@ mod tests {
     use crate::parser::ast::{MatchArm, MatchPattern};
     use crate::runtime::value::RuntimeValue;
 
-
     // ── helpers ──────────────────────────────────────────────────────────────
 
     fn make_ctx(enums: &[(&str, &[&str])], vars: &[(&str, TypeAnnotation)]) -> AnalysisContext {
@@ -375,13 +379,13 @@ mod tests {
     fn wildcard_arm_is_always_exhaustive() {
         let ctx = make_ctx(&[("Dir", &["N", "S", "E", "W"])], &[]);
         let scrutinee = ident_path("dir");
-        let arms = vec![
-            value_arm("N", return_block()),
-            wildcard_arm(return_block()),
-        ];
+        let arms = vec![value_arm("N", return_block()), wildcard_arm(return_block())];
         let ast = Ast::match_stmt(scrutinee, arms);
         let errors = check(&ast, &ctx);
-        assert!(errors.is_empty(), "wildcard arm should suppress exhaustiveness check");
+        assert!(
+            errors.is_empty(),
+            "wildcard arm should suppress exhaustiveness check"
+        );
     }
 
     // ── all variants covered ─────────────────────────────────────────────────
@@ -397,7 +401,10 @@ mod tests {
         ];
         let ast = Ast::match_stmt(scrutinee, arms);
         let errors = check(&ast, &ctx);
-        assert!(errors.is_empty(), "all variants covered — no error expected");
+        assert!(
+            errors.is_empty(),
+            "all variants covered — no error expected"
+        );
     }
 
     // ── missing variants ─────────────────────────────────────────────────────
@@ -430,7 +437,10 @@ mod tests {
 
     #[test]
     fn missing_multiple_variants_reported() {
-        let ctx = make_ctx(&[("Season", &["Spring", "Summer", "Autumn", "Winter"])], &[]);
+        let ctx = make_ctx(
+            &[("Season", &["Spring", "Summer", "Autumn", "Winter"])],
+            &[],
+        );
         let scrutinee = ident_path("s");
         // Only "Spring" is covered
         let arms = vec![value_arm("Spring", return_block())];
@@ -438,7 +448,9 @@ mod tests {
         let errors = check(&ast, &ctx);
         assert_eq!(errors.len(), 1);
         match &errors[0] {
-            AnalysisError::NonExhaustiveMatch { missing_variants, .. } => {
+            AnalysisError::NonExhaustiveMatch {
+                missing_variants, ..
+            } => {
                 let mut missing = missing_variants.clone();
                 missing.sort();
                 assert_eq!(missing, vec!["Autumn", "Summer", "Winter"]);
@@ -460,7 +472,10 @@ mod tests {
         ];
         let ast = Ast::match_stmt(scrutinee, arms);
         let errors = check(&ast, &ctx);
-        assert!(errors.is_empty(), "no enum registered — should be silently skipped");
+        assert!(
+            errors.is_empty(),
+            "no enum registered — should be silently skipped"
+        );
     }
 
     // ── scrutinee via Named annotation ───────────────────────────────────────
@@ -510,13 +525,7 @@ mod tests {
     #[test]
     fn nested_match_inside_arm_is_checked() {
         // Outer match is exhaustive; inner match (nested in an arm body) is not.
-        let ctx = make_ctx(
-            &[
-                ("Outer", &["A", "B"]),
-                ("Inner", &["X", "Y"]),
-            ],
-            &[],
-        );
+        let ctx = make_ctx(&[("Outer", &["A", "B"]), ("Inner", &["X", "Y"])], &[]);
 
         // Build the inner (non-exhaustive) match: covers only "X" of Inner.
         let inner_scrutinee = ident_path("inner_val");
@@ -561,7 +570,9 @@ mod tests {
         let errors = check(&root, &ctx);
         assert_eq!(errors.len(), 1);
         match &errors[0] {
-            AnalysisError::NonExhaustiveMatch { missing_variants, .. } => {
+            AnalysisError::NonExhaustiveMatch {
+                missing_variants, ..
+            } => {
                 assert_eq!(missing_variants, &["Sad".to_owned()]);
             }
             other => panic!("unexpected: {other:?}"),
@@ -613,10 +624,7 @@ mod tests {
     fn ambiguous_enum_patterns_are_skipped() {
         // Two enums share the same variant names → heuristic can't decide → skip.
         let ctx = make_ctx(
-            &[
-                ("A", &["Foo", "Bar"]),
-                ("B", &["Foo", "Bar", "Baz"]),
-            ],
+            &[("A", &["Foo", "Bar"]), ("B", &["Foo", "Bar", "Baz"])],
             &[],
         );
         let scrutinee = ident_path("x");

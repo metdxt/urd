@@ -38,83 +38,84 @@ use crate::lexer::Token;
 fn format_token(token: &Token) -> String {
     match token {
         // ── Literals ──────────────────────────────────────────────────────
-        Token::Null           => "'null'".to_owned(),
-        Token::BoolLit(b)     => format!("'{b}'"),
-        Token::IntLit(n)      => format!("integer '{n}'"),
-        Token::FloatLit(f)    => format!("float '{f}'"),
-        Token::StrLit(_)      => "string literal".to_owned(),
-        Token::Dice((c, s))   => format!("dice '{c}d{s}'"),
-        Token::IdentPath(p)   => format!("identifier '{}'", p.join(".")),
+        Token::Null => "'null'".to_owned(),
+        Token::BoolLit(b) => format!("'{b}'"),
+        Token::IntLit(n) => format!("integer '{n}'"),
+        Token::FloatLit(f) => format!("float '{f}'"),
+        Token::StrLit(_) => "string literal".to_owned(),
+        Token::Dice((c, s)) => format!("dice '{c}d{s}'"),
+        Token::IdentPath(p) => format!("identifier '{}'", p.join(".")),
 
         // ── Whitespace / structure ─────────────────────────────────────────
-        Token::Newline        => "newline".to_owned(),
+        Token::Newline => "newline".to_owned(),
 
         // ── Keywords ──────────────────────────────────────────────────────
-        Token::Const          => "'const'".to_owned(),
-        Token::Let            => "'let'".to_owned(),
-        Token::Global         => "'global'".to_owned(),
-        Token::If             => "'if'".to_owned(),
-        Token::Else           => "'else'".to_owned(),
-        Token::Elif           => "'elif'".to_owned(),
-        Token::Label          => "'label'".to_owned(),
-        Token::Menu           => "'menu'".to_owned(),
-        Token::Return         => "'return'".to_owned(),
-        Token::Jump           => "'jump'".to_owned(),
-        Token::EndBang        => "'end!'".to_owned(),
-        Token::TodoBang       => "'todo!'".to_owned(),
-        Token::Enum           => "'enum'".to_owned(),
-        Token::Match          => "'match'".to_owned(),
-        Token::DecoratorKw    => "'decorator'".to_owned(),
-        Token::Import         => "'import'".to_owned(),
-        Token::As             => "'as'".to_owned(),
-        Token::Wildcard       => "'_'".to_owned(),
+        Token::Const => "'const'".to_owned(),
+        Token::Let => "'let'".to_owned(),
+        Token::Global => "'global'".to_owned(),
+        Token::If => "'if'".to_owned(),
+        Token::Else => "'else'".to_owned(),
+        Token::Elif => "'elif'".to_owned(),
+        Token::Label => "'label'".to_owned(),
+        Token::Menu => "'menu'".to_owned(),
+        Token::Return => "'return'".to_owned(),
+        Token::Jump => "'jump'".to_owned(),
+        Token::EndBang => "'end!'".to_owned(),
+        Token::TodoBang => "'todo!'".to_owned(),
+        Token::Enum => "'enum'".to_owned(),
+        Token::Struct => "'struct'".to_owned(),
+        Token::Match => "'match'".to_owned(),
+        Token::DecoratorKw => "'decorator'".to_owned(),
+        Token::Import => "'import'".to_owned(),
+        Token::As => "'as'".to_owned(),
+        Token::Wildcard => "'_'".to_owned(),
 
         // ── Logical operators (keyword forms) ─────────────────────────────
-        Token::And            => "'and'/'&&'".to_owned(),
-        Token::Or             => "'or'/'||'".to_owned(),
-        Token::Not            => "'not'".to_owned(),
+        Token::And => "'and'/'&&'".to_owned(),
+        Token::Or => "'or'/'||'".to_owned(),
+        Token::Not => "'not'".to_owned(),
 
         // ── Arithmetic / bitwise operators ────────────────────────────────
-        Token::Plus           => "'+'".to_owned(),
-        Token::Minus          => "'-'".to_owned(),
-        Token::Star           => "'*'".to_owned(),
-        Token::Slash          => "'/'".to_owned(),
-        Token::DoubleSlash    => "'//'".to_owned(),
-        Token::Percent        => "'%'".to_owned(),
-        Token::BitwiseAnd     => "'&'".to_owned(),
-        Token::BitwiseOr      => "'|'".to_owned(),
-        Token::BitwiseXor     => "'^'".to_owned(),
-        Token::BitwiseNot     => "'!'".to_owned(),
-        Token::LeftShift      => "'<<'".to_owned(),
-        Token::RightShift     => "'>>'".to_owned(),
+        Token::Plus => "'+'".to_owned(),
+        Token::Minus => "'-'".to_owned(),
+        Token::Star => "'*'".to_owned(),
+        Token::Slash => "'/'".to_owned(),
+        Token::DoubleSlash => "'//'".to_owned(),
+        Token::Percent => "'%'".to_owned(),
+        Token::BitwiseAnd => "'&'".to_owned(),
+        Token::BitwiseOr => "'|'".to_owned(),
+        Token::BitwiseXor => "'^'".to_owned(),
+        Token::BitwiseNot => "'!'".to_owned(),
+        Token::LeftShift => "'<<'".to_owned(),
+        Token::RightShift => "'>>'".to_owned(),
 
         // ── Comparison operators ───────────────────────────────────────────
-        Token::Assign              => "'='".to_owned(),
-        Token::Equals              => "'=='".to_owned(),
-        Token::NotEquals           => "'!='".to_owned(),
-        Token::GreaterThan         => "'>'".to_owned(),
-        Token::LessThan            => "'<'".to_owned(),
+        Token::Assign => "'='".to_owned(),
+        Token::Equals => "'=='".to_owned(),
+        Token::NotEquals => "'!='".to_owned(),
+        Token::GreaterThan => "'>'".to_owned(),
+        Token::LessThan => "'<'".to_owned(),
         Token::GreaterThanOrEquals => "'>='".to_owned(),
-        Token::LessThanOrEquals    => "'<='".to_owned(),
+        Token::LessThanOrEquals => "'<='".to_owned(),
 
         // ── Delimiters / punctuation ──────────────────────────────────────
-        Token::LeftParen      => "'('".to_owned(),
-        Token::RightParen     => "')'".to_owned(),
-        Token::LeftCurly      => "'{'".to_owned(),
-        Token::RightCurly     => "'}'".to_owned(),
-        Token::LeftBracket    => "'['".to_owned(),
-        Token::RightBracket   => "']'".to_owned(),
-        Token::DictStart      => "':{'".to_owned(),
-        Token::Colon          => "':'".to_owned(),
-        Token::Comma          => "','".to_owned(),
-        Token::Semicolon      => "';'".to_owned(),
-        Token::At             => "'@'".to_owned(),
+        Token::LeftParen => "'('".to_owned(),
+        Token::RightParen => "')'".to_owned(),
+        Token::LeftCurly => "'{'".to_owned(),
+        Token::RightCurly => "'}'".to_owned(),
+        Token::LeftBracket => "'['".to_owned(),
+        Token::RightBracket => "']'".to_owned(),
+        Token::DictStart => "':{'".to_owned(),
+        Token::Colon => "':'".to_owned(),
+        Token::Comma => "','".to_owned(),
+        Token::Semicolon => "';'".to_owned(),
+        Token::At => "'@'".to_owned(),
 
         // ── Lexer error embedded in token stream ──────────────────────────
         // This happens when the lexer encounters something it cannot tokenise
         // at all (e.g. a stray `§` or a malformed number). Surfacing the
         // underlying lexer message gives the user an actionable clue.
-        Token::Error(e)       => format!("invalid token: {e}"),
+        Token::Error(e) => format!("invalid token: {e}"),
     }
 }
 
@@ -123,13 +124,13 @@ fn format_token(token: &Token) -> String {
 /// `RichPattern` is how chumsky describes what it *expected* to find.
 fn format_pattern(pattern: &RichPattern<'_, Token>) -> String {
     match pattern {
-        RichPattern::Token(t)      => format_token(t),
+        RichPattern::Token(t) => format_token(t),
         // Labels come from `.labelled("…")` calls on parser combinators.
-        RichPattern::Label(l)      => l.to_string(),
+        RichPattern::Label(l) => l.to_string(),
         RichPattern::Identifier(i) => format!("'{i}'"),
-        RichPattern::EndOfInput    => "end of input".to_owned(),
+        RichPattern::EndOfInput => "end of input".to_owned(),
         RichPattern::SomethingElse => "something else".to_owned(),
-        RichPattern::Any           => "any token".to_owned(),
+        RichPattern::Any => "any token".to_owned(),
     }
 }
 
@@ -200,7 +201,7 @@ pub fn render_parse_errors<W: std::io::Write>(
             RichReason::ExpectedFound { expected, found } => {
                 let found_str = match found {
                     Some(t) => format_token(t),
-                    None    => "end of input".to_owned(),
+                    None => "end of input".to_owned(),
                 };
                 let expected_str = format_expected(expected);
 
@@ -228,10 +229,7 @@ pub fn render_parse_errors<W: std::io::Write>(
             (name.clone(), range.clone()),
         )
         .with_message(&top_message)
-        .with_label(
-            Label::new((name.clone(), range.clone()))
-                .with_message(&primary_label_msg),
-        );
+        .with_label(Label::new((name.clone(), range.clone())).with_message(&primary_label_msg));
 
         // ── Context labels from .labelled() calls ─────────────────────────
         //
@@ -287,13 +285,13 @@ mod tests {
     /// test source must be syntactically broken on purpose).
     fn parse_errors(src: &str) -> Vec<String> {
         // We need owned errors — use into_output_errors so we can inspect them.
+        use crate::lexer::{Token, lex_src};
         use chumsky::input::Stream;
         use chumsky::prelude::*;
-        use crate::lexer::{Token, lex_src};
 
         let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
             Ok(tok) => (tok, span.into()),
-            Err(e)  => (Token::Error(e), span.into()),
+            Err(e) => (Token::Error(e), span.into()),
         });
         let stream = Stream::from_iter(lexer)
             .map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
@@ -302,13 +300,7 @@ mod tests {
         let mut buf = Vec::new();
         // Collect owned errors so they can be rendered.
         for e in &errs {
-            render_parse_errors(
-                std::slice::from_ref(e),
-                src,
-                "test.urd",
-                &mut buf,
-            )
-            .unwrap();
+            render_parse_errors(std::slice::from_ref(e), src, "test.urd", &mut buf).unwrap();
         }
         let text = String::from_utf8_lossy(&buf).into_owned();
         text.lines().map(str::to_owned).collect()
@@ -320,7 +312,9 @@ mod tests {
         while let Some(c) = chars.next() {
             if c == '\x1b' {
                 for ch in chars.by_ref() {
-                    if ch.is_ascii_alphabetic() { break; }
+                    if ch.is_ascii_alphabetic() {
+                        break;
+                    }
                 }
             } else {
                 out.push(c);
@@ -348,9 +342,9 @@ mod tests {
     #[test]
     fn format_token_keywords() {
         assert_eq!(format_token(&Token::Return), "'return'");
-        assert_eq!(format_token(&Token::Jump),   "'jump'");
-        assert_eq!(format_token(&Token::Let),    "'let'");
-        assert_eq!(format_token(&Token::Label),  "'label'");
+        assert_eq!(format_token(&Token::Jump), "'jump'");
+        assert_eq!(format_token(&Token::Let), "'let'");
+        assert_eq!(format_token(&Token::Label), "'label'");
     }
 
     #[test]
@@ -393,21 +387,24 @@ mod tests {
         // A bare `=` at the top level is not a valid statement.
         let lines = parse_errors("= 5\n");
         let all = lines.join("\n");
-        assert!(!all.is_empty(), "expected non-empty output for broken source");
+        assert!(
+            !all.is_empty(),
+            "expected non-empty output for broken source"
+        );
     }
 
     #[test]
     fn render_parse_errors_output_is_valid_utf8() {
         let mut buf: Vec<u8> = Vec::new();
 
+        use crate::lexer::{Token, lex_src};
         use chumsky::input::Stream;
         use chumsky::prelude::*;
-        use crate::lexer::{Token, lex_src};
 
         let src = "= 5\n";
         let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
             Ok(tok) => (tok, span.into()),
-            Err(e)  => (Token::Error(e), span.into()),
+            Err(e) => (Token::Error(e), span.into()),
         });
         let stream = Stream::from_iter(lexer)
             .map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
@@ -415,7 +412,10 @@ mod tests {
         let (_, errs) = script().parse(stream).into_output_errors();
         render_parse_errors(&errs, src, "test.urd", &mut buf).unwrap();
 
-        assert!(std::str::from_utf8(&buf).is_ok(), "output must be valid UTF-8");
+        assert!(
+            std::str::from_utf8(&buf).is_ok(),
+            "output must be valid UTF-8"
+        );
     }
 
     #[test]

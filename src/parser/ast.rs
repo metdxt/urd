@@ -189,6 +189,15 @@ pub struct DecoratorParam {
     pub type_annotation: Option<TypeAnnotation>,
 }
 
+/// A single field in a `struct` definition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructField {
+    /// The field name (plain identifier)
+    pub name: String,
+    /// The field's required type annotation
+    pub type_annotation: TypeAnnotation,
+}
+
 /// A single arm in a match statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
@@ -327,6 +336,14 @@ pub enum AstContent {
         name: String,
         /// Ordered list of variant names (e.g. ["North", "South", "East", "West"])
         variants: Vec<String>,
+    },
+
+    /// Struct declaration: `struct Name { field: Type ... }`
+    StructDecl {
+        /// The struct's name (e.g. "Player")
+        name: String,
+        /// Ordered list of field definitions
+        fields: Vec<StructField>,
     },
 
     /// Match statement: match expr { pattern { ... } ... }
@@ -638,7 +655,10 @@ impl Ast {
 
     /// Create jump statement node
     pub fn jump_stmt(label: String, expects_return: bool) -> Self {
-        Self::new(AstContent::Jump { label, expects_return })
+        Self::new(AstContent::Jump {
+            label,
+            expects_return,
+        })
     }
 
     /// Create a subroutine call with result binding node (`let name = jump target and return`)
@@ -649,6 +669,11 @@ impl Ast {
     /// Create an enum declaration node
     pub fn enum_decl(name: String, variants: Vec<String>) -> Self {
         Self::new(AstContent::EnumDecl { name, variants })
+    }
+
+    /// Create a struct declaration node
+    pub fn struct_decl(name: String, fields: Vec<StructField>) -> Self {
+        Self::new(AstContent::StructDecl { name, fields })
     }
 
     /// Create a match statement node

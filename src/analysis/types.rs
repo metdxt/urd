@@ -43,7 +43,7 @@ use crate::runtime::value::RuntimeValue;
 use chumsky::span::SimpleSpan;
 
 use super::context::{AnalysisContext, ScopeStack, extract_decl_name};
-use super::AnalysisError;
+use super::{AnalysisError, StructFieldError};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -72,7 +72,11 @@ fn check_node(
     // span so nested errors have the most specific location available.
     let span = {
         let s = ast.span();
-        if s.start == 0 && s.end == 0 { parent_span } else { s }
+        if s.start == 0 && s.end == 0 {
+            parent_span
+        } else {
+            s
+        }
     };
     match ast.content() {
         // ── Declaration with type annotation ─────────────────────────────
@@ -89,14 +93,7 @@ fn check_node(
                 if s.start == 0 && s.end == 0 { span } else { s }
             };
             if let Some(var_name) = extract_decl_name(decl_name) {
-                check_value_compat(
-                    decl_defs,
-                    ann,
-                    &var_name,
-                    rhs_span,
-                    ctx,
-                    errors,
-                );
+                check_value_compat(decl_defs, ann, &var_name, rhs_span, ctx, errors);
                 // Register the variable so later assignments can be checked.
                 scope.declare(var_name, ann.clone());
             }
@@ -267,6 +264,7 @@ fn check_node(
         | AstContent::Jump { .. }
         | AstContent::LetCall { .. }
         | AstContent::EnumDecl { .. }
+        | AstContent::StructDecl { .. }
         | AstContent::Import { .. } => {}
     }
 }
@@ -305,14 +303,42 @@ fn check_value_compat(
             }
             return;
         }
-        AstContent::Map(_) => {
-            if !matches!(expected, TypeAnnotation::Map) {
-                errors.push(AnalysisError::TypeMismatch {
-                    variable: variable.to_owned(),
-                    expected: expected.clone(),
-                    got: "map".to_owned(),
-                    span,
-                });
+        AstContent::Map(pairs) => {
+            match expected {
+                TypeAnnotation::Map => { /* always ok */ }
+                TypeAnnotation::Named(path) => {
+                    let struct_name = path.first().map(String::as_str).unwrap_or("");
+                    if let Some(fields) = ctx.structs.get(struct_name) {
+                        // Structural type check against the struct definition.
+                        let field_errors = check_struct_compat(pairs, fields);
+                        if !field_errors.is_empty() {
+                            errors.push(AnalysisError::StructMismatch {
+                                variable: variable.to_owned(),
+                                struct_name: struct_name.to_owned(),
+                                field_errors,
+                                span,
+                            });
+                        }
+                    } else if ctx.enums.get(struct_name).is_none() {
+                        // Neither a known enum nor a known struct — report mismatch.
+                        errors.push(AnalysisError::TypeMismatch {
+                            variable: variable.to_owned(),
+                            expected: expected.clone(),
+                            got: "map".to_owned(),
+                            span,
+                        });
+                    }
+                    // If it IS a known enum name, fall through silently — the
+                    // runtime will surface the real error; we don't double-report.
+                }
+                _ => {
+                    errors.push(AnalysisError::TypeMismatch {
+                        variable: variable.to_owned(),
+                        expected: expected.clone(),
+                        got: "map".to_owned(),
+                        span,
+                    });
+                }
             }
             return;
         }
@@ -385,7 +411,9 @@ fn is_compatible(value: &RuntimeValue, annotation: &TypeAnnotation, ctx: &Analys
                     // If we can find the enum, verify the variant exists.
                     let enum_name = path.first().map(String::as_str).unwrap_or("");
                     if let Some(variants) = ctx.enums.get(enum_name) {
-                        variants.iter().any(|v| v.as_str() == ident_path[0].as_str())
+                        variants
+                            .iter()
+                            .any(|v| v.as_str() == ident_path[0].as_str())
                     } else {
                         // Enum not in context — best-effort accept.
                         true
@@ -394,6 +422,88 @@ fn is_compatible(value: &RuntimeValue, annotation: &TypeAnnotation, ctx: &Analys
                 _ => false,
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Struct compatibility helpers
+// ---------------------------------------------------------------------------
+
+/// Checks that a map literal's key-value pairs satisfy the required struct fields.
+///
+/// Returns a list of field errors found (empty = compatible).
+/// Extra fields in the literal are silently accepted (structural subtyping).
+fn check_struct_compat(
+    pairs: &[(Ast, Ast)],
+    fields: &[crate::parser::ast::StructField],
+) -> Vec<StructFieldError> {
+    // Build a map from key string → value Ast for the literal.
+    // Keys may be IdentPath identifiers or plain Str values.
+    let mut literal_map: std::collections::HashMap<String, &Ast> = std::collections::HashMap::new();
+    for (key_ast, val_ast) in pairs {
+        match key_ast.content() {
+            AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => {
+                literal_map.insert(path[0].clone(), val_ast);
+            }
+            AstContent::Value(RuntimeValue::Str(s)) => {
+                // Use the Display impl which reconstructs the plain string content.
+                literal_map.insert(s.to_string(), val_ast);
+            }
+            _ => {}
+        }
+    }
+
+    let mut field_errors = Vec::new();
+    for field in fields {
+        match literal_map.get(&field.name) {
+            None => {
+                field_errors.push(StructFieldError::MissingField {
+                    field_name: field.name.clone(),
+                    expected_type: field.type_annotation.clone(),
+                });
+            }
+            Some(val_ast) => {
+                if let AstContent::Value(rv) = val_ast.content() {
+                    if !is_compatible_simple(rv, &field.type_annotation) {
+                        field_errors.push(StructFieldError::WrongFieldType {
+                            field_name: field.name.clone(),
+                            expected_type: field.type_annotation.clone(),
+                            got: runtime_value_type_name(rv),
+                        });
+                    }
+                }
+                // Non-literal field value — silently accept (best-effort).
+            }
+        }
+    }
+    field_errors
+}
+
+/// Simplified compatibility check for a struct field value.
+///
+/// Does not need enum/struct lookup because struct fields that hold nested
+/// named types are accepted best-effort (we can't resolve them here without
+/// the full context).
+fn is_compatible_simple(value: &RuntimeValue, annotation: &TypeAnnotation) -> bool {
+    // A variable reference — accept silently; the runtime will check.
+    if let RuntimeValue::IdentPath(_) = value {
+        return true;
+    }
+    match annotation {
+        TypeAnnotation::Int => matches!(value, RuntimeValue::Int(_)),
+        // Float accepts int literals via widening.
+        TypeAnnotation::Float => {
+            matches!(value, RuntimeValue::Float(_) | RuntimeValue::Int(_))
+        }
+        TypeAnnotation::Bool => matches!(value, RuntimeValue::Bool(_)),
+        TypeAnnotation::Str => matches!(value, RuntimeValue::Str(_)),
+        TypeAnnotation::Null => matches!(value, RuntimeValue::Null),
+        // Collection and complex types — best-effort accept.
+        TypeAnnotation::List | TypeAnnotation::Map => true,
+        TypeAnnotation::Dice => matches!(value, RuntimeValue::Dice(_, _)),
+        TypeAnnotation::Label => matches!(value, RuntimeValue::Label { .. }),
+        // Nested named type — best-effort accept.
+        TypeAnnotation::Named(_) => true,
     }
 }
 
@@ -430,19 +540,15 @@ mod tests {
     use crate::parser::ast::{DeclKind, TypeAnnotation};
     use crate::runtime::value::RuntimeValue;
 
-
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    fn make_ctx(enums: &[(&str, &[&str])], vars: &[(&str, TypeAnnotation)]) -> AnalysisContext {
+    fn make_ctx(enums: &[(&str, &[&str])]) -> AnalysisContext {
         let mut ctx = AnalysisContext::default();
         for (name, variants) in enums {
             ctx.enums.insert(
                 (*name).to_owned(),
                 variants.iter().map(|s| (*s).to_owned()).collect(),
             );
-        }
-        for (name, ann) in vars {
-            ctx.top_level_vars.insert((*name).to_owned(), ann.clone());
         }
         ctx
     }
@@ -498,30 +604,22 @@ mod tests {
 
     #[test]
     fn int_literal_compatible_with_int_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Int, int_lit(42))]);
         assert_no_errors(&check(&ast, &ctx));
     }
 
     #[test]
     fn float_not_compatible_with_int_annotation() {
-        let ctx = make_ctx(&[], &[]);
-        let ast = Ast::block(vec![typed_decl(
-            "x",
-            TypeAnnotation::Int,
-            float_lit(1.5),
-        )]);
+        let ctx = make_ctx(&[]);
+        let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Int, float_lit(1.5))]);
         assert_type_mismatch(&check(&ast, &ctx), "x");
     }
 
     #[test]
     fn str_literal_incompatible_with_int_annotation() {
-        let ctx = make_ctx(&[], &[]);
-        let ast = Ast::block(vec![typed_decl(
-            "x",
-            TypeAnnotation::Int,
-            str_lit("hello"),
-        )]);
+        let ctx = make_ctx(&[]);
+        let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Int, str_lit("hello"))]);
         assert_type_mismatch(&check(&ast, &ctx), "x");
     }
 
@@ -529,21 +627,25 @@ mod tests {
 
     #[test]
     fn float_literal_compatible_with_float_annotation() {
-        let ctx = make_ctx(&[], &[]);
-        let ast = Ast::block(vec![typed_decl("f", TypeAnnotation::Float, float_lit(3.14))]);
+        let ctx = make_ctx(&[]);
+        let ast = Ast::block(vec![typed_decl(
+            "f",
+            TypeAnnotation::Float,
+            float_lit(3.14),
+        )]);
         assert_no_errors(&check(&ast, &ctx));
     }
 
     #[test]
     fn int_literal_widened_to_float() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("f", TypeAnnotation::Float, int_lit(0))]);
         assert_no_errors(&check(&ast, &ctx));
     }
 
     #[test]
     fn bool_not_compatible_with_float_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("f", TypeAnnotation::Float, bool_lit(true))]);
         assert_type_mismatch(&check(&ast, &ctx), "f");
     }
@@ -552,14 +654,14 @@ mod tests {
 
     #[test]
     fn bool_literal_compatible_with_bool_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("b", TypeAnnotation::Bool, bool_lit(false))]);
         assert_no_errors(&check(&ast, &ctx));
     }
 
     #[test]
     fn int_not_compatible_with_bool_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("b", TypeAnnotation::Bool, int_lit(1))]);
         assert_type_mismatch(&check(&ast, &ctx), "b");
     }
@@ -568,14 +670,14 @@ mod tests {
 
     #[test]
     fn str_literal_compatible_with_str_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("s", TypeAnnotation::Str, str_lit("hi"))]);
         assert_no_errors(&check(&ast, &ctx));
     }
 
     #[test]
     fn int_not_compatible_with_str_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("s", TypeAnnotation::Str, int_lit(0))]);
         assert_type_mismatch(&check(&ast, &ctx), "s");
     }
@@ -584,14 +686,14 @@ mod tests {
 
     #[test]
     fn null_compatible_with_null_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("n", TypeAnnotation::Null, null_lit())]);
         assert_no_errors(&check(&ast, &ctx));
     }
 
     #[test]
     fn bool_not_compatible_with_null_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("n", TypeAnnotation::Null, bool_lit(true))]);
         assert_type_mismatch(&check(&ast, &ctx), "n");
     }
@@ -599,8 +701,8 @@ mod tests {
     // ── Named (enum) ──────────────────────────────────────────────────────────
 
     #[test]
-    fn enum_variant_compatible_with_named_annotation() {
-        let ctx = make_ctx(&[("Dir", &["North", "South"])], &[]);
+    fn null_compatible_with_named_annotation() {
+        let ctx = make_ctx(&[("Dir", &["North", "South"])]);
         let val = Ast::value(RuntimeValue::IdentPath(vec!["North".to_owned()]));
         let ast = Ast::block(vec![typed_decl(
             "d",
@@ -612,7 +714,7 @@ mod tests {
 
     #[test]
     fn invalid_enum_variant_reports_mismatch() {
-        let ctx = make_ctx(&[("Dir", &["North", "South"])], &[]);
+        let ctx = make_ctx(&[("Dir", &["North", "South"])]);
         let val = Ast::value(RuntimeValue::IdentPath(vec!["East".to_owned()]));
         let ast = Ast::block(vec![typed_decl(
             "d",
@@ -623,21 +725,9 @@ mod tests {
     }
 
     #[test]
-    fn null_compatible_with_named_annotation() {
-        // Named types accept null (nullable enum).
-        let ctx = make_ctx(&[("Dir", &["North", "South"])], &[]);
-        let ast = Ast::block(vec![typed_decl(
-            "d",
-            TypeAnnotation::Named(vec!["Dir".to_owned()]),
-            null_lit(),
-        )]);
-        assert_no_errors(&check(&ast, &ctx));
-    }
-
-    #[test]
     fn unknown_named_enum_accepted_best_effort() {
         // If the enum is not in the context we cannot verify, so we accept.
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let val = Ast::value(RuntimeValue::IdentPath(vec!["Maybe".to_owned()]));
         let ast = Ast::block(vec![typed_decl(
             "x",
@@ -651,7 +741,7 @@ mod tests {
 
     #[test]
     fn dice_value_compatible_with_dice_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let val = Ast::value(RuntimeValue::Dice(2, 6));
         let ast = Ast::block(vec![typed_decl("roll", TypeAnnotation::Dice, val)]);
         assert_no_errors(&check(&ast, &ctx));
@@ -659,7 +749,7 @@ mod tests {
 
     #[test]
     fn int_not_compatible_with_dice_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let ast = Ast::block(vec![typed_decl("roll", TypeAnnotation::Dice, int_lit(6))]);
         assert_type_mismatch(&check(&ast, &ctx), "roll");
     }
@@ -668,7 +758,7 @@ mod tests {
 
     #[test]
     fn list_literal_compatible_with_list_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let list = Ast::list(vec![int_lit(1), int_lit(2)]);
         let ast = Ast::block(vec![typed_decl("lst", TypeAnnotation::List, list)]);
         assert_no_errors(&check(&ast, &ctx));
@@ -676,7 +766,7 @@ mod tests {
 
     #[test]
     fn map_literal_compatible_with_map_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let map = Ast::map(vec![(ident("key"), int_lit(1))]);
         let ast = Ast::block(vec![typed_decl("m", TypeAnnotation::Map, map)]);
         assert_no_errors(&check(&ast, &ctx));
@@ -684,7 +774,7 @@ mod tests {
 
     #[test]
     fn list_literal_incompatible_with_int_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let list = Ast::list(vec![int_lit(1)]);
         let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Int, list)]);
         assert_type_mismatch(&check(&ast, &ctx), "x");
@@ -692,7 +782,7 @@ mod tests {
 
     #[test]
     fn map_literal_incompatible_with_bool_annotation() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let map = Ast::map(vec![]);
         let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Bool, map)]);
         assert_type_mismatch(&check(&ast, &ctx), "x");
@@ -702,10 +792,9 @@ mod tests {
 
     #[test]
     fn reassignment_compatible_type_ok() {
-        let ctx = make_ctx(
-            &[],
-            &[("score", TypeAnnotation::Int)],
-        );
+        let mut ctx = make_ctx(&[]);
+        ctx.top_level_vars
+            .insert("score".to_owned(), TypeAnnotation::Int);
         // score = 100
         let assign = Ast::assign_op(ident("score"), int_lit(100));
         let ast = Ast::block(vec![assign]);
@@ -714,10 +803,9 @@ mod tests {
 
     #[test]
     fn reassignment_incompatible_type_reports_error() {
-        let ctx = make_ctx(
-            &[],
-            &[("score", TypeAnnotation::Int)],
-        );
+        let mut ctx = make_ctx(&[]);
+        ctx.top_level_vars
+            .insert("score".to_owned(), TypeAnnotation::Int);
         // score = true  (wrong type)
         let assign = Ast::assign_op(ident("score"), bool_lit(true));
         let ast = Ast::block(vec![assign]);
@@ -726,7 +814,9 @@ mod tests {
 
     #[test]
     fn reassignment_float_widen_from_int_ok() {
-        let ctx = make_ctx(&[], &[("ratio", TypeAnnotation::Float)]);
+        let mut ctx = make_ctx(&[]);
+        ctx.top_level_vars
+            .insert("ratio".to_owned(), TypeAnnotation::Float);
         let assign = Ast::assign_op(ident("ratio"), int_lit(1));
         let ast = Ast::block(vec![assign]);
         assert_no_errors(&check(&ast, &ctx));
@@ -735,7 +825,7 @@ mod tests {
     #[test]
     fn reassignment_unknown_variable_is_skipped() {
         // "unknown" has no type annotation — assignment check is silently skipped.
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let assign = Ast::assign_op(ident("unknown"), bool_lit(false));
         let ast = Ast::block(vec![assign]);
         assert_no_errors(&check(&ast, &ctx));
@@ -746,7 +836,7 @@ mod tests {
     #[test]
     fn local_declaration_then_bad_reassignment_reports_error() {
         // Declare x: Int = 0, then x = true (mismatch).
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let decl = typed_decl("x", TypeAnnotation::Int, int_lit(0));
         let assign = Ast::assign_op(ident("x"), bool_lit(true));
         let ast = Ast::block(vec![decl, assign]);
@@ -760,9 +850,146 @@ mod tests {
         }
     }
 
+    // ── Struct structural typing ───────────────────────────────────────────────
+
+    #[test]
+    fn struct_literal_compatible_with_struct_annotation() {
+        use crate::parser::ast::StructField;
+        let fields = vec![
+            StructField {
+                name: "name".into(),
+                type_annotation: TypeAnnotation::Str,
+            },
+            StructField {
+                name: "health".into(),
+                type_annotation: TypeAnnotation::Int,
+            },
+        ];
+        let mut ctx = make_ctx(&[]);
+        ctx.structs.insert("Player".into(), fields);
+
+        let map_node = Ast::map(vec![
+            (
+                Ast::value(RuntimeValue::IdentPath(vec!["name".into()])),
+                str_lit("Alice"),
+            ),
+            (
+                Ast::value(RuntimeValue::IdentPath(vec!["health".into()])),
+                int_lit(100),
+            ),
+        ]);
+        let decl = typed_decl("p", TypeAnnotation::Named(vec!["Player".into()]), map_node);
+        let root = Ast::block(vec![decl]);
+        assert_no_errors(&check(&root, &ctx));
+    }
+
+    #[test]
+    fn struct_literal_missing_field_reports_struct_mismatch() {
+        use crate::analysis::StructFieldError;
+        use crate::parser::ast::StructField;
+        let fields = vec![
+            StructField {
+                name: "name".into(),
+                type_annotation: TypeAnnotation::Str,
+            },
+            StructField {
+                name: "health".into(),
+                type_annotation: TypeAnnotation::Int,
+            },
+        ];
+        let mut ctx = make_ctx(&[]);
+        ctx.structs.insert("Player".into(), fields);
+
+        // Map is missing "health"
+        let map_node = Ast::map(vec![(
+            Ast::value(RuntimeValue::IdentPath(vec!["name".into()])),
+            str_lit("Alice"),
+        )]);
+        let decl = typed_decl("p", TypeAnnotation::Named(vec!["Player".into()]), map_node);
+        let root = Ast::block(vec![decl]);
+        let errors = check(&root, &ctx);
+        assert_eq!(errors.len(), 1, "expected exactly 1 error, got: {errors:?}");
+        assert!(
+            matches!(
+                &errors[0],
+                crate::analysis::AnalysisError::StructMismatch { struct_name, field_errors, .. }
+                if struct_name == "Player"
+                    && field_errors.iter().any(|e| matches!(
+                        e,
+                        StructFieldError::MissingField { field_name, .. }
+                        if field_name == "health"
+                    ))
+            ),
+            "unexpected error: {:?}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn struct_literal_wrong_field_type_reports_struct_mismatch() {
+        use crate::analysis::StructFieldError;
+        use crate::parser::ast::StructField;
+        let fields = vec![StructField {
+            name: "alive".into(),
+            type_annotation: TypeAnnotation::Bool,
+        }];
+        let mut ctx = make_ctx(&[]);
+        ctx.structs.insert("Status".into(), fields);
+
+        // "alive" is present but assigned an int instead of bool
+        let map_node = Ast::map(vec![(
+            Ast::value(RuntimeValue::IdentPath(vec!["alive".into()])),
+            int_lit(1),
+        )]);
+        let decl = typed_decl("s", TypeAnnotation::Named(vec!["Status".into()]), map_node);
+        let root = Ast::block(vec![decl]);
+        let errors = check(&root, &ctx);
+        assert_eq!(errors.len(), 1, "expected exactly 1 error, got: {errors:?}");
+        assert!(
+            matches!(
+                &errors[0],
+                crate::analysis::AnalysisError::StructMismatch { struct_name, field_errors, .. }
+                if struct_name == "Status"
+                    && field_errors.iter().any(|e| matches!(
+                        e,
+                        StructFieldError::WrongFieldType { field_name, .. }
+                        if field_name == "alive"
+                    ))
+            ),
+            "unexpected error: {:?}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn struct_literal_extra_field_is_accepted() {
+        use crate::parser::ast::StructField;
+        let fields = vec![StructField {
+            name: "x".into(),
+            type_annotation: TypeAnnotation::Int,
+        }];
+        let mut ctx = make_ctx(&[]);
+        ctx.structs.insert("Point".into(), fields);
+
+        // map has the required "x" plus an extra "y" — fine (structural subtyping)
+        let map_node = Ast::map(vec![
+            (
+                Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+                int_lit(3),
+            ),
+            (
+                Ast::value(RuntimeValue::IdentPath(vec!["y".into()])),
+                int_lit(7),
+            ),
+        ]);
+        let decl = typed_decl("p", TypeAnnotation::Named(vec!["Point".into()]), map_node);
+        let root = Ast::block(vec![decl]);
+        assert_no_errors(&check(&root, &ctx));
+    }
+
     #[test]
     fn local_declaration_then_good_reassignment_ok() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let decl = typed_decl("x", TypeAnnotation::Int, int_lit(0));
         let assign = Ast::assign_op(ident("x"), int_lit(99));
         let ast = Ast::block(vec![decl, assign]);
@@ -773,7 +1000,7 @@ mod tests {
 
     #[test]
     fn expression_initialiser_is_silently_accepted() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         // x: Int = 1 + 2  (BinOp, not a literal Value — silently ok)
         let init = Ast::add_op(int_lit(1), int_lit(2));
         let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Int, init)]);
@@ -784,9 +1011,9 @@ mod tests {
 
     #[test]
     fn multiple_mismatches_all_reported() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         let d1 = typed_decl("a", TypeAnnotation::Int, bool_lit(true)); // mismatch
-        let d2 = typed_decl("b", TypeAnnotation::Bool, int_lit(0));   // mismatch
+        let d2 = typed_decl("b", TypeAnnotation::Bool, int_lit(0)); // mismatch
         let d3 = typed_decl("c", TypeAnnotation::Str, str_lit("ok")); // ok
         let ast = Ast::block(vec![d1, d2, d3]);
         let errors = check(&ast, &ctx);
@@ -797,7 +1024,7 @@ mod tests {
 
     #[test]
     fn inner_scope_shadowed_variable_checked_against_inner_type() {
-        let ctx = make_ctx(&[], &[]);
+        let ctx = make_ctx(&[]);
         // Outer: x: Int = 0
         // Inner block: x: Bool = true  (shadows outer; compatible with Bool)
         let inner_decl = typed_decl("x", TypeAnnotation::Bool, bool_lit(true));

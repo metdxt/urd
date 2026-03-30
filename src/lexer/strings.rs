@@ -81,6 +81,12 @@ where
     T: Logos<'a, Source = str, Extras = ()> + Clone,
     T::Extras: Clone,
 {
+    // Record remaining bytes before the string body so we can compute how many
+    // bytes the body + closing `"` consume. We need this to bump `token_end`
+    // on the original lexer so the emitted span covers the full `"..."` token
+    // rather than just the opening quote.
+    let remainder_before = lex.remainder().len();
+
     let mut string_lexer = lex.clone().morph::<StringPart>();
     let mut tokens = vec![];
 
@@ -99,7 +105,15 @@ where
         }
     }
 
-    *lex = string_lexer.morph();
+    // Do NOT overwrite `lex` via morph — that would set token_start to the
+    // position of the closing `"`, producing a 1-byte span. Instead, bump the
+    // original lexer's token_end by the number of bytes consumed (string body
+    // + closing `"`). This keeps token_start at the opening `"` while
+    // extending token_end to just after the closing `"`, giving the full span.
+    // It also advances the scan cursor for the next token correctly.
+    let consumed = remainder_before - string_lexer.remainder().len();
+    lex.bump(consumed);
+
     Ok(ParsedString::new_from_parts(tokens))
 }
 
