@@ -59,7 +59,7 @@ jobs:
                       use_cross: false
 
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
 
             # Nightly is required for cargo-features = ["profile-rustflags"]
             - name: Install Rust nightly
@@ -82,7 +82,9 @@ jobs:
             # cross handles Docker-based cross-compilation for Linux aarch64
             - name: Install cross
               if: matrix.use_cross
-              uses: taiki-e/install-action@cross
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: cross
 
             # cross runs inside a Docker container that doesn't have clang/mold.
             # Build scripts compile for the *host* (x86_64-unknown-linux-gnu), so
@@ -118,7 +120,7 @@ jobs:
                   Copy-Item $src "${{ matrix.asset_name }}"
 
             - name: Upload build artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: ${{ matrix.asset_name }}
                   path: ${{ matrix.asset_name }}
@@ -136,7 +138,7 @@ jobs:
             || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
         steps:
             - name: Download all artifacts
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   path: artifacts
 
