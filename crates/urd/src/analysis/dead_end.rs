@@ -182,7 +182,7 @@ fn termination_of(
                 if s.start == 0 && s.end == 0 { span } else { s }
             };
             let t = termination_of(block, errors, block_span, &inner_loc);
-            if t == Termination::Open {
+            if t != Termination::Terminates {
                 errors.push(AnalysisError::DeadEnd {
                     span: block_span,
                     description: inner_loc,
