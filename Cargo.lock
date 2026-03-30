@@ -1294,8 +1294,6 @@ version = "0.0.1"
 dependencies = [
  "ariadne",
  "chumsky",
- "crossterm",
- "env_logger",
  "log",
  "logos",
  "logos-display",
@@ -1317,6 +1315,17 @@ dependencies = [
  "tower-lsp",
  "tracing",
  "tracing-subscriber",
+ "urd",
+]
+
+[[package]]
+name = "urd-quest"
+version = "0.0.1"
+dependencies = [
+ "chumsky",
+ "crossterm",
+ "env_logger",
+ "log",
  "urd",
 ]
 

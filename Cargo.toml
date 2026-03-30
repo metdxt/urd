@@ -5,6 +5,7 @@ resolver = "3"
 members = [
     "crates/urd",
     "crates/urd-lsp",
+    "crates/urd-quest",
 ]
 
 [workspace.package]

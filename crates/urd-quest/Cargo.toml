@@ -1,0 +1,21 @@
+[package]
+name = "urd-quest"
+description = "Interactive terminal runner for Urd dialogue scripts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "quest"
+path = "src/main.rs"
+
+[dependencies]
+urd.workspace = true
+crossterm.workspace = true
+env_logger.workspace = true
+log.workspace = true
+chumsky.workspace = true
+
+[lints]
+workspace = true
