@@ -598,11 +598,26 @@ fn find_definition_in_children(content: &AstContent, name: &str) -> Option<Simpl
 pub fn hover_info(ast: &Ast, symbols: &[Symbol], byte_offset: usize) -> Option<String> {
     // First try matching against collected symbols.
     if let Some(sym) = find_symbol_at_offset(symbols, byte_offset) {
+        // Container symbols (labels, decorators) span their entire body.
+        // When the cursor is inside the body but not on the name itself,
+        // prefer a more specific AST-level hover before falling back to
+        // the container's hover.
+        let is_container = matches!(sym.kind, SymbolKind::Label | SymbolKind::Decorator);
+        if !is_container {
+            return Some(hover_for_symbol(sym, ast));
+        }
+
+        // For containers, try the AST walk first for a more specific hit.
+        if let Some(h) = hover_from_ast(ast, symbols, byte_offset) {
+            return Some(h);
+        }
+
+        // Nothing more specific — show the container symbol itself.
         return Some(hover_for_symbol(sym, ast));
     }
 
     // Fall back: try to find an AST node at offset and describe it.
-    hover_from_ast(ast, byte_offset)
+    hover_from_ast(ast, symbols, byte_offset)
 }
 
 /// Build hover markdown for a known [`Symbol`].
@@ -669,15 +684,22 @@ fn hover_for_symbol(sym: &Symbol, _ast: &Ast) -> String {
 
 /// Walk the AST to find the innermost node at `byte_offset` and produce hover
 /// text for it (used as a fallback when no collected symbol matches).
-fn hover_from_ast(ast: &Ast, byte_offset: usize) -> Option<String> {
+fn hover_from_ast(ast: &Ast, symbols: &[Symbol], byte_offset: usize) -> Option<String> {
     if !span_contains(ast.span(), byte_offset) && ast.span().start != ast.span().end {
         return None;
     }
 
     match ast.content() {
         AstContent::Value(RuntimeValue::IdentPath(parts)) => {
-            Some(format!("**identifier** `{}`", parts.join(".")))
+            let name = parts.join(".");
+            // Look up the identifier in the symbol table to show its
+            // definition / type info instead of a bare "identifier" hover.
+            if let Some(sym) = symbols.iter().find(|s| s.name == name) {
+                return Some(hover_for_symbol(sym, ast));
+            }
+            Some(format!("**identifier** `{name}`"))
         }
+        AstContent::Value(RuntimeValue::Str(_)) => Some("**str**".into()),
         AstContent::Value(RuntimeValue::Int(n)) => Some(format!("**int** `{n}`")),
         AstContent::Value(RuntimeValue::Float(f)) => Some(format!("**float** `{f}`")),
         AstContent::Value(RuntimeValue::Bool(b)) => Some(format!("**bool** `{b}`")),
@@ -696,87 +718,93 @@ fn hover_from_ast(ast: &Ast, byte_offset: usize) -> Option<String> {
             }
         }
         // Recurse into children to find the innermost match.
-        _ => hover_from_ast_children(ast.content(), byte_offset),
+        _ => hover_from_ast_children(ast.content(), symbols, byte_offset),
     }
 }
 
-fn hover_from_ast_children(content: &AstContent, byte_offset: usize) -> Option<String> {
+fn hover_from_ast_children(
+    content: &AstContent,
+    symbols: &[Symbol],
+    byte_offset: usize,
+) -> Option<String> {
     match content {
         AstContent::Block(stmts) | AstContent::ExprList(stmts) | AstContent::List(stmts) => {
             for s in stmts {
-                if let Some(h) = hover_from_ast(s, byte_offset) {
+                if let Some(h) = hover_from_ast(s, symbols, byte_offset) {
                     return Some(h);
                 }
             }
             None
         }
-        AstContent::BinOp { left, right, .. } => {
-            hover_from_ast(left, byte_offset).or_else(|| hover_from_ast(right, byte_offset))
-        }
-        AstContent::UnaryOp { expr, .. } => hover_from_ast(expr, byte_offset),
+        AstContent::BinOp { left, right, .. } => hover_from_ast(left, symbols, byte_offset)
+            .or_else(|| hover_from_ast(right, symbols, byte_offset)),
+        AstContent::UnaryOp { expr, .. } => hover_from_ast(expr, symbols, byte_offset),
         AstContent::Declaration {
             decl_name,
             decl_defs,
             ..
-        } => hover_from_ast(decl_name, byte_offset)
-            .or_else(|| hover_from_ast(decl_defs, byte_offset)),
-        AstContent::Call { func_path, params } => {
-            hover_from_ast(func_path, byte_offset).or_else(|| hover_from_ast(params, byte_offset))
-        }
+        } => hover_from_ast(decl_name, symbols, byte_offset)
+            .or_else(|| hover_from_ast(decl_defs, symbols, byte_offset)),
+        AstContent::Call { func_path, params } => hover_from_ast(func_path, symbols, byte_offset)
+            .or_else(|| hover_from_ast(params, symbols, byte_offset)),
         AstContent::If {
             condition,
             then_block,
             else_block,
-        } => hover_from_ast(condition, byte_offset)
-            .or_else(|| hover_from_ast(then_block, byte_offset))
+        } => hover_from_ast(condition, symbols, byte_offset)
+            .or_else(|| hover_from_ast(then_block, symbols, byte_offset))
             .or_else(|| {
                 else_block
                     .as_ref()
-                    .and_then(|eb| hover_from_ast(eb, byte_offset))
+                    .and_then(|eb| hover_from_ast(eb, symbols, byte_offset))
             }),
-        AstContent::LabeledBlock { block, .. } => hover_from_ast(block, byte_offset),
+        AstContent::LabeledBlock { block, .. } => hover_from_ast(block, symbols, byte_offset),
         AstContent::Match { scrutinee, arms } => {
-            if let Some(h) = hover_from_ast(scrutinee, byte_offset) {
+            if let Some(h) = hover_from_ast(scrutinee, symbols, byte_offset) {
                 return Some(h);
             }
             for arm in arms {
                 if let MatchPattern::Value(v) = &arm.pattern
-                    && let Some(h) = hover_from_ast(v, byte_offset)
+                    && let Some(h) = hover_from_ast(v, symbols, byte_offset)
                 {
                     return Some(h);
                 }
-                if let Some(h) = hover_from_ast(&arm.body, byte_offset) {
+                if let Some(h) = hover_from_ast(&arm.body, symbols, byte_offset) {
                     return Some(h);
                 }
             }
             None
         }
         AstContent::Dialogue { speakers, content } => {
-            hover_from_ast(speakers, byte_offset).or_else(|| hover_from_ast(content, byte_offset))
+            hover_from_ast(speakers, symbols, byte_offset)
+                .or_else(|| hover_from_ast(content, symbols, byte_offset))
         }
         AstContent::Menu { options } => {
             for opt in options {
-                if let Some(h) = hover_from_ast(opt, byte_offset) {
+                if let Some(h) = hover_from_ast(opt, symbols, byte_offset) {
                     return Some(h);
                 }
             }
             None
         }
-        AstContent::MenuOption { content, .. } => hover_from_ast(content, byte_offset),
-        AstContent::Return { value } => value.as_ref().and_then(|v| hover_from_ast(v, byte_offset)),
-        AstContent::Subscript { object, key } => {
-            hover_from_ast(object, byte_offset).or_else(|| hover_from_ast(key, byte_offset))
+        AstContent::MenuOption { content, .. } => hover_from_ast(content, symbols, byte_offset),
+        AstContent::Return { value } => value
+            .as_ref()
+            .and_then(|v| hover_from_ast(v, symbols, byte_offset)),
+        AstContent::Subscript { object, key } => hover_from_ast(object, symbols, byte_offset)
+            .or_else(|| hover_from_ast(key, symbols, byte_offset)),
+        AstContent::SubscriptAssign { object, key, value } => {
+            hover_from_ast(object, symbols, byte_offset)
+                .or_else(|| hover_from_ast(key, symbols, byte_offset))
+                .or_else(|| hover_from_ast(value, symbols, byte_offset))
         }
-        AstContent::SubscriptAssign { object, key, value } => hover_from_ast(object, byte_offset)
-            .or_else(|| hover_from_ast(key, byte_offset))
-            .or_else(|| hover_from_ast(value, byte_offset)),
-        AstContent::DecoratorDef { body, .. } => hover_from_ast(body, byte_offset),
+        AstContent::DecoratorDef { body, .. } => hover_from_ast(body, symbols, byte_offset),
         AstContent::Map(pairs) => {
             for (k, v) in pairs {
-                if let Some(h) = hover_from_ast(k, byte_offset) {
+                if let Some(h) = hover_from_ast(k, symbols, byte_offset) {
                     return Some(h);
                 }
-                if let Some(h) = hover_from_ast(v, byte_offset) {
+                if let Some(h) = hover_from_ast(v, symbols, byte_offset) {
                     return Some(h);
                 }
             }
