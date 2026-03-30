@@ -6,6 +6,9 @@
 
 mod document;
 mod semantic;
+mod workspace;
+
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
@@ -19,6 +22,7 @@ use semantic::{
     completion_items, find_definition, find_references, hover_info,
     semantic_tokens as compute_semantic_tokens,
 };
+use workspace::WorkspaceIndex;
 
 // ── Semantic-token legend ────────────────────────────────────────────────────
 
@@ -148,6 +152,8 @@ fn symbols_from_doc(doc: &Document) -> Vec<Symbol> {
 struct Backend {
     client: Client,
     documents: DashMap<Url, Document>,
+    /// Cross-file symbol index: tracks imported modules for every open file.
+    workspace: Arc<WorkspaceIndex>,
 }
 
 impl Backend {
@@ -172,6 +178,14 @@ impl Backend {
                 .or_insert_with(|| Document::new(""));
             entry.update(&text);
         }
+
+        // Re-index imports so cross-file features stay up to date.
+        if let Some(doc) = self.documents.get(&uri) {
+            if let Some(ast) = &doc.ast {
+                self.workspace.update(&uri, ast);
+            }
+        }
+
         self.publish_diagnostics(uri).await;
     }
 }
@@ -267,6 +281,7 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         debug!("did_close: {uri}");
         self.documents.remove(&uri);
+        self.workspace.remove(&uri);
         // Clear diagnostics for the closed file.
         self.client.publish_diagnostics(uri, vec![], None).await;
     }
@@ -296,18 +311,39 @@ impl LanguageServer for Backend {
 
         let src = doc.rope.to_string();
         let byte_offset = position_to_byte_offset(&src, pos);
-        let symbols = collect_symbols(ast);
 
-        match hover_info(ast, &symbols, byte_offset) {
-            Some(markdown) => Ok(Some(Hover {
+        // Build a combined symbol list: local symbols + aliased imported symbols.
+        let mut symbols = collect_symbols(ast);
+        symbols.extend(self.workspace.imported_symbols(&uri));
+
+        // Try local hover first.
+        if let Some(markdown) = hover_info(ast, &symbols, byte_offset) {
+            return Ok(Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
                     value: markdown,
                 }),
                 range: None,
-            })),
-            None => Ok(None),
+            }));
         }
+
+        // Fall back: if the word under the cursor looks like a qualified
+        // reference (alias.name), try the workspace index.
+        if let Some(word) = word_at_offset(&src, byte_offset) {
+            if word.contains('.') {
+                if let Some(markdown) = self.workspace.hover_info(&uri, word) {
+                    return Ok(Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: markdown,
+                        }),
+                        range: None,
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     // ── Completion ───────────────────────────────────────────────────────
@@ -328,7 +364,10 @@ impl LanguageServer for Backend {
 
         let src = doc.rope.to_string();
         let byte_offset = position_to_byte_offset(&src, pos);
-        let symbols = collect_symbols(ast);
+
+        // Combine local symbols with aliased symbols from imported modules.
+        let mut symbols = collect_symbols(ast);
+        symbols.extend(self.workspace.imported_symbols(&uri));
 
         let candidates = completion_items(ast, &symbols, byte_offset);
 
@@ -380,15 +419,24 @@ impl LanguageServer for Backend {
 
         debug!("goto_definition: looking for '{name}'");
 
-        match find_definition(ast, &name) {
-            Some(span) => {
-                let range = byte_span_to_lsp_range(&src, span);
-                Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
-                    uri, range,
-                ))))
-            }
-            None => Ok(None),
+        // 1. Try local definition first.
+        if let Some(span) = find_definition(ast, &name) {
+            let range = byte_span_to_lsp_range(&src, span);
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
+                uri, range,
+            ))));
         }
+
+        // 2. Fall back to the workspace index (cross-file lookup).
+        if let Some((target_uri, span, target_src)) = self.workspace.find_definition(&uri, &name) {
+            debug!("goto_definition: found '{name}' in {target_uri}");
+            let range = byte_span_to_lsp_range(&target_src, span);
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
+                target_uri, range,
+            ))));
+        }
+
+        Ok(None)
     }
 
     // ── Find references ──────────────────────────────────────────────────
@@ -417,15 +465,18 @@ impl LanguageServer for Backend {
 
         debug!("references: looking for '{name}'");
 
-        let spans = find_references(ast, &name);
-        if spans.is_empty() {
-            return Ok(None);
-        }
-
-        let locations: Vec<Location> = spans
+        // Local references.
+        let mut locations: Vec<Location> = find_references(ast, &name)
             .into_iter()
             .map(|sp| Location::new(uri.clone(), byte_span_to_lsp_range(&src, sp)))
             .collect();
+
+        // Cross-file references from the workspace index.
+        locations.extend(self.workspace.find_references(&uri, &name));
+
+        if locations.is_empty() {
+            return Ok(None);
+        }
 
         Ok(Some(locations))
     }
@@ -544,6 +595,7 @@ fn byte_offset_to_lsp_position(src: &str, byte_offset: usize) -> Position {
 
 #[tokio::main]
 async fn main() {
+    // Keep the line number of the surrounding code stable.
     // Initialise tracing (logs go to stderr so they don't interfere with
     // the JSON-RPC channel on stdin/stdout).
     tracing_subscriber::fmt()
@@ -562,6 +614,7 @@ async fn main() {
     let (service, socket) = LspService::build(|client| Backend {
         client,
         documents: DashMap::new(),
+        workspace: Arc::new(WorkspaceIndex::new()),
     })
     .finish();
 
