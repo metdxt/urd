@@ -19,7 +19,7 @@ use tracing::{debug, info};
 use document::{Document, byte_span_to_lsp_range, position_to_byte_offset};
 use semantic::{
     SemanticTokenType as UrdTokenType, Symbol, SymbolKind as UrdSymbolKind, collect_symbols,
-    completion_items, find_definition, find_references, hover_info,
+    completion_items, find_definition, find_references, find_rename_spans, hover_info,
     semantic_tokens as compute_semantic_tokens,
 };
 use workspace::WorkspaceIndex;
@@ -227,6 +227,12 @@ impl LanguageServer for Backend {
                 // ── Document symbols ─────────────────────────────────────
                 document_symbol_provider: Some(OneOf::Left(true)),
 
+                // ── Rename ───────────────────────────────────────────────
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
+
                 // ── Semantic tokens ──────────────────────────────────────
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -317,7 +323,7 @@ impl LanguageServer for Backend {
         symbols.extend(self.workspace.imported_symbols(&uri));
 
         // Try local hover first.
-        if let Some(markdown) = hover_info(ast, &symbols, byte_offset) {
+        if let Some(markdown) = hover_info(ast, &symbols, &src, byte_offset) {
             return Ok(Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
@@ -582,6 +588,101 @@ impl LanguageServer for Backend {
             result_id: None,
             data,
         })))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let pos = params.position;
+
+        let doc = match self.documents.get(&uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let ast = match &doc.ast {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+
+        let src = doc.rope.to_string();
+        let byte_offset = position_to_byte_offset(&src, pos);
+
+        let word = match word_at_offset(&src, byte_offset) {
+            Some(w) => w.to_owned(),
+            None => return Ok(None),
+        };
+
+        // Only allow renaming if the word resolves to a known symbol.
+        let symbols = collect_symbols(ast);
+        let is_known = symbols.iter().any(|s| s.name == word);
+        if !is_known {
+            return Ok(None);
+        }
+
+        // Find the precise span of the word under the cursor so the editor
+        // can highlight it.
+        let spans = find_rename_spans(ast, &src, &word);
+        let cursor_span = spans
+            .iter()
+            .find(|sp| byte_offset >= sp.start && byte_offset < sp.end);
+
+        match cursor_span {
+            Some(sp) => {
+                let range = byte_span_to_lsp_range(&src, *sp);
+                Ok(Some(PrepareRenameResponse::Range(range)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+        let new_name = params.new_name;
+
+        let doc = match self.documents.get(&uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let ast = match &doc.ast {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+
+        let src = doc.rope.to_string();
+        let byte_offset = position_to_byte_offset(&src, pos);
+
+        let old_name = match word_at_offset(&src, byte_offset) {
+            Some(w) => w.to_owned(),
+            None => return Ok(None),
+        };
+
+        debug!("rename: '{old_name}' -> '{new_name}'");
+
+        let spans = find_rename_spans(ast, &src, &old_name);
+        if spans.is_empty() {
+            return Ok(None);
+        }
+
+        let edits: Vec<TextEdit> = spans
+            .iter()
+            .map(|sp| TextEdit {
+                range: byte_span_to_lsp_range(&src, *sp),
+                new_text: new_name.clone(),
+            })
+            .collect();
+
+        let mut changes = std::collections::HashMap::new();
+        changes.insert(uri, edits);
+
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }))
     }
 }
 

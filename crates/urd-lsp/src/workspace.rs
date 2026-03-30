@@ -225,7 +225,9 @@ impl WorkspaceIndex {
                 // get the span and then ask for hover at that position.
                 if let Some(span) = crate::semantic::find_definition(ast, local_name) {
                     // Use the start of the definition span as the query offset.
-                    if let Some(md) = crate::semantic::hover_info(ast, &symbols, span.start) {
+                    if let Some(md) =
+                        crate::semantic::hover_info(ast, &symbols, &module.source, span.start)
+                    {
                         return Some(md);
                     }
                 }

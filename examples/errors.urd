@@ -30,7 +30,7 @@ let broken_crew: Character = :{ name: "Unknown" }
 let garbled_report: SystemReport = :{ status: 99, integrity: "nominal", recommendation: "proceed" }
 
 # ── Global state ───────────────────────────────────────────────────────────────
-global hull_integrity: int  = 100
+global hull_integrity: int = 100
 global oxygen_level: int    = 80
 global power_cells: int     = 3
 global docking_clear: bool  = false

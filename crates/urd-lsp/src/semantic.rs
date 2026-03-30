@@ -243,7 +243,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
             }
         }
 
-        // ── Struct declarations ──────────────────────────────────────────
+        // ── Struct declarations ──────────────────────────────────────
         AstContent::StructDecl { name, fields } => {
             let field_list: Vec<String> = fields
                 .iter()
@@ -256,6 +256,18 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 type_annotation: None,
                 detail: Some(format!("struct {name} {{ {} }}", field_list.join(", "))),
             });
+            // Expose each field as a discoverable symbol so that rename can
+            // recognise field names.  The zero-length span keeps these
+            // invisible to offset-based lookups (hover, find-symbol-at).
+            for field in fields {
+                out.push(Symbol {
+                    name: field.name.clone(),
+                    kind: SymbolKind::Variable,
+                    span: SimpleSpan::new((), 0..0),
+                    type_annotation: Some(field.type_annotation.clone()),
+                    detail: Some(format!("{}.{}", name, field.name)),
+                });
+            }
         }
 
         // ── Decorator definitions ────────────────────────────────────────
@@ -595,7 +607,7 @@ fn find_definition_in_children(content: &AstContent, name: &str) -> Option<Simpl
 /// Produce markdown hover text for the symbol at the given byte offset.
 ///
 /// Returns `None` when there is nothing meaningful at that position.
-pub fn hover_info(ast: &Ast, symbols: &[Symbol], byte_offset: usize) -> Option<String> {
+pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) -> Option<String> {
     // First try matching against collected symbols.
     if let Some(sym) = find_symbol_at_offset(symbols, byte_offset) {
         // Container symbols (labels, decorators) span their entire body.
@@ -608,8 +620,12 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], byte_offset: usize) -> Option<S
         }
 
         // For containers, try the AST walk first for a more specific hit.
-        if let Some(h) = hover_from_ast(ast, symbols, byte_offset) {
-            return Some(h);
+        // An empty string means "position claimed but nothing to display".
+        if let Some(h) = hover_from_ast(ast, symbols, src, byte_offset) {
+            if !h.is_empty() {
+                return Some(h);
+            }
+            return None;
         }
 
         // Nothing more specific — show the container symbol itself.
@@ -617,7 +633,8 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], byte_offset: usize) -> Option<S
     }
 
     // Fall back: try to find an AST node at offset and describe it.
-    hover_from_ast(ast, symbols, byte_offset)
+    // Filter out empty strings (meaning "position claimed, nothing to show").
+    hover_from_ast(ast, symbols, src, byte_offset).filter(|h| !h.is_empty())
 }
 
 /// Build hover markdown for a known [`Symbol`].
@@ -684,7 +701,7 @@ fn hover_for_symbol(sym: &Symbol, _ast: &Ast) -> String {
 
 /// Walk the AST to find the innermost node at `byte_offset` and produce hover
 /// text for it (used as a fallback when no collected symbol matches).
-fn hover_from_ast(ast: &Ast, symbols: &[Symbol], byte_offset: usize) -> Option<String> {
+fn hover_from_ast(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) -> Option<String> {
     if !span_contains(ast.span(), byte_offset) && ast.span().start != ast.span().end {
         return None;
     }
@@ -699,7 +716,22 @@ fn hover_from_ast(ast: &Ast, symbols: &[Symbol], byte_offset: usize) -> Option<S
             }
             Some(format!("**identifier** `{name}`"))
         }
-        AstContent::Value(RuntimeValue::Str(_)) => Some("**str**".into()),
+        AstContent::Value(RuntimeValue::Str(_)) => {
+            // No hover for plain string text, but if the cursor is on an
+            // interpolation variable like {hull_integrity}, resolve its type.
+            //
+            // String AST nodes may carry zero-length spans, so we search the
+            // source text around `byte_offset` directly: scan backwards for
+            // an unescaped `{` and forwards for `}`.  If both are found
+            // before hitting a `"` boundary we're inside an interpolation.
+            if let Some(info) = interpolation_hover_at(src, byte_offset, symbols, ast) {
+                return Some(info);
+            }
+            // Inside a string but not on an interpolation — return an empty
+            // string to claim this position and prevent the container
+            // (label/decorator) fallback from firing.
+            Some(String::new())
+        }
         AstContent::Value(RuntimeValue::Int(n)) => Some(format!("**int** `{n}`")),
         AstContent::Value(RuntimeValue::Float(f)) => Some(format!("**float** `{f}`")),
         AstContent::Value(RuntimeValue::Bool(b)) => Some(format!("**bool** `{b}`")),
@@ -718,93 +750,165 @@ fn hover_from_ast(ast: &Ast, symbols: &[Symbol], byte_offset: usize) -> Option<S
             }
         }
         // Recurse into children to find the innermost match.
-        _ => hover_from_ast_children(ast.content(), symbols, byte_offset),
+        _ => hover_from_ast_children(ast.content(), symbols, src, byte_offset),
     }
+}
+
+/// Check whether `byte_offset` falls inside a string interpolation `{…}` and,
+/// if so, resolve the interpolation path against `symbols`.
+///
+/// Works by scanning the raw source text instead of relying on AST spans
+/// (which may be zero-length for string literal nodes).
+fn interpolation_hover_at(
+    src: &str,
+    byte_offset: usize,
+    symbols: &[Symbol],
+    ast: &Ast,
+) -> Option<String> {
+    let bytes = src.as_bytes();
+    if byte_offset >= bytes.len() {
+        return None;
+    }
+
+    // Scan backwards from byte_offset looking for `{`.
+    // Stop if we hit `"` or `}` first (means we're not inside an interpolation).
+    let mut open = byte_offset;
+    loop {
+        if open == 0 {
+            return None;
+        }
+        open -= 1;
+        let b = bytes[open];
+        if b == b'{' {
+            // Make sure it's not escaped: check the byte before.
+            if open > 0 && bytes[open - 1] == b'\\' {
+                return None;
+            }
+            break;
+        }
+        if b == b'"' || b == b'}' {
+            return None;
+        }
+    }
+
+    // Scan forwards from byte_offset looking for `}`.
+    // Stop if we hit `"` or `{` first.
+    let mut close = byte_offset;
+    while close < bytes.len() {
+        let b = bytes[close];
+        if b == b'}' {
+            break;
+        }
+        if b == b'"' || b == b'{' {
+            return None;
+        }
+        close += 1;
+    }
+    if close >= bytes.len() {
+        return None;
+    }
+
+    // Extract the content between { and } — may contain a format spec after `:`
+    let inner = &src[open + 1..close];
+    let path = inner.split(':').next().unwrap_or(inner).trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    if let Some(sym) = symbols.iter().find(|s| s.name == path) {
+        return Some(hover_for_symbol(sym, ast));
+    }
+    Some(format!("**identifier** `{path}`"))
 }
 
 fn hover_from_ast_children(
     content: &AstContent,
     symbols: &[Symbol],
+    src: &str,
     byte_offset: usize,
 ) -> Option<String> {
     match content {
         AstContent::Block(stmts) | AstContent::ExprList(stmts) | AstContent::List(stmts) => {
             for s in stmts {
-                if let Some(h) = hover_from_ast(s, symbols, byte_offset) {
+                if let Some(h) = hover_from_ast(s, symbols, src, byte_offset) {
                     return Some(h);
                 }
             }
             None
         }
-        AstContent::BinOp { left, right, .. } => hover_from_ast(left, symbols, byte_offset)
-            .or_else(|| hover_from_ast(right, symbols, byte_offset)),
-        AstContent::UnaryOp { expr, .. } => hover_from_ast(expr, symbols, byte_offset),
+        AstContent::BinOp { left, right, .. } => hover_from_ast(left, symbols, src, byte_offset)
+            .or_else(|| hover_from_ast(right, symbols, src, byte_offset)),
+        AstContent::UnaryOp { expr, .. } => hover_from_ast(expr, symbols, src, byte_offset),
         AstContent::Declaration {
             decl_name,
             decl_defs,
             ..
-        } => hover_from_ast(decl_name, symbols, byte_offset)
-            .or_else(|| hover_from_ast(decl_defs, symbols, byte_offset)),
-        AstContent::Call { func_path, params } => hover_from_ast(func_path, symbols, byte_offset)
-            .or_else(|| hover_from_ast(params, symbols, byte_offset)),
+        } => hover_from_ast(decl_name, symbols, src, byte_offset)
+            .or_else(|| hover_from_ast(decl_defs, symbols, src, byte_offset)),
+        AstContent::Call { func_path, params } => {
+            hover_from_ast(func_path, symbols, src, byte_offset)
+                .or_else(|| hover_from_ast(params, symbols, src, byte_offset))
+        }
         AstContent::If {
             condition,
             then_block,
             else_block,
-        } => hover_from_ast(condition, symbols, byte_offset)
-            .or_else(|| hover_from_ast(then_block, symbols, byte_offset))
+        } => hover_from_ast(condition, symbols, src, byte_offset)
+            .or_else(|| hover_from_ast(then_block, symbols, src, byte_offset))
             .or_else(|| {
                 else_block
                     .as_ref()
-                    .and_then(|eb| hover_from_ast(eb, symbols, byte_offset))
+                    .and_then(|eb| hover_from_ast(eb, symbols, src, byte_offset))
             }),
-        AstContent::LabeledBlock { block, .. } => hover_from_ast(block, symbols, byte_offset),
+        AstContent::LabeledBlock { block, .. } => hover_from_ast(block, symbols, src, byte_offset),
         AstContent::Match { scrutinee, arms } => {
-            if let Some(h) = hover_from_ast(scrutinee, symbols, byte_offset) {
+            if let Some(h) = hover_from_ast(scrutinee, symbols, src, byte_offset) {
                 return Some(h);
             }
             for arm in arms {
                 if let MatchPattern::Value(v) = &arm.pattern
-                    && let Some(h) = hover_from_ast(v, symbols, byte_offset)
+                    && let Some(h) = hover_from_ast(v, symbols, src, byte_offset)
                 {
                     return Some(h);
                 }
-                if let Some(h) = hover_from_ast(&arm.body, symbols, byte_offset) {
+                if let Some(h) = hover_from_ast(&arm.body, symbols, src, byte_offset) {
                     return Some(h);
                 }
             }
             None
         }
         AstContent::Dialogue { speakers, content } => {
-            hover_from_ast(speakers, symbols, byte_offset)
-                .or_else(|| hover_from_ast(content, symbols, byte_offset))
+            hover_from_ast(speakers, symbols, src, byte_offset)
+                .or_else(|| hover_from_ast(content, symbols, src, byte_offset))
         }
         AstContent::Menu { options } => {
             for opt in options {
-                if let Some(h) = hover_from_ast(opt, symbols, byte_offset) {
+                if let Some(h) = hover_from_ast(opt, symbols, src, byte_offset) {
                     return Some(h);
                 }
             }
             None
         }
-        AstContent::MenuOption { content, .. } => hover_from_ast(content, symbols, byte_offset),
+        AstContent::MenuOption { content, .. } => {
+            hover_from_ast(content, symbols, src, byte_offset)
+        }
         AstContent::Return { value } => value
             .as_ref()
-            .and_then(|v| hover_from_ast(v, symbols, byte_offset)),
-        AstContent::Subscript { object, key } => hover_from_ast(object, symbols, byte_offset)
-            .or_else(|| hover_from_ast(key, symbols, byte_offset)),
+            .and_then(|v| hover_from_ast(v, symbols, src, byte_offset)),
+        AstContent::Subscript { object, key } => hover_from_ast(object, symbols, src, byte_offset)
+            .or_else(|| hover_from_ast(key, symbols, src, byte_offset)),
         AstContent::SubscriptAssign { object, key, value } => {
-            hover_from_ast(object, symbols, byte_offset)
-                .or_else(|| hover_from_ast(key, symbols, byte_offset))
-                .or_else(|| hover_from_ast(value, symbols, byte_offset))
+            hover_from_ast(object, symbols, src, byte_offset)
+                .or_else(|| hover_from_ast(key, symbols, src, byte_offset))
+                .or_else(|| hover_from_ast(value, symbols, src, byte_offset))
         }
-        AstContent::DecoratorDef { body, .. } => hover_from_ast(body, symbols, byte_offset),
+        AstContent::DecoratorDef { body, .. } => hover_from_ast(body, symbols, src, byte_offset),
         AstContent::Map(pairs) => {
             for (k, v) in pairs {
-                if let Some(h) = hover_from_ast(k, symbols, byte_offset) {
+                if let Some(h) = hover_from_ast(k, symbols, src, byte_offset) {
                     return Some(h);
                 }
-                if let Some(h) = hover_from_ast(v, symbols, byte_offset) {
+                if let Some(h) = hover_from_ast(v, symbols, src, byte_offset) {
                     return Some(h);
                 }
             }
@@ -916,11 +1020,18 @@ fn find_references_recursive(ast: &Ast, name: &str, out: &mut Vec<SimpleSpan>) {
         // Declarations: the declared name is a definition-reference.
         AstContent::Declaration {
             decl_name,
+            type_annotation,
             decl_defs,
             ..
         } => {
             if ident_name_from_ast(decl_name).as_deref() == Some(name) {
                 out.push(ast.span());
+            }
+            // Named type annotations reference struct / enum names.
+            if let Some(TypeAnnotation::Named(path)) = type_annotation {
+                if path.iter().any(|p| p == name) {
+                    out.push(ast.span());
+                }
             }
             find_references_recursive(decl_name, name, out);
             find_references_recursive(decl_defs, name, out);
@@ -1042,6 +1153,218 @@ fn find_references_in_children(content: &AstContent, name: &str, out: &mut Vec<S
         }
         // Nodes already handled in find_references_recursive or leaves.
         _ => {}
+    }
+}
+
+// ── 6b. find_rename_spans ────────────────────────────────────────────────────
+
+/// Search for `name` as a whole-word match within `src[span.start..span.end]`.
+///
+/// Returns the span of the first occurrence, or `None`.
+fn find_name_in_span(src: &str, span: SimpleSpan, name: &str) -> Option<SimpleSpan> {
+    let slice = src.get(span.start..span.end)?;
+    let mut search_from = 0;
+    while let Some(rel) = slice[search_from..].find(name) {
+        let abs_start = span.start + search_from + rel;
+        let abs_end = abs_start + name.len();
+        // Check whole-word boundaries.
+        let before_ok = abs_start == 0 || {
+            let b = src.as_bytes()[abs_start - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        let after_ok = abs_end >= src.len() || {
+            let b = src.as_bytes()[abs_end];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        if before_ok && after_ok {
+            return Some(SimpleSpan::new((), abs_start..abs_end));
+        }
+        search_from += rel + 1;
+    }
+    None
+}
+
+/// Find all spans of *just the name text* for rename operations.
+///
+/// Unlike [`find_references`] which returns whole-node spans (e.g. the entire
+/// `label foo { … }` block), this returns only the byte range of the name
+/// itself within each reference site.
+pub fn find_rename_spans(ast: &Ast, src: &str, name: &str) -> Vec<SimpleSpan> {
+    // If `name` is a struct field, rename across the struct definition and all
+    // struct-typed map literals instead of doing a plain symbol rename.
+    if let Some(struct_name) = find_struct_for_field(ast, name) {
+        let mut field_spans = Vec::new();
+        collect_struct_field_spans(ast, src, &struct_name, name, &mut field_spans);
+        if !field_spans.is_empty() {
+            return field_spans;
+        }
+    }
+
+    let ref_spans = find_references(ast, name);
+    let mut out = Vec::new();
+    for span in ref_spans {
+        if let Some(precise) = find_name_in_span(src, span, name) {
+            // Avoid duplicates from overlapping reference spans.
+            if !out.iter().any(|s: &SimpleSpan| s.start == precise.start) {
+                out.push(precise);
+            }
+        }
+    }
+    out
+}
+
+// ── 6c. struct field rename helpers ──────────────────────────────────────────
+
+/// Return the struct name that declares a field called `field_name`, if any.
+fn find_struct_for_field(ast: &Ast, field_name: &str) -> Option<String> {
+    match ast.content() {
+        AstContent::StructDecl { name, fields } => {
+            if fields.iter().any(|f| f.name == field_name) {
+                Some(name.clone())
+            } else {
+                None
+            }
+        }
+        AstContent::Block(stmts) | AstContent::ExprList(stmts) => stmts
+            .iter()
+            .find_map(|s| find_struct_for_field(s, field_name)),
+        AstContent::LabeledBlock { block, .. } => find_struct_for_field(block, field_name),
+        AstContent::If {
+            then_block,
+            else_block,
+            ..
+        } => find_struct_for_field(then_block, field_name).or_else(|| {
+            else_block
+                .as_ref()
+                .and_then(|eb| find_struct_for_field(eb, field_name))
+        }),
+        AstContent::DecoratorDef { body, .. } => find_struct_for_field(body, field_name),
+        AstContent::Match { arms, .. } => arms
+            .iter()
+            .find_map(|arm| find_struct_for_field(&arm.body, field_name)),
+        _ => None,
+    }
+}
+
+/// Walk the AST collecting precise spans of `field_name` inside the definition
+/// of `struct_name` and inside map-literal keys of declarations typed with that
+/// struct.
+fn collect_struct_field_spans(
+    ast: &Ast,
+    src: &str,
+    struct_name: &str,
+    field_name: &str,
+    out: &mut Vec<SimpleSpan>,
+) {
+    match ast.content() {
+        // The struct definition itself — locate the field name text.
+        AstContent::StructDecl { name, fields } => {
+            if name == struct_name && fields.iter().any(|f| f.name == field_name) {
+                if let Some(sp) = find_name_in_span(src, ast.span(), field_name) {
+                    if !out.iter().any(|s| s.start == sp.start) {
+                        out.push(sp);
+                    }
+                }
+            }
+        }
+        // Typed declaration — if it carries the struct type, look for
+        // matching map keys in its value expression.
+        AstContent::Declaration {
+            type_annotation,
+            decl_defs,
+            ..
+        } => {
+            if let Some(TypeAnnotation::Named(path)) = type_annotation {
+                if path.first().map(String::as_str) == Some(struct_name) {
+                    collect_field_in_map_keys(decl_defs, field_name, out);
+                }
+            }
+            collect_struct_field_spans(decl_defs, src, struct_name, field_name, out);
+        }
+        // ── Generic recursion for the remaining node types ───────────
+        AstContent::Block(stmts) | AstContent::ExprList(stmts) | AstContent::List(stmts) => {
+            for s in stmts {
+                collect_struct_field_spans(s, src, struct_name, field_name, out);
+            }
+        }
+        AstContent::LabeledBlock { block, .. } => {
+            collect_struct_field_spans(block, src, struct_name, field_name, out);
+        }
+        AstContent::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_struct_field_spans(condition, src, struct_name, field_name, out);
+            collect_struct_field_spans(then_block, src, struct_name, field_name, out);
+            if let Some(eb) = else_block {
+                collect_struct_field_spans(eb, src, struct_name, field_name, out);
+            }
+        }
+        AstContent::Match { scrutinee, arms } => {
+            collect_struct_field_spans(scrutinee, src, struct_name, field_name, out);
+            for arm in arms {
+                collect_struct_field_spans(&arm.body, src, struct_name, field_name, out);
+            }
+        }
+        AstContent::Menu { options } => {
+            for opt in options {
+                collect_struct_field_spans(opt, src, struct_name, field_name, out);
+            }
+        }
+        AstContent::MenuOption { content, .. } => {
+            collect_struct_field_spans(content, src, struct_name, field_name, out);
+        }
+        AstContent::DecoratorDef { body, .. } => {
+            collect_struct_field_spans(body, src, struct_name, field_name, out);
+        }
+        AstContent::Dialogue { speakers, content } => {
+            collect_struct_field_spans(speakers, src, struct_name, field_name, out);
+            collect_struct_field_spans(content, src, struct_name, field_name, out);
+        }
+        AstContent::BinOp { left, right, .. } => {
+            collect_struct_field_spans(left, src, struct_name, field_name, out);
+            collect_struct_field_spans(right, src, struct_name, field_name, out);
+        }
+        AstContent::UnaryOp { expr, .. } => {
+            collect_struct_field_spans(expr, src, struct_name, field_name, out);
+        }
+        AstContent::Call { func_path, params } => {
+            collect_struct_field_spans(func_path, src, struct_name, field_name, out);
+            collect_struct_field_spans(params, src, struct_name, field_name, out);
+        }
+        AstContent::Return { value: Some(v) } => {
+            collect_struct_field_spans(v, src, struct_name, field_name, out);
+        }
+        AstContent::Subscript { object, key } => {
+            collect_struct_field_spans(object, src, struct_name, field_name, out);
+            collect_struct_field_spans(key, src, struct_name, field_name, out);
+        }
+        AstContent::SubscriptAssign { object, key, value } => {
+            collect_struct_field_spans(object, src, struct_name, field_name, out);
+            collect_struct_field_spans(key, src, struct_name, field_name, out);
+            collect_struct_field_spans(value, src, struct_name, field_name, out);
+        }
+        AstContent::Map(pairs) => {
+            for (k, v) in pairs {
+                collect_struct_field_spans(k, src, struct_name, field_name, out);
+                collect_struct_field_spans(v, src, struct_name, field_name, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect spans of map keys whose name matches `field_name`.
+fn collect_field_in_map_keys(ast: &Ast, field_name: &str, out: &mut Vec<SimpleSpan>) {
+    if let AstContent::Map(pairs) = ast.content() {
+        for (key, _) in pairs {
+            if let AstContent::Value(RuntimeValue::IdentPath(parts)) = key.content() {
+                if parts.last().map(String::as_str) == Some(field_name) {
+                    out.push(key.span());
+                }
+            }
+        }
     }
 }
 
@@ -1526,16 +1849,53 @@ mod tests {
 
     #[test]
     fn hover_info_for_label() {
-        let ast = parse("label greet {\n  end!()\n}\n");
+        let src = "label greet {\n  end!()\n}\n";
+        let ast = parse(src);
         let syms = collect_symbols(&ast);
         let label_sym = syms.iter().find(|s| s.kind == SymbolKind::Label).unwrap();
         let mid = label_sym.span.start + 1;
-        let info = hover_info(&ast, &syms, mid);
+        let info = hover_info(&ast, &syms, src, mid);
         assert!(info.is_some());
         let text = info.unwrap();
         assert!(
             text.contains("label") && text.contains("greet"),
             "hover should mention 'label' and 'greet', got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_info_string_in_label_shows_nothing() {
+        let src = "label greet {\n  <aria>: \"Hello world\"\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        // Offset pointing at 'H' in "Hello world" (inside the string).
+        let h_offset = src.find("Hello").unwrap();
+        let info = hover_info(&ast, &syms, src, h_offset);
+        assert!(
+            info.is_none(),
+            "hovering on plain string text should show nothing, got: {:?}",
+            info
+        );
+    }
+
+    #[test]
+    fn hover_info_interpolation_in_label_shows_variable() {
+        let src = "label greet {\n  let name = \"Ada\"\n  <aria>: \"Hello {name}!\"\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        // Offset pointing inside `name` within the interpolation {name}.
+        let interp_offset = src.rfind("name").unwrap() + 1; // 'a' in the second 'name'
+        let info = hover_info(&ast, &syms, src, interp_offset);
+        assert!(
+            info.is_some(),
+            "hovering on interpolation variable should show info, src[{}..] = {:?}",
+            interp_offset,
+            &src[interp_offset..interp_offset + 4]
+        );
+        let text = info.unwrap();
+        assert!(
+            text.contains("let") && text.contains("name"),
+            "hover should mention 'let' and 'name', got: {text}"
         );
     }
 
@@ -1573,7 +1933,99 @@ mod tests {
         );
     }
 
-    // ── semantic_tokens ──────────────────────────────────────────────────
+    // ── find_rename_spans ────────────────────────────────────────────────
+
+    #[test]
+    fn rename_spans_covers_definition_and_usage() {
+        let src = "label start {\n  end!()\n}\njump start\n";
+        let ast = parse(src);
+        let spans = find_rename_spans(&ast, src, "start");
+        assert!(
+            spans.len() >= 2,
+            "expected at least 2 rename spans for 'start', got {}",
+            spans.len()
+        );
+        // Every span should contain exactly the text "start".
+        for sp in &spans {
+            assert_eq!(&src[sp.start..sp.end], "start");
+        }
+    }
+
+    #[test]
+    fn rename_spans_for_variable() {
+        let src = "label a {\n  let score = 10\n  let doubled = score\n  end!()\n}\n";
+        let ast = parse(src);
+        let spans = find_rename_spans(&ast, src, "score");
+        assert!(
+            spans.len() >= 2,
+            "expected at least 2 rename spans for 'score', got {}",
+            spans.len()
+        );
+        for sp in &spans {
+            assert_eq!(&src[sp.start..sp.end], "score");
+        }
+    }
+
+    #[test]
+    fn rename_spans_no_duplicates() {
+        let src = "label start {\n  end!()\n}\njump start\n";
+        let ast = parse(src);
+        let spans = find_rename_spans(&ast, src, "start");
+        // Check no two spans have the same start offset.
+        for (i, a) in spans.iter().enumerate() {
+            for b in spans.iter().skip(i + 1) {
+                assert_ne!(a.start, b.start, "duplicate span at offset {}", a.start);
+            }
+        }
+    }
+
+    #[test]
+    fn rename_spans_unknown_name_is_empty() {
+        let src = "label a {\n  end!()\n}\n";
+        let ast = parse(src);
+        let spans = find_rename_spans(&ast, src, "nonexistent");
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn rename_spans_covers_struct_type_annotation() {
+        let src = "struct Player {\n  name: str\n}\nlabel start {\n  let hero: Player = :{ name: \"Ada\" }\n  end!()\n}\n";
+        let ast = parse(src);
+        let spans = find_rename_spans(&ast, src, "Player");
+        assert!(
+            spans.len() >= 2,
+            "expected at least 2 rename spans for 'Player', got {}",
+            spans.len()
+        );
+        for sp in &spans {
+            assert_eq!(&src[sp.start..sp.end], "Player");
+        }
+    }
+
+    #[test]
+    fn rename_spans_struct_field() {
+        let src = "struct Player {\n  name: str\n  health: int\n}\nlabel start {\n  let hero: Player = :{ name: \"Ada\", health: 100 }\n  end!()\n}\n";
+        let ast = parse(src);
+        let spans = find_rename_spans(&ast, src, "health");
+        assert!(
+            spans.len() >= 2,
+            "expected at least 2 rename spans for 'health', got {}",
+            spans.len()
+        );
+        for sp in &spans {
+            assert_eq!(&src[sp.start..sp.end], "health");
+        }
+    }
+
+    #[test]
+    fn find_struct_for_field_returns_struct_name() {
+        let src = "struct Vec2 {\n  x: float\n  y: float\n}\n";
+        let ast = parse(src);
+        assert_eq!(find_struct_for_field(&ast, "x"), Some("Vec2".into()));
+        assert_eq!(find_struct_for_field(&ast, "z"), None);
+    }
+
+    // ── semantic_tokens ──────────────────────────────────────────────
 
     #[test]
     fn semantic_tokens_sorted_by_offset() {

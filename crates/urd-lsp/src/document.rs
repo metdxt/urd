@@ -6,7 +6,7 @@ use tower_lsp::lsp_types::*;
 use chumsky::span::SimpleSpan;
 
 use urd::analysis::{self, AnalysisError};
-use urd::compiler::loader::parse_source;
+use urd::compiler::loader::parse_source_spanned;
 use urd::parser::ast::Ast;
 
 /// State for a single open document.
@@ -16,8 +16,8 @@ pub struct Document {
     pub rope: Rope,
     /// The most recent successful AST (`None` if parsing failed).
     pub ast: Option<Ast>,
-    /// Parse errors from the last parse attempt (chumsky error strings).
-    pub parse_errors: Vec<String>,
+    /// Parse errors from the last parse attempt, each with its byte-offset span.
+    pub parse_errors: Vec<(String, SimpleSpan)>,
     /// Analysis diagnostics from the last successful parse.
     pub analysis_errors: Vec<AnalysisError>,
 }
@@ -45,17 +45,18 @@ impl Document {
     fn reparse(&mut self) {
         let src = self.rope.to_string();
 
-        match parse_source(&src) {
+        match parse_source_spanned(&src) {
             Ok(ast) => {
                 // Run analysis passes on the freshly parsed AST.
                 self.analysis_errors = analysis::analyze(&ast);
                 self.ast = Some(ast);
                 self.parse_errors.clear();
             }
-            Err(err_msg) => {
-                // Store parse errors; keep the stale AST for best-effort
-                // features (hover, go-to-definition on the last good parse).
-                self.parse_errors = err_msg.split("; ").map(String::from).collect();
+            Err(spanned_errors) => {
+                // Store parse errors with their spans; keep the stale AST for
+                // best-effort features (hover, go-to-definition on the last
+                // good parse).
+                self.parse_errors = spanned_errors;
                 self.analysis_errors.clear();
             }
         }
@@ -66,11 +67,11 @@ impl Document {
         let src = self.rope.to_string();
         let mut diags = Vec::new();
 
-        // Parse errors — we don't have precise spans from the error string,
-        // so mark the first line as the range.
-        for msg in &self.parse_errors {
+        // Parse errors carry byte-offset spans from chumsky.
+        for (msg, span) in &self.parse_errors {
+            let range = byte_span_to_lsp_range(&src, *span);
             diags.push(Diagnostic {
-                range: Range::new(Position::new(0, 0), Position::new(0, 1)),
+                range,
                 severity: Some(DiagnosticSeverity::ERROR),
                 source: Some("urd".into()),
                 message: msg.clone(),
@@ -328,6 +329,13 @@ mod tests {
             !doc.parse_errors.is_empty() || doc.ast.is_some(),
             "expected either parse errors or a recovered AST"
         );
+        // Errors should carry non-trivial spans (not all at 0..0).
+        for (_, span) in &doc.parse_errors {
+            assert!(
+                span.end > 0 || span.start > 0,
+                "expected parse error span to point into the source, got {span:?}"
+            );
+        }
     }
 
     #[test]

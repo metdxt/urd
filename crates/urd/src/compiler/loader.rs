@@ -148,6 +148,18 @@ pub(super) fn collect_imports(
 /// parse failure, collecting all parse errors into a single semicolon-separated
 /// string.
 pub fn parse_source(src: &str) -> Result<Ast, String> {
+    parse_source_spanned(src).map_err(|errs| {
+        errs.iter()
+            .map(|(msg, _)| msg.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
+}
+
+/// Like [`parse_source`] but returns each parse error together with its
+/// byte-offset span so callers (e.g. the LSP) can place diagnostics at
+/// the correct source location.
+pub fn parse_source_spanned(src: &str) -> Result<Ast, Vec<(String, chumsky::span::SimpleSpan)>> {
     use chumsky::input::Stream;
     use chumsky::prelude::*;
     use chumsky::span::SimpleSpan;
@@ -165,8 +177,7 @@ pub fn parse_source(src: &str) -> Result<Ast, String> {
 
     script().parse(stream).into_result().map_err(|errs| {
         errs.iter()
-            .map(|e| e.to_string())
+            .map(|e| (e.to_string(), *e.span()))
             .collect::<Vec<_>>()
-            .join("; ")
     })
 }
