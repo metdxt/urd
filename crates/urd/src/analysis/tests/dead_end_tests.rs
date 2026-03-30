@@ -204,8 +204,16 @@ fn if_with_only_then_terminating_is_dead_end() {
     let else_b = Ast::block(vec![dialogue()]); // open
     let ast = Ast::block(vec![Ast::if_stmt(cond, then_b, Some(else_b))]);
     let errors = dead_end::check(&ast);
-    // MayTerminate → top-level block is a dead end.
-    assert_single_dead_end(&errors, "top-level");
+    // The open else branch gets its own error, plus the top-level block.
+    assert_eq!(errors.len(), 2, "expected 2 errors, got: {errors:?}");
+    assert!(
+        has_dead_end_at(&errors, "else branch"),
+        "expected else-branch error, got: {errors:?}"
+    );
+    assert!(
+        has_dead_end_at(&errors, "top-level"),
+        "expected top-level error, got: {errors:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -55,6 +55,14 @@ label signal_lost {
     }
 }
 
+label hello {
+    if docking_clear {
+        return
+    } else {
+
+    }
+}
+
 jump intro
 
 label intro {

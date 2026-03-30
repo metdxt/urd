@@ -202,6 +202,30 @@ fn termination_of(
 
             match (t_then, t_else) {
                 (Termination::Terminates, Termination::Terminates) => Termination::Terminates,
+                (Termination::Terminates, _) => {
+                    // then-branch terminates but else-branch does not — flag it.
+                    let else_span = {
+                        let s = else_block.span();
+                        if s.start == 0 && s.end == 0 { span } else { s }
+                    };
+                    errors.push(AnalysisError::DeadEnd {
+                        span: else_span,
+                        description: NodeDescription(format!("else branch in {location}")),
+                    });
+                    Termination::MayTerminate
+                }
+                (_, Termination::Terminates) => {
+                    // else-branch terminates but then-branch does not — flag it.
+                    let then_span = {
+                        let s = then_block.span();
+                        if s.start == 0 && s.end == 0 { span } else { s }
+                    };
+                    errors.push(AnalysisError::DeadEnd {
+                        span: then_span,
+                        description: NodeDescription(format!("if branch in {location}")),
+                    });
+                    Termination::MayTerminate
+                }
                 (Termination::Open, Termination::Open) => Termination::Open,
                 _ => Termination::MayTerminate,
             }
