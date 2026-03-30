@@ -205,11 +205,10 @@ impl AnalysisError {
             AnalysisError::NonExhaustiveMatch {
                 enum_name,
                 missing_variants,
-                span,
+                ..
             } => {
-                let loc = Self::format_span_loc(span);
                 format!(
-                    "Non-exhaustive match on enum '{enum_name}' at {loc}: \
+                    "Non-exhaustive match on enum '{enum_name}': \
                      missing variants: {}",
                     missing_variants.join(", ")
                 )
@@ -219,22 +218,17 @@ impl AnalysisError {
                 variable,
                 expected,
                 got,
-                span,
+                ..
             } => {
-                let loc = Self::format_span_loc(span);
-                format!(
-                    "Type mismatch for '{variable}' at {loc}: \
-                     expected {expected:?}, got {got}"
-                )
+                format!("Type mismatch for '{variable}': expected {expected:?}, got {got}")
             }
 
             AnalysisError::StructMismatch {
                 variable,
                 struct_name,
                 field_errors,
-                span,
+                ..
             } => {
-                let loc = Self::format_span_loc(span);
                 let details: Vec<String> = field_errors
                     .iter()
                     .map(|fe| match fe {
@@ -250,25 +244,18 @@ impl AnalysisError {
                     })
                     .collect();
                 format!(
-                    "Struct mismatch for '{variable}' at {loc}: \
-                     expected struct '{struct_name}': {}",
+                    "Struct mismatch for '{variable}': expected struct '{struct_name}': {}",
                     details.join("; ")
                 )
             }
 
-            AnalysisError::UndefinedLabel { label, span } => {
-                let loc = Self::format_span_loc(span);
-                format!("Undefined label '{label}' at {loc}")
+            AnalysisError::UndefinedLabel { label, .. } => {
+                format!("Undefined label '{label}'")
             }
 
-            AnalysisError::DeadEnd { span, description } => {
-                let loc = if Self::is_zero_span(span) {
-                    description.to_string()
-                } else {
-                    format!("byte {}..{}", span.start, span.end)
-                };
+            AnalysisError::DeadEnd { description, .. } => {
                 format!(
-                    "Dead end at {loc}: execution path has no terminator \
+                    "Dead end in {description}: execution path has no terminator \
                      (use `end!`, `todo!`, `return`, or `jump`)"
                 )
             }
