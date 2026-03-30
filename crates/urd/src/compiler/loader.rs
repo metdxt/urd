@@ -147,7 +147,7 @@ pub(super) fn collect_imports(
 /// Parse a raw Urd source string into an [`Ast`]. Returns `Err(message)` on
 /// parse failure, collecting all parse errors into a single semicolon-separated
 /// string.
-pub(super) fn parse_source(src: &str) -> Result<Ast, String> {
+pub fn parse_source(src: &str) -> Result<Ast, String> {
     use chumsky::input::Stream;
     use chumsky::prelude::*;
     use chumsky::span::SimpleSpan;

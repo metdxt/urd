@@ -12,7 +12,7 @@
 //!    [`NodeId`] of the sub-graph it just emitted; callers thread a `next` continuation
 //!    through every call so that every chain is fully linked on the first pass.
 
-pub(crate) mod loader;
+pub mod loader;
 
 use std::collections::{HashMap, HashSet};
 
