@@ -301,10 +301,7 @@ fn mermaid_has_jump_nodes() {
         mmd.contains(":::jump"),
         "Mermaid output must contain at least one jump node (:::jump class)"
     );
-    assert!(
-        mmd.contains("-.->"),
-        "jump edges must be dashed (-.->)"
-    );
+    assert!(mmd.contains("-.->"), "jump edges must be dashed (-.->)");
 }
 
 #[test]
@@ -459,6 +456,7 @@ fn mermaid_is_non_empty() {
 fn mermaid_write_artifact_for_inspection() {
     let mmd = compile_example().to_mermaid();
     let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::fs::create_dir_all(&out_dir).expect("failed to create artifact output dir");
     let path = out_dir.join("mermaid_example.mmd");
     std::fs::write(&path, &mmd).expect("failed to write Mermaid artifact");
     println!("Mermaid artifact: {}", path.display());

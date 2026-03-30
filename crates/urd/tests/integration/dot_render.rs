@@ -547,6 +547,7 @@ fn dot_output_is_valid_graphviz() {
 fn dot_write_artifacts_for_inspection() {
     let dot_src = compile_example().to_dot();
     let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::fs::create_dir_all(&out_dir).expect("failed to create artifact output dir");
 
     let dot_path = out_dir.join("dot_render_example.dot");
     std::fs::write(&dot_path, &dot_src).expect("failed to write DOT artifact");

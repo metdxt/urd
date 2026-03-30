@@ -1,0 +1,36 @@
+sequenceDiagram
+    autonumber
+
+    participant start
+    participant talk
+    participant notice_board
+    participant compute_rank
+    participant log_visit
+
+    activate start
+    Note over start: Narrator: "You push open the heavy oak door and step ins…"
+    Note over start: if reputation > 10
+    Note over start: if reputation < 0
+    Note over start: Innkeeper: "What do you want?"
+    start->>compute_rank: let rank = ⤑
+    activate compute_rank
+    Note over compute_rank: if reputation > 10
+    Note over compute_rank: if reputation < 0
+    Note over compute_rank: return neutral
+    compute_rank-->>start: ↩ rank
+    deactivate compute_rank
+    start->>log_visit: ⤑
+    activate log_visit
+    Note over log_visit: Narrator: "Your visit has been recorded in the ledger."
+    Note over log_visit: return
+    log_visit-->>start: ↩
+    deactivate log_visit
+    alt Talk to the innkeeper
+    start->>talk: jump
+    else Check the notice board
+    start->>notice_board: jump
+    else Leave the tavern
+    Note over start: Narrator: "You step back out into the cold night air."
+    Note over start: return
+    end
+    deactivate start

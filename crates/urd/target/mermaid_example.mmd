@@ -1,0 +1,153 @@
+%%{init: {'theme': 'base', 'themeVariables': {'lineColor': '#ffffff', 'edgeLabelBackground': '#ffffff'}}}%%
+flowchart TD
+
+    classDef assign fill:#E0FFFF,stroke:#888,color:#000
+    classDef dialogue fill:#FFA07A,stroke:#888,color:#000
+    classDef branch fill:#FFFFE0,stroke:#888,color:#000
+    classDef choice fill:#DDA0DD,stroke:#888,color:#000
+    classDef jump fill:#F5DEB3,stroke:#888,color:#000
+    classDef letcall fill:#F5DEB3,stroke:#888,color:#000
+    classDef ret fill:#FFE4E1,stroke:#888,color:#000
+    classDef scope fill:#90EE90,stroke:#228B22,color:#000
+    classDef enumDef fill:#E6E6FA,stroke:#888,color:#000
+    classDef decoratorDef fill:#E6E6FA,stroke:#888,color:#000
+    classDef endNode fill:#FF6347,stroke:#333,color:#fff
+    classDef startNode fill:#1b4332,stroke:#333,color:#fff
+
+    __start__[/"▶ START"\]:::startNode
+
+    subgraph cluster_start["start"]
+        direction TB
+        N0{"▶ start"}:::scope
+        N37>"jump → talk"]:::jump
+        N38>"jump → notice_board"]:::jump
+        N39(["  return  "]):::ret
+        N40["Narrator:<br/>#quot;You step back out into the cold ni…#quot;<br/>@voiced"]:::dialogue
+        N41{{"  choice (3 opts)<br/>@important  "}}:::choice
+        N42>"⤑ log_visit"]:::letcall
+        N43>"⤑ compute_rank<br/>→ rank"]:::letcall
+        N45["Innkeeper:<br/>#quot;Ah, a friendly face! Welcome back.#quot;"]:::dialogue
+        N47["Innkeeper:<br/>#quot;I'm watching you, stranger.#quot;"]:::dialogue
+        N48["Innkeeper:<br/>#quot;What do you want?#quot;"]:::dialogue
+        N49{"branch<br/>reputati… LessThan 0"}:::branch
+        N50{"branch<br/>reputati… GreaterThan 10"}:::branch
+        N51["Narrator:<br/>#quot;You push open the heavy oak door a…#quot;<br/>@voiced @timed"]:::dialogue
+    end
+
+    subgraph cluster_talk["talk"]
+        direction TB
+        N1{"▶ talk"}:::scope
+        N27>"jump → start"]:::jump
+        N28["Innkeeper:<br/>#quot;They say the old mill is haunted n…#quot;"]:::dialogue
+        N29["let reputation = ⟨expr⟩"]:::assign
+        N30>"jump → start"]:::jump
+        N31["Innkeeper:<br/>#quot;Two gold. Pay up.#quot;"]:::dialogue
+        N32["let cost = ⟨expr⟩"]:::assign
+        N33>"jump → start"]:::jump
+        N34{{"  choice (3 opts)  "}}:::choice
+        N35["Innkeeper:<br/>#quot;What can I do for you?#quot;<br/>#quot;Don't keep me waiting.#quot;<br/>@voiced"]:::dialogue
+    end
+
+    subgraph cluster_notice_board["notice_board"]
+        direction TB
+        N2{"▶ notice_board"}:::scope
+        N17>"jump → start"]:::jump
+        N19["let reputation = ⟨expr⟩"]:::assign
+        N20["Narrator:<br/>#quot;You tear the notices from the boar…#quot;"]:::dialogue
+        N21["let reputation = ⟨expr⟩"]:::assign
+        N22["Narrator:<br/>#quot;You study the bounty posters caref…#quot;"]:::dialogue
+        N23["Narrator:<br/>#quot;You glance at the board and move o…#quot;"]:::dialogue
+        N24{"match (3 arms)"}:::branch
+        N25["let action = ⟨expr⟩"]:::assign
+    end
+
+    subgraph cluster_compute_rank["compute_rank"]
+        direction TB
+        N3{"▶ compute_rank"}:::scope
+        N9(["  return ⟨expr⟩  "]):::ret
+        N11(["  return ⟨expr⟩  "]):::ret
+        N12{"branch<br/>reputati… LessThan 0"}:::branch
+        N14(["  return ⟨expr⟩  "]):::ret
+        N15{"branch<br/>reputati… GreaterThan 10"}:::branch
+    end
+
+    subgraph cluster_log_visit["log_visit"]
+        direction TB
+        N4{"▶ log_visit"}:::scope
+        N6(["  return  "]):::ret
+        N7["Narrator:<br/>#quot;Your visit has been recorded in th…#quot;"]:::dialogue
+    end
+
+    style cluster_start fill:transparent,stroke:#228B22,stroke-width:4px
+    style cluster_talk fill:transparent,stroke:#228B22,stroke-width:2px
+    style cluster_notice_board fill:transparent,stroke:#228B22,stroke-width:2px
+    style cluster_compute_rank fill:transparent,stroke:#228B22,stroke-width:2px
+    style cluster_log_visit fill:transparent,stroke:#228B22,stroke-width:2px
+
+    N52["def_decorator<br/>@timed (2 params)"]:::decoratorDef
+    N53["enum Action (3 variants)"]:::enumDef
+    N54["const max_health = ⟨expr⟩"]:::assign
+    N55["global reputation = ⟨expr⟩"]:::assign
+
+    __start__ --> N55
+
+    N0 --> N51
+    N1 --> N35
+    N2 --> N25
+    N3 --> N15
+    N4 --> N7
+    N6 -. "↩" .-> N41
+    N7 --> N6
+    N9 -. "↩" .-> N42
+    N11 -. "↩" .-> N42
+    N12 -->|"then"| N11
+    N12 -. "else" .-> N9
+    N14 -. "↩" .-> N42
+    N15 -->|"then"| N14
+    N15 -. "else" .-> N12
+    N17 -.-> N0
+    N19 --> N17
+    N20 --> N19
+    N21 --> N17
+    N22 --> N21
+    N23 --> N17
+    N24 -->|"Action.Attack"| N20
+    N24 -->|"Action.Talk"| N22
+    N24 -. "default" .-> N23
+    N25 --> N24
+    N27 -.-> N0
+    N28 --> N27
+    N29 --> N28
+    N30 -.-> N0
+    N31 --> N30
+    N32 --> N31
+    N33 -.-> N0
+    N34 -->|"[0] Ask about local rumours"| N29
+    N34 -->|"[1] Buy a drink"| N32
+    N34 -->|"[2] Never mind"| N33
+    N35 --> N34
+    N37 -.-> N1
+    N38 -.-> N2
+    N39 -.-> __end__
+    N40 --> N39
+    N41 -->|"[0] Talk to the innkeeper"| N37
+    N41 -->|"[1] Check the notice board"| N38
+    N41 -->|"[2] Leave the tavern"| N40
+    N42 -. "call" .-> N4
+    N42 -. "ret" .-> N41
+    N43 -. "call" .-> N3
+    N43 -. "ret" .-> N42
+    N45 --> N43
+    N47 --> N43
+    N48 --> N43
+    N49 -->|"then"| N47
+    N49 -. "else" .-> N48
+    N50 -->|"then"| N45
+    N50 -. "else" .-> N49
+    N51 --> N50
+    N52 --> N0
+    N53 --> N52
+    N54 --> N53
+    N55 --> N54
+
+    __end__((("END"))):::endNode

@@ -258,9 +258,9 @@ fn sequence_shows_dialogue_notes() {
 #[test]
 fn sequence_write_artifact_for_inspection() {
     let out = compile_example().to_sequence_mermaid();
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("sequence_example.mmd");
+    let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::fs::create_dir_all(&out_dir).expect("failed to create artifact output dir");
+    let path = out_dir.join("sequence_example.mmd");
     std::fs::write(&path, &out).expect("failed to write Mermaid artifact");
     println!("Mermaid artifact: {}", path.display());
     println!("\n{out}");
