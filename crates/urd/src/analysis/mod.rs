@@ -17,6 +17,7 @@ pub mod context;
 pub mod dead_end;
 pub mod exhaustiveness;
 pub mod labels;
+pub mod top_level;
 pub mod types;
 
 #[cfg(test)]
@@ -165,6 +166,22 @@ pub enum AnalysisError {
         /// label in ariadne output and for zero-span fallback messages.
         description: NodeDescription,
     },
+
+    /// A statement that is not a definition appeared at the top level.
+    TopLevelFlow {
+        /// Human-readable description of the offending node.
+        description: String,
+        /// Source span of the offending node.
+        span: SimpleSpan,
+    },
+
+    /// More than one label is decorated with `@entry`.
+    DuplicateEntry {
+        /// Name of the second (or subsequent) `@entry` label.
+        label: String,
+        /// Source span of the duplicate `@entry` label.
+        span: SimpleSpan,
+    },
 }
 
 impl AnalysisError {
@@ -179,6 +196,8 @@ impl AnalysisError {
             AnalysisError::StructMismatch { span, .. } => *span,
             AnalysisError::UndefinedLabel { span, .. } => *span,
             AnalysisError::DeadEnd { span, .. } => *span,
+            AnalysisError::TopLevelFlow { span, .. } => *span,
+            AnalysisError::DuplicateEntry { span, .. } => *span,
         }
     }
 
@@ -260,6 +279,18 @@ impl AnalysisError {
                      (use `end!`, `todo!`, `return`, or `jump`)"
                 )
             }
+
+            AnalysisError::TopLevelFlow { description, .. } => {
+                format!(
+                    "Top-level {description} is not allowed; \
+                     only definitions (let/const/global, enum, struct, decorator, import, label) \
+                     may appear at the top level"
+                )
+            }
+
+            AnalysisError::DuplicateEntry { label, .. } => {
+                format!("Duplicate @entry decorator on label '{label}'")
+            }
         }
     }
 
@@ -298,6 +329,14 @@ impl AnalysisError {
 
             AnalysisError::DeadEnd { description, .. } => {
                 format!("{description}: no terminator on this path")
+            }
+
+            AnalysisError::TopLevelFlow { description, .. } => {
+                format!("{description} not allowed at top level")
+            }
+
+            AnalysisError::DuplicateEntry { label, .. } => {
+                format!("label '{label}' is a duplicate @entry")
             }
         }
     }
@@ -400,6 +439,7 @@ pub fn render_errors_stderr(errors: &[AnalysisError], src: &str, source_name: &s
 pub fn analyze(ast: &Ast) -> Vec<AnalysisError> {
     let ctx = AnalysisContext::build(ast);
     let mut errors: Vec<AnalysisError> = Vec::new();
+    errors.extend(top_level::check(ast));
     errors.extend(exhaustiveness::check(ast, &ctx));
     errors.extend(types::check(ast, &ctx));
     errors.extend(labels::check(ast, &ctx));
@@ -426,6 +466,7 @@ pub fn analyze_with_imports(
 ) -> Vec<AnalysisError> {
     let ctx = AnalysisContext::build_with_imports(ast, imported_structs, imported_enums);
     let mut errors: Vec<AnalysisError> = Vec::new();
+    errors.extend(top_level::check(ast));
     errors.extend(exhaustiveness::check(ast, &ctx));
     errors.extend(types::check(ast, &ctx));
     errors.extend(labels::check(ast, &ctx));

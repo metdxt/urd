@@ -73,8 +73,8 @@ impl Compiler {
         // Pass 1 — collect all label names and pre-allocate Nop placeholders.
         state.scan_labels(ast);
 
-        // Pass 2 — emit IR nodes.
-        let entry = state.compile_node(ast, NODE_END)?;
+        // Pass 2 — emit IR nodes using top-level partitioning (@entry support).
+        let entry = state.compile_top_level(ast)?;
         state.graph.entry = entry;
 
         Ok(state.graph)
@@ -173,6 +173,103 @@ impl CompilerState {
             // All other nodes either have no sub-statements or only expressions.
             _ => {}
         }
+    }
+
+    // ── Top-level compilation with @entry support ─────────────────────────────
+
+    /// Compile a top-level block, partitioning its children into preamble
+    /// definitions and labeled blocks.  The `@entry` decorator on a
+    /// [`AstContent::LabeledBlock`] determines which label execution begins
+    /// at after the preamble runs.
+    ///
+    /// **Compilation order:**
+    /// 1. Labels are compiled first (each independently with `next = NODE_END`
+    ///    — they are jumped to, not fallen through).
+    /// 2. The entry label is determined: `@entry`-decorated label wins,
+    ///    otherwise the first label in source order, otherwise `NODE_END`.
+    /// 3. Preamble definitions are compiled right-to-left, with the last
+    ///    definition's `next` pointing at the entry label's placeholder
+    ///    [`NodeId`].
+    /// 4. The returned [`NodeId`] is the first preamble node (so definitions
+    ///    execute before entering the label), or the entry label directly when
+    ///    there is no preamble.
+    ///
+    /// If `ast` is not a [`AstContent::Block`], falls back to
+    /// [`Self::compile_node`].
+    pub(super) fn compile_top_level(&mut self, ast: &Ast) -> Result<NodeId, CompilerError> {
+        let stmts = match ast.content() {
+            AstContent::Block(stmts) => stmts,
+            // Not a block — fall back to the general compile path.
+            _ => return self.compile_node(ast, NODE_END),
+        };
+
+        if stmts.is_empty() {
+            let id = self.graph.push(IrNodeKind::Nop { next: NODE_END });
+            return Ok(id);
+        }
+
+        // Partition into preamble (definitions / non-label statements) and labels.
+        let mut preamble: Vec<&Ast> = Vec::new();
+        let mut labels: Vec<&Ast> = Vec::new();
+
+        for stmt in stmts {
+            match stmt.content() {
+                AstContent::LabeledBlock { .. } => labels.push(stmt),
+                _ => preamble.push(stmt),
+            }
+        }
+
+        // ── Phase 1: compile all labels independently ─────────────────────
+        // Each label is a jump target; they do not fall through to one another.
+        for label_ast in &labels {
+            self.compile_node(label_ast, NODE_END)?;
+        }
+
+        // ── Phase 2: determine the entry label ───────────────────────────
+        // Priority: @entry-decorated label > first label in source order > NODE_END
+        let entry_label_node = self.find_entry_label(&labels);
+
+        // ── Phase 3: compile preamble right-to-left, chaining into entry ──
+        if preamble.is_empty() {
+            // No preamble — entry is the label directly (or NODE_END).
+            return Ok(entry_label_node);
+        }
+
+        // If there are no labels, preamble chains to NODE_END (backward compat
+        // for pure-definition modules like characters.urd).
+        let mut continuation = entry_label_node;
+        for stmt in preamble.iter().rev() {
+            continuation = self.compile_node(stmt, continuation)?;
+        }
+
+        Ok(continuation)
+    }
+
+    /// Find the entry label [`NodeId`] among the given label AST nodes.
+    ///
+    /// 1. If a label has an `@entry` decorator, use its placeholder [`NodeId`].
+    /// 2. Otherwise, use the first label in source order.
+    /// 3. If no labels exist, return [`NODE_END`].
+    fn find_entry_label(&self, labels: &[&Ast]) -> NodeId {
+        // Look for @entry decorator first.
+        for label_ast in labels {
+            if let AstContent::LabeledBlock { label, .. } = label_ast.content()
+                && label_ast.decorators().iter().any(|d| d.name() == "entry")
+                && let Some(&id) = self.label_placeholders.get(label)
+            {
+                return id;
+            }
+        }
+
+        // Fallback: first label in source order.
+        if let Some(first) = labels.first()
+            && let AstContent::LabeledBlock { label, .. } = first.content()
+            && let Some(&id) = self.label_placeholders.get(label)
+        {
+            return id;
+        }
+
+        NODE_END
     }
 
     // ── Pass 2: emit IR nodes ─────────────────────────────────────────────────

@@ -33,7 +33,9 @@ pub(super) fn compile_recursive(
     state.scan_labels(ast);
 
     // Pass 2: emit IR nodes for the current module (main entry).
-    let main_entry = state.compile_node(ast, NODE_END)?;
+    // Uses top-level partitioning so that @entry-decorated labels are
+    // recognised and preamble definitions chain into the entry label.
+    let main_entry = state.compile_top_level(ast)?;
 
     // Chain imported module prologues before the main entry so that
     // DefineEnum / global-assignment nodes from imported modules are executed
@@ -93,7 +95,7 @@ pub(super) fn collect_imports(
                 // Compile without recursion (no imports re-processed).
                 let mut inner = CompilerState::new();
                 inner.scan_labels(&module_ast);
-                let entry = inner.compile_node(&module_ast, NODE_END)?;
+                let entry = inner.compile_top_level(&module_ast)?;
                 inner.graph.entry = entry;
                 state.graph.merge(inner.graph, alias);
                 // Intentionally NOT pushing to state.import_prologues here.

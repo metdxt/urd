@@ -26,11 +26,7 @@ const player_faction: chars.Faction = chars.Faction.Rebel
 # LSP: Hover over 'inv.Item' — cross-file type reference
 const starting_dagger: inv.Item = :{ name: "Rusty Dagger", description: "A chipped blade of uncertain origin.", value: 5, weight: 1 }
 
-# ---------------------------------------------------------------------------
-# Entry jump — control flow begins here
-# LSP: 'start' should appear as a document symbol (label)
-# ---------------------------------------------------------------------------
-jump start
+
 
 # =============================================================================
 # label: prologue
@@ -62,8 +58,9 @@ label prologue {
 
 # =============================================================================
 # label: start
-# LSP: document symbol, jump target from the top-level 'jump start'
+# LSP: document symbol, @entry marks this as the execution entry point
 # =============================================================================
+@entry
 label start {
     <narrator>: "The year is 1203 of the Third Age."
 

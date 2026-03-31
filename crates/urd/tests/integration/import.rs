@@ -71,7 +71,11 @@ fn test_import_then_jump_to_module_label() {
 
     let main_src = r#"
         import "lib.urd" as lib
-        jump lib.greeting
+
+        @entry
+        label main {
+            jump lib.greeting
+        }
     "#;
 
     let mut vm = build_vm_with_loader(main_src, &loader);
@@ -93,13 +97,21 @@ fn test_import_then_jump_to_module_label() {
 /// fires, confirming the read returned the expected value.
 #[test]
 fn test_cross_module_global_write_and_read() {
-    // No module source needed — the module is just used as a namespace carrier.
-    let loader = MemLoader::new();
+    let mut loader = MemLoader::new();
+    loader.add("lib.urd", r#""#);
 
     let main_src = r#"
-        lib.score = 99
-        if lib.score == 99 {
-            <"Narrator">: "score is correct"
+        import "lib.urd" as lib
+
+        @entry
+        label main {
+            lib.score = 99
+            if lib.score == 99 {
+                <"Narrator">: "High score!"
+            } else {
+                <"Narrator">: "Nope"
+            }
+            end!()
         }
     "#;
 
@@ -108,7 +120,7 @@ fn test_cross_module_global_write_and_read() {
 
     assert_eq!(
         lines,
-        vec!["score is correct"],
+        vec!["High score!"],
         "expected cross-module global read to return 99, got: {lines:?}"
     );
 }
@@ -132,7 +144,11 @@ fn test_module_label_body_executes_on_jump() {
 
     let main_src = r#"
         import "state.urd" as state
-        jump state.init
+
+        @entry
+        label main {
+            jump state.init
+        }
     "#;
 
     let mut vm = build_vm_with_loader(main_src, &loader);
@@ -174,7 +190,11 @@ fn test_two_modules_with_same_label_name_do_not_collide() {
     let main_src = r#"
         import "module_a.urd" as a
         import "module_b.urd" as b
-        jump a.start
+
+        @entry
+        label main {
+            jump a.start
+        }
     "#;
 
     let mut vm = build_vm_with_loader(main_src, &loader);
@@ -208,7 +228,11 @@ fn test_jump_to_non_entry_module_label() {
 
     let main_src = r#"
         import "scenes.urd" as scenes
-        jump scenes.epilogue
+
+        @entry
+        label main {
+            jump scenes.epilogue
+        }
     "#;
 
     let mut vm = build_vm_with_loader(main_src, &loader);
@@ -287,16 +311,18 @@ fn test_import_only_script_registers_labels() {
 /// visible everywhere in the script, including inside conditional branches.
 #[test]
 fn test_cross_module_global_visible_in_conditional() {
-    let loader = MemLoader::new();
-
-    // No import needed — we just write and read via the "ns" namespace.
-    // The two-segment assignment `ns.flag = 1` compiles to an Assign with
-    // Global scope and key "ns::flag".  The two-segment read `ns.flag` in the
-    // condition resolves via `eval_runtime_value`'s module-namespace lookup.
+    let mut loader = MemLoader::new();
+    loader.add("ns.urd", r#""#);
     let main_src = r#"
-        ns.flag = 1
-        if ns.flag == 1 {
-            <"Test">: "flag is set"
+        import "ns.urd" as ns
+
+        @entry
+        label main {
+            ns.flag = 1
+            if ns.flag == 1 {
+                <"Test">: "flag is set"
+            }
+            end!()
         }
     "#;
 
@@ -325,16 +351,19 @@ fn test_transitive_imports_resolve() {
         }
         "#,
     );
-    loader.add("mid.urd", r#"import "base.urd" as base"#);
+    loader.add("ext.urd", r#"import "base.urd" as base"#);
 
-    // main imports mid (which internally imports base), then imports base
-    // directly under a different alias.  The diamond-import logic should
-    // handle this without a CircularImport error, and both aliases should
-    // be available. We jump directly to the second alias.
+    // main imports base directly, and ext (which internally imports base).
+    // The diamond-import logic should handle this without a CircularImport
+    // error, and both aliases should be available.
     let main_src = r#"
-        import "mid.urd" as mid
         import "base.urd" as base
-        jump base.entry
+        import "ext.urd" as ext
+
+        @entry
+        label main {
+            jump base.entry
+        }
     "#;
 
     let mut vm = build_vm_with_loader(main_src, &loader);

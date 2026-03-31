@@ -11,10 +11,9 @@ global health    = 100
 global has_torch = false
 global has_key   = false
 
-jump start
-
 # ── Labels ────────────────────────────────────────────────────────────────────
 
+@entry
 label start {
     # Opening scene: the player meets Zara outside the cave.
     <narrator>: {
