@@ -40,6 +40,7 @@ use std::fmt::Write as _;
 use crate::parser::ast::{AstContent, Operator};
 use crate::runtime::value::RuntimeValue;
 
+use super::render_common::truncate;
 use super::{IrGraph, IrNodeKind, NODE_END, NodeId};
 
 // ─── Public surface ───────────────────────────────────────────────────────────
@@ -416,17 +417,6 @@ fn find_entry_label(graph: &IrGraph) -> String {
 /// Replaces `"::"` → `"_"`, `"."` → `"_"`, `" "` → `"_"`.
 fn pid(s: &str) -> String {
     s.replace("::", "_").replace(['.', ' '], "_")
-}
-
-/// Truncates `s` to at most `max` Unicode scalar values, appending `…` when
-/// truncated.
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max).collect();
-        format!("{cut}…")
-    }
 }
 
 /// Extracts the first plain-string content from an [`Ast`] node.

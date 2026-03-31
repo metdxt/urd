@@ -92,18 +92,19 @@ impl Environment {
                 scope.insert(name.to_string(), value);
             }
             DeclKind::Variable => {
-                // Update an existing binding in-place (innermost scope first,
-                // then globals) so that re-assignment respects the original scope.
-                if self.globals.contains_key(name) {
-                    self.globals.insert(name.to_string(), value);
-                    return Ok(());
-                }
+                // Update an existing binding in-place — search innermost local
+                // scope first, then outward, then globals.  This mirrors the
+                // lookup order used by `get()` so that reads and writes resolve
+                // to the same binding.
                 for scope in self.scopes.iter_mut().rev() {
                     if scope.contains_key(name) {
                         scope.insert(name.to_string(), value);
                         return Ok(());
                     }
-                    // keep searching outward
+                }
+                if self.globals.contains_key(name) {
+                    self.globals.insert(name.to_string(), value);
+                    return Ok(());
                 }
                 // No existing binding — create in the innermost scope.
                 let scope = self

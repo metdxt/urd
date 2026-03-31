@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::parser::ast::{Ast, AstContent, DeclKind, StructField, TypeAnnotation};
+use crate::parser::ast::{Ast, AstContent, DeclKind, StructField, TypeAnnotation, walk_ast};
 use crate::runtime::value::RuntimeValue;
 
 // ---------------------------------------------------------------------------
@@ -100,284 +100,32 @@ impl AnalysisContext {
 
 /// Recursively walks the entire subtree rooted at `node` and collects every
 /// label name into `labels`.
-fn collect_labels(node: &Ast, labels: &mut HashSet<String>) {
-    match node.content() {
-        AstContent::LabeledBlock { label, block } => {
+fn collect_labels(root: &Ast, labels: &mut HashSet<String>) {
+    walk_ast(root, &mut |node| {
+        if let AstContent::LabeledBlock { label, .. } = node.content() {
             labels.insert(label.clone());
-            collect_labels(block, labels);
         }
-        AstContent::Block(stmts) => {
-            for stmt in stmts {
-                collect_labels(stmt, labels);
-            }
-        }
-        AstContent::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            collect_labels(condition, labels);
-            collect_labels(then_block, labels);
-            if let Some(eb) = else_block {
-                collect_labels(eb, labels);
-            }
-        }
-        AstContent::Match { arms, .. } => {
-            for arm in arms {
-                collect_labels(&arm.body, labels);
-            }
-        }
-        AstContent::Menu { options } => {
-            for opt in options {
-                collect_labels(opt, labels);
-            }
-        }
-        AstContent::MenuOption { content, .. } => {
-            collect_labels(content, labels);
-        }
-        AstContent::DecoratorDef { body, .. } => {
-            collect_labels(body, labels);
-        }
-        _ => {}
-    }
+    });
 }
 
-/// Recursively walks the entire subtree rooted at `node` and inserts every
+/// Recursively walks the entire subtree rooted at `root` and inserts every
 /// [`AstContent::EnumDecl`] it finds into `enums`.
-fn collect_enums(node: &Ast, enums: &mut HashMap<String, Vec<String>>) {
-    match node.content() {
-        AstContent::EnumDecl { name, variants } => {
+fn collect_enums(root: &Ast, enums: &mut HashMap<String, Vec<String>>) {
+    walk_ast(root, &mut |node| {
+        if let AstContent::EnumDecl { name, variants } = node.content() {
             enums.insert(name.clone(), variants.clone());
         }
-
-        AstContent::Block(stmts) => {
-            for stmt in stmts {
-                collect_enums(stmt, enums);
-            }
-        }
-
-        AstContent::LabeledBlock { block, .. } => {
-            collect_enums(block, enums);
-        }
-
-        AstContent::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            collect_enums(condition, enums);
-            collect_enums(then_block, enums);
-            if let Some(eb) = else_block {
-                collect_enums(eb, enums);
-            }
-        }
-
-        AstContent::Declaration { decl_defs, .. } => {
-            collect_enums(decl_defs, enums);
-        }
-
-        AstContent::Menu { options } => {
-            for opt in options {
-                collect_enums(opt, enums);
-            }
-        }
-
-        AstContent::MenuOption { content, .. } => {
-            collect_enums(content, enums);
-        }
-
-        AstContent::Match { scrutinee, arms } => {
-            collect_enums(scrutinee, enums);
-            for arm in arms {
-                collect_enums(&arm.body, enums);
-            }
-        }
-
-        AstContent::DecoratorDef { body, .. } => {
-            collect_enums(body, enums);
-        }
-
-        AstContent::Return { value } => {
-            if let Some(v) = value {
-                collect_enums(v, enums);
-            }
-        }
-
-        AstContent::BinOp { left, right, .. } => {
-            collect_enums(left, enums);
-            collect_enums(right, enums);
-        }
-
-        AstContent::UnaryOp { expr, .. } => {
-            collect_enums(expr, enums);
-        }
-
-        AstContent::ExprList(exprs) => {
-            for e in exprs {
-                collect_enums(e, enums);
-            }
-        }
-
-        AstContent::List(items) => {
-            for item in items {
-                collect_enums(item, enums);
-            }
-        }
-
-        AstContent::Call { func_path, params } => {
-            collect_enums(func_path, enums);
-            collect_enums(params, enums);
-        }
-
-        AstContent::Subscript { object, key } => {
-            collect_enums(object, enums);
-            collect_enums(key, enums);
-        }
-
-        AstContent::SubscriptAssign { object, key, value } => {
-            collect_enums(object, enums);
-            collect_enums(key, enums);
-            collect_enums(value, enums);
-        }
-
-        AstContent::Dialogue { speakers, content } => {
-            collect_enums(speakers, enums);
-            collect_enums(content, enums);
-        }
-
-        AstContent::Map(pairs) => {
-            for (k, v) in pairs {
-                collect_enums(k, enums);
-                collect_enums(v, enums);
-            }
-        }
-
-        // Leaf nodes that cannot contain an EnumDecl.
-        AstContent::Value(_)
-        | AstContent::Jump { .. }
-        | AstContent::LetCall { .. }
-        | AstContent::Import { .. }
-        | AstContent::StructDecl { .. } => {}
-    }
+    });
 }
 
-/// Recursively walks the entire subtree rooted at `node` and inserts every
+/// Recursively walks the entire subtree rooted at `root` and inserts every
 /// [`AstContent::StructDecl`] it finds into `structs`.
-fn collect_structs(node: &Ast, structs: &mut HashMap<String, Vec<StructField>>) {
-    match node.content() {
-        AstContent::StructDecl { name, fields } => {
+fn collect_structs(root: &Ast, structs: &mut HashMap<String, Vec<StructField>>) {
+    walk_ast(root, &mut |node| {
+        if let AstContent::StructDecl { name, fields } = node.content() {
             structs.insert(name.clone(), fields.clone());
         }
-
-        AstContent::Block(stmts) => {
-            for stmt in stmts {
-                collect_structs(stmt, structs);
-            }
-        }
-
-        AstContent::LabeledBlock { block, .. } => {
-            collect_structs(block, structs);
-        }
-
-        AstContent::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            collect_structs(condition, structs);
-            collect_structs(then_block, structs);
-            if let Some(eb) = else_block {
-                collect_structs(eb, structs);
-            }
-        }
-
-        AstContent::Declaration { decl_defs, .. } => {
-            collect_structs(decl_defs, structs);
-        }
-
-        AstContent::Menu { options } => {
-            for opt in options {
-                collect_structs(opt, structs);
-            }
-        }
-
-        AstContent::MenuOption { content, .. } => {
-            collect_structs(content, structs);
-        }
-
-        AstContent::Match { scrutinee, arms } => {
-            collect_structs(scrutinee, structs);
-            for arm in arms {
-                collect_structs(&arm.body, structs);
-            }
-        }
-
-        AstContent::DecoratorDef { body, .. } => {
-            collect_structs(body, structs);
-        }
-
-        AstContent::Return { value } => {
-            if let Some(v) = value {
-                collect_structs(v, structs);
-            }
-        }
-
-        AstContent::BinOp { left, right, .. } => {
-            collect_structs(left, structs);
-            collect_structs(right, structs);
-        }
-
-        AstContent::UnaryOp { expr, .. } => {
-            collect_structs(expr, structs);
-        }
-
-        AstContent::ExprList(exprs) => {
-            for e in exprs {
-                collect_structs(e, structs);
-            }
-        }
-
-        AstContent::List(items) => {
-            for item in items {
-                collect_structs(item, structs);
-            }
-        }
-
-        AstContent::Call { func_path, params } => {
-            collect_structs(func_path, structs);
-            collect_structs(params, structs);
-        }
-
-        AstContent::Subscript { object, key } => {
-            collect_structs(object, structs);
-            collect_structs(key, structs);
-        }
-
-        AstContent::SubscriptAssign { object, key, value } => {
-            collect_structs(object, structs);
-            collect_structs(key, structs);
-            collect_structs(value, structs);
-        }
-
-        AstContent::Dialogue { speakers, content } => {
-            collect_structs(speakers, structs);
-            collect_structs(content, structs);
-        }
-
-        AstContent::Map(pairs) => {
-            for (k, v) in pairs {
-                collect_structs(k, structs);
-                collect_structs(v, structs);
-            }
-        }
-
-        // Leaf nodes that cannot contain a StructDecl.
-        AstContent::Value(_)
-        | AstContent::Jump { .. }
-        | AstContent::LetCall { .. }
-        | AstContent::Import { .. }
-        | AstContent::EnumDecl { .. } => {}
-    }
+    });
 }
 
 /// Examines the *direct* children of the outermost block in `root` and records

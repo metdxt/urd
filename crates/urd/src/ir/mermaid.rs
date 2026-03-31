@@ -24,10 +24,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use crate::parser::ast::{AstContent, DeclKind, MatchPattern};
-use crate::runtime::value::RuntimeValue;
-
 use super::analysis::{self, follow_nops};
+use super::render_common::{
+    arm_pattern_label, ast_summary, decl_kw, decorator_line, extract_content_lines,
+    extract_speakers, nid, truncate,
+};
 use super::{IrGraph, IrNodeKind, NODE_END, NodeId};
 
 // ─── Public surface ───────────────────────────────────────────────────────────
@@ -81,26 +82,62 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
     writeln!(out).ok();
 
     // ── classDef declarations ────────────────────────────────────────────────
-    writeln!(out, "    classDef assign fill:#E0FFFF,stroke:#888,color:#000").ok();
-    writeln!(out, "    classDef dialogue fill:#FFA07A,stroke:#888,color:#000").ok();
-    writeln!(out, "    classDef branch fill:#FFFFE0,stroke:#888,color:#000").ok();
-    writeln!(out, "    classDef choice fill:#DDA0DD,stroke:#888,color:#000").ok();
+    writeln!(
+        out,
+        "    classDef assign fill:#E0FFFF,stroke:#888,color:#000"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef dialogue fill:#FFA07A,stroke:#888,color:#000"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef branch fill:#FFFFE0,stroke:#888,color:#000"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef choice fill:#DDA0DD,stroke:#888,color:#000"
+    )
+    .ok();
     writeln!(out, "    classDef jump fill:#F5DEB3,stroke:#888,color:#000").ok();
-    writeln!(out, "    classDef letcall fill:#F5DEB3,stroke:#888,color:#000").ok();
+    writeln!(
+        out,
+        "    classDef letcall fill:#F5DEB3,stroke:#888,color:#000"
+    )
+    .ok();
     writeln!(out, "    classDef ret fill:#FFE4E1,stroke:#888,color:#000").ok();
-    writeln!(out, "    classDef scope fill:#90EE90,stroke:#228B22,color:#000").ok();
-    writeln!(out, "    classDef enumDef fill:#E6E6FA,stroke:#888,color:#000").ok();
-    writeln!(out, "    classDef decoratorDef fill:#E6E6FA,stroke:#888,color:#000").ok();
-    writeln!(out, "    classDef endNode fill:#FF6347,stroke:#333,color:#fff").ok();
-    writeln!(out, "    classDef startNode fill:#1b4332,stroke:#333,color:#fff").ok();
+    writeln!(
+        out,
+        "    classDef scope fill:#90EE90,stroke:#228B22,color:#000"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef enumDef fill:#E6E6FA,stroke:#888,color:#000"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef decoratorDef fill:#E6E6FA,stroke:#888,color:#000"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef endNode fill:#FF6347,stroke:#333,color:#fff"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef startNode fill:#1b4332,stroke:#333,color:#fff"
+    )
+    .ok();
     writeln!(out).ok();
 
     // ── START node ───────────────────────────────────────────────────────────
-    writeln!(
-        out,
-        "    __start__[/\"▶ START\"\\]:::startNode"
-    )
-    .ok();
+    writeln!(out, "    __start__[/\"▶ START\"\\]:::startNode").ok();
     writeln!(out).ok();
 
     // ── Subgraph clusters (node definitions only) ────────────────────────────
@@ -207,22 +244,8 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             } => {
                 let then_t = follow_nops(graph, *then_node);
                 let else_t = follow_nops(graph, *else_node);
-                write_mermaid_edge(
-                    &mut out,
-                    &n,
-                    then_t,
-                    Some("then"),
-                    false,
-                    &mut has_end_edge,
-                );
-                write_mermaid_edge(
-                    &mut out,
-                    &n,
-                    else_t,
-                    Some("else"),
-                    true,
-                    &mut has_end_edge,
-                );
+                write_mermaid_edge(&mut out, &n, then_t, Some("then"), false, &mut has_end_edge);
+                write_mermaid_edge(&mut out, &n, else_t, Some("else"), true, &mut has_end_edge);
             }
 
             // ── Multi-arm switch ───────────────────────────────────────────
@@ -234,14 +257,7 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
                 }
                 if let Some(def) = default {
                     let t = follow_nops(graph, *def);
-                    write_mermaid_edge(
-                        &mut out,
-                        &n,
-                        t,
-                        Some("default"),
-                        true,
-                        &mut has_end_edge,
-                    );
+                    write_mermaid_edge(&mut out, &n, t, Some("default"), true, &mut has_end_edge);
                 }
             }
 
@@ -541,56 +557,7 @@ fn write_mermaid_edge(
     }
 }
 
-// ─── Dialogue content extraction ─────────────────────────────────────────────
-
-/// Extracts a human-readable comma-separated speaker string.
-fn extract_speakers(ast: &crate::parser::ast::Ast) -> String {
-    match ast.content() {
-        AstContent::ExprList(items) => items
-            .iter()
-            .map(extract_simple_val)
-            .collect::<Vec<_>>()
-            .join(", "),
-        _ => extract_simple_val(ast),
-    }
-}
-
-/// Returns each dialogue line as a plain string (best-effort extraction).
-fn extract_content_lines(ast: &crate::parser::ast::Ast) -> Vec<String> {
-    match ast.content() {
-        AstContent::ExprList(items) => items.iter().map(extract_line_text).collect(),
-        _ => vec![extract_line_text(ast)],
-    }
-}
-
-/// Extracts the display text of a single dialogue line node.
-fn extract_line_text(ast: &crate::parser::ast::Ast) -> String {
-    match ast.content() {
-        AstContent::Value(RuntimeValue::Str(ps)) => format!("{ps}"),
-        _ => extract_simple_val(ast),
-    }
-}
-
-/// Returns a compact display string for a simple value or identifier AST node.
-fn extract_simple_val(ast: &crate::parser::ast::Ast) -> String {
-    match ast.content() {
-        AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
-        AstContent::Value(RuntimeValue::Str(ps)) => format!("{ps}"),
-        AstContent::Value(RuntimeValue::Int(i)) => i.to_string(),
-        AstContent::Value(RuntimeValue::Float(f)) => format!("{f:.2}"),
-        AstContent::Value(RuntimeValue::Bool(b)) => b.to_string(),
-        AstContent::Value(RuntimeValue::Null) => "null".into(),
-        AstContent::Value(RuntimeValue::Dice(c, s)) => format!("{c}d{s}"),
-        _ => "⟨?⟩".into(),
-    }
-}
-
-// ─── Label / summary helpers ──────────────────────────────────────────────────
-
-/// Formats a [`NodeId`] as a Mermaid node identifier string (e.g. `N42`).
-fn nid(id: NodeId) -> String {
-    format!("N{}", id.0)
-}
+// ─── Mermaid-specific helpers ─────────────────────────────────────────────────
 
 /// Escapes text for use inside a Mermaid double-quoted node label.
 ///
@@ -616,89 +583,20 @@ fn escape_mermaid(s: &str) -> String {
 
 /// Converts an arbitrary string into a valid Mermaid subgraph/node ID segment
 /// by replacing `::`, `.`, ` `, `-` with `_` and keeping alphanumeric + `_`.
+///
+/// NOTE: The DOT renderer has its own `sanitize_id` that skips the initial
+/// `::` / `.` / ` ` / `-` normalisation pass.
 fn sanitize_id(s: &str) -> String {
     let s = s.replace("::", "_").replace(['.', ' ', '-'], "_");
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
-}
-
-/// Truncates `s` to at most `max` chars, appending `…` when truncated.
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max).collect();
-        format!("{cut}…")
-    }
-}
-
-/// Returns a short human-readable summary of an AST expression node.
-fn ast_summary(ast: &crate::parser::ast::Ast) -> String {
-    match ast.content() {
-        AstContent::Value(rv) => rv_summary(rv),
-        AstContent::BinOp { op, left, right } => format!(
-            "{} {:?} {}",
-            truncate(&ast_summary(left), 8),
-            op,
-            truncate(&ast_summary(right), 8)
-        ),
-        AstContent::UnaryOp { op, expr } => {
-            format!("{:?} {}", op, truncate(&ast_summary(expr), 12))
-        }
-        AstContent::Call { func_path, .. } => {
-            format!("{}(…)", truncate(&ast_summary(func_path), 14))
-        }
-        AstContent::ExprList(items) => {
-            let parts: Vec<_> = items.iter().map(ast_summary).collect();
-            format!("[{}]", truncate(&parts.join(", "), 20))
-        }
-        AstContent::List(_) => "⟨list⟩".into(),
-        AstContent::Map(_) => "⟨map⟩".into(),
-        _ => "⟨expr⟩".into(),
-    }
-}
-
-/// Returns a short display string for a [`RuntimeValue`].
-fn rv_summary(rv: &RuntimeValue) -> String {
-    match rv {
-        RuntimeValue::Null => "null".into(),
-        RuntimeValue::Bool(b) => b.to_string(),
-        RuntimeValue::Int(i) => i.to_string(),
-        RuntimeValue::Float(f) => format!("{f:.3}"),
-        RuntimeValue::Str(_) => "\"…\"".into(),
-        RuntimeValue::Dice(c, s) => format!("{c}d{s}"),
-        RuntimeValue::IdentPath(p) => p.join("."),
-        RuntimeValue::Label { name, .. } => format!(":{name}"),
-        RuntimeValue::Map(m) => format!("⟨map({})⟩", m.len()),
-        RuntimeValue::ScriptDecorator { .. } => "⟨decorator⟩".into(),
-    }
-}
-
-/// Returns the keyword string for a [`DeclKind`].
-fn decl_kw(kind: &DeclKind) -> &'static str {
-    match kind {
-        DeclKind::Global => "global",
-        DeclKind::Constant => "const",
-        DeclKind::Variable => "let",
-    }
-}
-
-/// Produces a one-line decorator annotation string, e.g. `@voiced @id(…)`.
-fn decorator_line(decorators: &[crate::parser::ast::Decorator]) -> String {
-    decorators
-        .iter()
-        .map(|d| format!("@{}", d.name()))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Returns a compact label for a [`MatchPattern`] arm.
-fn arm_pattern_label(pattern: &MatchPattern) -> String {
-    match pattern {
-        MatchPattern::Wildcard => "_".into(),
-        MatchPattern::Value(inner) => truncate(&ast_summary(inner), 20),
-    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -806,7 +704,10 @@ mod tests {
         )]))
         .to_mermaid();
         assert!(mmd.contains("let health"), "assign node must show var name");
-        assert!(mmd.contains(":::assign"), "assign node must have assign class");
+        assert!(
+            mmd.contains(":::assign"),
+            "assign node must have assign class"
+        );
     }
 
     #[test]

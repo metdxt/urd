@@ -19,6 +19,7 @@
 pub mod analysis;
 pub mod dot;
 pub mod mermaid;
+mod render_common;
 pub mod sequence;
 
 use std::collections::HashMap;

@@ -29,7 +29,7 @@ use crate::parser::ast::{Ast, AstContent, MatchArm, MatchPattern, TypeAnnotation
 use crate::runtime::value::RuntimeValue;
 
 use super::AnalysisError;
-use super::context::AnalysisContext;
+use super::context::{AnalysisContext, ScopeStack, extract_decl_name};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -38,7 +38,8 @@ use super::context::AnalysisContext;
 /// Run the exhaustiveness pass over `ast` and return any diagnostics found.
 pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     let mut errors: Vec<AnalysisError> = Vec::new();
-    check_node(ast, ctx, ast.span(), &mut errors);
+    let mut scope = ScopeStack::new(&ctx.top_level_vars);
+    check_node(ast, ctx, ast.span(), &mut scope, &mut errors);
     errors
 }
 
@@ -50,6 +51,7 @@ fn check_node(
     ast: &Ast,
     ctx: &AnalysisContext,
     parent_span: SimpleSpan,
+    scope: &mut ScopeStack,
     errors: &mut Vec<AnalysisError>,
 ) {
     // Use the current node's span when it is non-zero; otherwise inherit the
@@ -66,22 +68,28 @@ fn check_node(
     match ast.content() {
         // ── Match: check this node then recurse into arm bodies ───────────
         AstContent::Match { scrutinee, arms } => {
-            check_match(scrutinee, arms, ctx, span, errors);
+            check_match(scrutinee, arms, ctx, span, scope, errors);
 
             for arm in arms.iter() {
-                check_node(&arm.body, ctx, span, errors);
+                scope.push();
+                check_node(&arm.body, ctx, span, scope, errors);
+                scope.pop();
             }
         }
 
         // ── Structural nodes that may contain nested matches ──────────────
         AstContent::Block(stmts) => {
+            scope.push();
             for stmt in stmts {
-                check_node(stmt, ctx, span, errors);
+                check_node(stmt, ctx, span, scope, errors);
             }
+            scope.pop();
         }
 
         AstContent::LabeledBlock { block, .. } => {
-            check_node(block, ctx, ast.span(), errors);
+            scope.push();
+            check_node(block, ctx, ast.span(), scope, errors);
+            scope.pop();
         }
 
         AstContent::If {
@@ -89,82 +97,98 @@ fn check_node(
             then_block,
             else_block,
         } => {
-            check_node(condition, ctx, span, errors);
-            check_node(then_block, ctx, span, errors);
+            check_node(condition, ctx, span, scope, errors);
+            scope.push();
+            check_node(then_block, ctx, span, scope, errors);
+            scope.pop();
             if let Some(eb) = else_block {
-                check_node(eb, ctx, span, errors);
+                scope.push();
+                check_node(eb, ctx, span, scope, errors);
+                scope.pop();
             }
         }
 
         AstContent::Menu { options } => {
             for opt in options {
-                check_node(opt, ctx, span, errors);
+                check_node(opt, ctx, span, scope, errors);
             }
         }
 
         AstContent::MenuOption { content, .. } => {
-            check_node(content, ctx, span, errors);
+            scope.push();
+            check_node(content, ctx, span, scope, errors);
+            scope.pop();
         }
 
-        AstContent::Declaration { decl_defs, .. } => {
-            check_node(decl_defs, ctx, span, errors);
+        AstContent::Declaration {
+            decl_name,
+            type_annotation,
+            decl_defs,
+            ..
+        } => {
+            if let Some(ann) = type_annotation
+                && let Some(var_name) = extract_decl_name(decl_name)
+            {
+                scope.declare(var_name, ann.clone());
+            }
+            check_node(decl_defs, ctx, span, scope, errors);
         }
 
         AstContent::BinOp { left, right, .. } => {
-            check_node(left, ctx, span, errors);
-            check_node(right, ctx, span, errors);
+            check_node(left, ctx, span, scope, errors);
+            check_node(right, ctx, span, scope, errors);
         }
 
         AstContent::UnaryOp { expr, .. } => {
-            check_node(expr, ctx, span, errors);
+            check_node(expr, ctx, span, scope, errors);
         }
 
         AstContent::Call { func_path, params } => {
-            check_node(func_path, ctx, span, errors);
-            check_node(params, ctx, span, errors);
+            check_node(func_path, ctx, span, scope, errors);
+            check_node(params, ctx, span, scope, errors);
         }
 
         AstContent::Return { value: Some(v) } => {
-            check_node(v, ctx, span, errors);
+            check_node(v, ctx, span, scope, errors);
         }
 
         AstContent::ExprList(exprs) => {
             for e in exprs {
-                check_node(e, ctx, span, errors);
+                check_node(e, ctx, span, scope, errors);
             }
         }
 
         AstContent::List(items) => {
             for item in items {
-                check_node(item, ctx, span, errors);
+                check_node(item, ctx, span, scope, errors);
             }
         }
 
         AstContent::Map(pairs) => {
             for (k, v) in pairs {
-                check_node(k, ctx, span, errors);
-                check_node(v, ctx, span, errors);
+                check_node(k, ctx, span, scope, errors);
+                check_node(v, ctx, span, scope, errors);
             }
         }
 
         AstContent::Subscript { object, key } => {
-            check_node(object, ctx, span, errors);
-            check_node(key, ctx, span, errors);
+            check_node(object, ctx, span, scope, errors);
+            check_node(key, ctx, span, scope, errors);
         }
 
         AstContent::SubscriptAssign { object, key, value } => {
-            check_node(object, ctx, span, errors);
-            check_node(key, ctx, span, errors);
-            check_node(value, ctx, span, errors);
+            check_node(object, ctx, span, scope, errors);
+            check_node(key, ctx, span, scope, errors);
+            check_node(value, ctx, span, scope, errors);
         }
 
         AstContent::Dialogue { speakers, content } => {
-            check_node(speakers, ctx, span, errors);
-            check_node(content, ctx, span, errors);
+            check_node(speakers, ctx, span, scope, errors);
+            check_node(content, ctx, span, scope, errors);
         }
 
         AstContent::DecoratorDef { body, .. } => {
-            check_node(body, ctx, span, errors);
+            check_node(body, ctx, span, scope, errors);
         }
 
         // Leaf nodes or nodes that cannot contain a Match.
@@ -187,6 +211,7 @@ fn check_match(
     arms: &[MatchArm],
     ctx: &AnalysisContext,
     span: SimpleSpan,
+    scope: &ScopeStack,
     errors: &mut Vec<AnalysisError>,
 ) {
     // A wildcard arm always makes the match exhaustive.
@@ -195,7 +220,7 @@ fn check_match(
     }
 
     // Attempt to resolve which enum is being matched.
-    let Some((enum_name, all_variants)) = resolve_enum(scrutinee, arms, ctx) else {
+    let Some((enum_name, all_variants)) = resolve_enum(scrutinee, arms, ctx, scope) else {
         // Could not identify the enum; skip (best-effort, no false positives).
         return;
     };
@@ -240,9 +265,10 @@ fn resolve_enum<'a>(
     scrutinee: &Ast,
     arms: &[MatchArm],
     ctx: &'a AnalysisContext,
+    scope: &ScopeStack,
 ) -> Option<(String, &'a Vec<String>)> {
     // Strategy 1: scrutinee is a typed variable with a Named annotation.
-    if let Some((name, variants)) = resolve_via_scrutinee(scrutinee, ctx) {
+    if let Some((name, variants)) = resolve_via_scrutinee(scrutinee, ctx, scope) {
         return Some((name, variants));
     }
 
@@ -251,13 +277,20 @@ fn resolve_enum<'a>(
 }
 
 /// Try to resolve the enum from the scrutinee's declared type.
+///
+/// Checks the local `scope` first (for variables declared inside blocks),
+/// then falls back to `ctx.top_level_vars`.
 fn resolve_via_scrutinee<'a>(
     scrutinee: &Ast,
     ctx: &'a AnalysisContext,
+    scope: &ScopeStack,
 ) -> Option<(String, &'a Vec<String>)> {
     let var_name = single_ident_path(scrutinee)?;
 
-    let ann = ctx.top_level_vars.get(var_name)?;
+    // Try local scope first, then fall back to top-level vars.
+    let ann = scope
+        .lookup(var_name)
+        .or_else(|| ctx.top_level_vars.get(var_name))?;
 
     let enum_name = match ann {
         TypeAnnotation::Named(path) if path.len() == 1 => &path[0],
@@ -270,26 +303,56 @@ fn resolve_via_scrutinee<'a>(
 
 /// Try to resolve the enum by looking at the pattern names.
 ///
-/// Collects every single-segment `IdentPath` pattern, then finds the unique
-/// enum in `ctx.enums` whose variant list is a superset of those names.
+/// Uses three sub-strategies in order:
+///
+/// **Strategy 2a** – If ALL patterns are qualified 2-segment paths sharing the
+/// same prefix (e.g. `Dir.North`, `Dir.South`) and that prefix matches an enum
+/// name in `ctx.enums`, resolve directly.
+///
+/// **Strategy 2b** – Collects every variant name from the patterns (last
+/// segment for qualified, only segment for bare) and finds the unique enum in
+/// `ctx.enums` whose variant list is a superset of those names.
 fn resolve_via_patterns<'a>(
     arms: &[MatchArm],
     ctx: &'a AnalysisContext,
 ) -> Option<(String, &'a Vec<String>)> {
-    let pattern_names: Vec<&str> = arms
+    // Collect (optional_prefix, variant_name) pairs from each pattern.
+    let pairs: Vec<(Option<&str>, &str)> = arms
         .iter()
         .filter_map(|arm| {
             if let MatchPattern::Value(ast) = &arm.pattern {
-                extract_variant_name(ast)
+                match ast.content() {
+                    AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => {
+                        Some((None, path[0].as_str()))
+                    }
+                    AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 2 => {
+                        Some((Some(path[0].as_str()), path[1].as_str()))
+                    }
+                    _ => None,
+                }
             } else {
                 None
             }
         })
         .collect();
 
-    if pattern_names.is_empty() {
+    if pairs.is_empty() {
         return None;
     }
+
+    // Strategy 2a: all patterns share a qualified prefix that matches an enum.
+    if let Some((Some(first_prefix), _)) = pairs.first() {
+        let same_qualified_prefix = pairs
+            .iter()
+            .all(|(p, _)| p.is_some_and(|pfx| pfx == *first_prefix));
+        if same_qualified_prefix && let Some(variants) = ctx.enums.get(*first_prefix) {
+            return Some((first_prefix.to_string(), variants));
+        }
+    }
+
+    // Strategy 2b: find the unique enum whose variants are a superset of the
+    // pattern variant names.
+    let pattern_names: Vec<&str> = pairs.iter().map(|(_, v)| *v).collect();
 
     let mut found: Option<(String, &Vec<String>)> = None;
 
@@ -325,9 +388,22 @@ fn single_ident_path(ast: &Ast) -> Option<&str> {
     }
 }
 
-/// If `ast` is a `Value(IdentPath([variant]))`, return the variant name.
+/// Extract the variant name from a pattern AST node.
+///
+/// Handles both bare patterns (`Happy` → `IdentPath(["Happy"])`) and qualified
+/// patterns (`Dir.North` → `IdentPath(["Dir", "North"])`).  In both cases the
+/// *last* segment is the variant name.
 fn extract_variant_name(ast: &Ast) -> Option<&str> {
-    single_ident_path(ast)
+    match ast.content() {
+        AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => {
+            Some(path[0].as_str())
+        }
+        // Qualified pattern: e.g. Dir.North → extract "North"
+        AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 2 => {
+            Some(path[1].as_str())
+        }
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +414,7 @@ fn extract_variant_name(ast: &Ast) -> Option<&str> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{MatchArm, MatchPattern};
+    use crate::parser::ast::{DeclKind, MatchArm, MatchPattern};
     use crate::runtime::value::RuntimeValue;
 
     // ── helpers ──────────────────────────────────────────────────────────────
@@ -359,6 +435,20 @@ mod tests {
 
     fn ident_path(name: &str) -> Ast {
         Ast::value(RuntimeValue::IdentPath(vec![name.to_owned()]))
+    }
+
+    fn qualified_ident_path(prefix: &str, variant: &str) -> Ast {
+        Ast::value(RuntimeValue::IdentPath(vec![
+            prefix.to_owned(),
+            variant.to_owned(),
+        ]))
+    }
+
+    fn qualified_value_arm(prefix: &str, variant: &str, body: Ast) -> MatchArm {
+        MatchArm::new(
+            MatchPattern::Value(qualified_ident_path(prefix, variant)),
+            body,
+        )
     }
 
     fn value_arm(variant: &str, body: Ast) -> MatchArm {
@@ -659,6 +749,148 @@ mod tests {
                 assert_eq!(span.end, 0);
             }
             other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    // ── Gap 1: locally typed variable is checked ─────────────────────────
+
+    #[test]
+    fn locally_typed_variable_is_checked() {
+        // The enum is known globally, but the variable is declared inside a
+        // label block with a type annotation — not in top_level_vars.
+        let ctx = make_ctx(&[("Mood", &["Happy", "Sad"])], &[]);
+
+        let decl = Ast::typed_decl(
+            DeclKind::Variable,
+            ident_path("mood"),
+            TypeAnnotation::Named(vec!["Mood".to_owned()]),
+            qualified_ident_path("Mood", "Happy"),
+        );
+
+        let scrutinee = ident_path("mood");
+        let arms = vec![value_arm("Happy", return_block())]; // "Sad" missing
+        let match_node = Ast::match_stmt(scrutinee, arms);
+
+        let label = Ast::labeled_block("scene".to_owned(), Ast::block(vec![decl, match_node]));
+        let root = Ast::block(vec![label]);
+        let errors = check(&root, &ctx);
+
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::NonExhaustiveMatch {
+                enum_name,
+                missing_variants,
+                ..
+            } => {
+                assert_eq!(enum_name, "Mood");
+                assert_eq!(missing_variants, &["Sad".to_owned()]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    // ── Gap 2: qualified patterns ────────────────────────────────────────
+
+    #[test]
+    fn qualified_pattern_variants_are_handled() {
+        let ctx = make_ctx(&[("Dir", &["North", "South", "East", "West"])], &[]);
+        let scrutinee = ident_path("d");
+        let arms = vec![
+            qualified_value_arm("Dir", "North", return_block()),
+            qualified_value_arm("Dir", "South", return_block()),
+            qualified_value_arm("Dir", "East", return_block()),
+            // "West" missing
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::NonExhaustiveMatch {
+                enum_name,
+                missing_variants,
+                ..
+            } => {
+                assert_eq!(enum_name, "Dir");
+                assert_eq!(missing_variants, &["West".to_owned()]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn qualified_pattern_with_all_variants_is_ok() {
+        let ctx = make_ctx(&[("Dir", &["North", "South", "East", "West"])], &[]);
+        let scrutinee = ident_path("d");
+        let arms = vec![
+            qualified_value_arm("Dir", "North", return_block()),
+            qualified_value_arm("Dir", "South", return_block()),
+            qualified_value_arm("Dir", "East", return_block()),
+            qualified_value_arm("Dir", "West", return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+
+        assert!(
+            errors.is_empty(),
+            "all variants covered — no error expected, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_qualified_and_bare_patterns() {
+        let ctx = make_ctx(&[("Dir", &["North", "South", "East", "West"])], &[]);
+        let scrutinee = ident_path("d");
+        let arms = vec![
+            qualified_value_arm("Dir", "North", return_block()),
+            value_arm("South", return_block()),
+            // "East" and "West" missing
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::NonExhaustiveMatch {
+                enum_name,
+                missing_variants,
+                ..
+            } => {
+                assert_eq!(enum_name, "Dir");
+                let mut missing = missing_variants.clone();
+                missing.sort();
+                assert_eq!(missing, vec!["East", "West"]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn qualified_pattern_prefix_resolves_enum() {
+        // All patterns share the prefix "Dir" which matches the enum name.
+        // This tests Strategy 2a (qualified prefix resolution).
+        let ctx = make_ctx(&[("Dir", &["North", "South", "East", "West"])], &[]);
+        let scrutinee = ident_path("d");
+        let arms = vec![
+            qualified_value_arm("Dir", "North", return_block()),
+            qualified_value_arm("Dir", "South", return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::NonExhaustiveMatch {
+                enum_name,
+                missing_variants,
+                ..
+            } => {
+                assert_eq!(enum_name, "Dir");
+                let mut missing = missing_variants.clone();
+                missing.sort();
+                assert_eq!(missing, vec!["East", "West"]);
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 }

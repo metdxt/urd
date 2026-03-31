@@ -110,18 +110,15 @@ fn check_decorator_known(
     Ok(())
 }
 
-// ─── Vm ──────────────────────────────────────────────────────────────────────
+// ─── VmState ─────────────────────────────────────────────────────────────────
 
-/// The Urd virtual machine.
+/// Mutable execution state of the VM.
 ///
-/// The VM owns a compiled [`IrGraph`] and an [`Environment`], and steps
-/// through the graph one observable event at a time when [`Vm::next`] is
-/// called.  Internal nodes are processed silently without returning to the
-/// caller.
+/// Separated from the immutable [`IrGraph`] so the borrow checker can verify
+/// that reading graph nodes never aliases the mutable state (cursor, env,
+/// call stack, etc.).
 #[derive(Debug)]
-pub struct Vm {
-    /// The compiled IR graph.
-    graph: IrGraph,
+struct VmState {
     /// The node currently being processed.
     cursor: NodeId,
     /// The runtime variable environment.
@@ -133,6 +130,30 @@ pub struct Vm {
     pending_choice: Option<NodeId>,
     /// Registry of named decorator handlers.
     registry: DecoratorRegistry,
+}
+
+// ─── Vm ──────────────────────────────────────────────────────────────────────
+
+/// The Urd virtual machine.
+///
+/// The VM owns a compiled [`IrGraph`] (immutable during execution) and a
+/// [`VmState`] (mutable), and steps through the graph one observable event
+/// at a time when [`Vm::next`] is called.  Internal nodes are processed
+/// silently without returning to the caller.
+///
+/// Splitting the struct this way lets the borrow checker prove that reading
+/// nodes from the graph never aliases the mutable cursor / environment /
+/// call-stack state — no `unsafe` required.
+#[derive(Debug)]
+pub struct Vm {
+    /// The compiled IR graph (immutable during execution).
+    graph: IrGraph,
+    /// Pre-built map from label name → the `next` field of the matching
+    /// [`IrNodeKind::ExitScope`] node. Replaces the former O(n) scan in
+    /// `find_exit_scope_next`.
+    exit_scope_map: HashMap<String, NodeId>,
+    /// All mutable execution state.
+    state: VmState,
 }
 
 impl Vm {
@@ -197,14 +218,28 @@ impl Vm {
             );
         }
 
+        // Pre-build the exit-scope lookup map (label → continuation NodeId).
+        // This replaces the former O(n) linear scan done on every EnterScope.
+        let exit_scope_map: HashMap<String, NodeId> = graph
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.kind {
+                IrNodeKind::ExitScope { label, next } => Some((label.clone(), *next)),
+                _ => None,
+            })
+            .collect();
+
         let cursor = graph.entry;
         Ok(Vm {
             graph,
-            cursor,
-            env,
-            call_stack: Vec::new(),
-            pending_choice: None,
-            registry,
+            exit_scope_map,
+            state: VmState {
+                cursor,
+                env,
+                call_stack: Vec::new(),
+                pending_choice: None,
+                registry,
+            },
         })
     }
 
@@ -216,27 +251,23 @@ impl Vm {
     /// Returns `None` when the script has ended.
     #[allow(clippy::collapsible_if)]
     pub fn next(&mut self, choice: Option<usize>) -> Option<Result<Event, VmError>> {
+        // Split borrows: the graph and exit-scope map are immutable for the
+        // entire loop, while the state (cursor, env, call-stack, …) is mutated
+        // freely.  This lets the borrow checker verify the invariant without
+        // any `unsafe` code.
+        let graph = &self.graph;
+        let exit_scope_map = &self.exit_scope_map;
+        let state = &mut self.state;
+
         loop {
             // NODE_END sentinel → treat as End.
-            if self.cursor == NODE_END {
+            if state.cursor == NODE_END {
                 return None;
             }
 
-            let node_id = self.cursor;
+            let node_id = state.cursor;
 
-            // We need to read from self.graph while also mutating self.cursor,
-            // self.env, etc.  Rather than cloning the entire IrNodeKind, we use
-            // a raw pointer to the node kind, which is safe because graph.nodes
-            // is never resized during execution.
-            let node_kind: &IrNodeKind = {
-                let node = self.graph.nodes.get(node_id.as_index())?;
-                // SAFETY: `self.graph.nodes` is a Vec that is never pushed to or
-                // truncated during VM execution, so the reference stays valid
-                // for the duration of the match arm below.
-                // FIXME: replace with a safe split-borrow pattern once the graph is
-                // behind an inner-mutability wrapper so the compiler can verify the invariant.
-                unsafe { &*(&node.kind as *const IrNodeKind) }
-            };
+            let node_kind = &graph.nodes.get(node_id.as_index())?.kind;
 
             match node_kind {
                 // ── Terminal ─────────────────────────────────────────────────
@@ -249,7 +280,7 @@ impl Vm {
 
                 // ── Nop / merge point ────────────────────────────────────────
                 IrNodeKind::Nop { next } => {
-                    self.cursor = *next;
+                    state.cursor = *next;
                 }
 
                 // ── Variable assignment ──────────────────────────────────────
@@ -259,40 +290,35 @@ impl Vm {
                     expr,
                     next,
                 } => {
-                    // Clone minimal data so we can release the graph borrow.
-                    let var = var.clone();
-                    let scope = scope.clone();
-                    let next_id = *next;
-                    let value = match eval_expr(expr, &self.env) {
+                    let value = match eval_expr(expr, &state.env) {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
                     };
-                    if let Err(e) = self.env.set(&var, value, &scope) {
+                    if let Err(e) = state.env.set(var, value, scope) {
                         return Some(Err(e));
                     }
-                    self.cursor = next_id;
+                    state.cursor = *next;
                 }
 
                 // ── Side-effecting expression ────────────────────────────────
                 IrNodeKind::Eval { expr, next } => {
-                    let next_id = *next;
-                    // Clone the expr to release the graph borrow before we
-                    // take &mut self.env in eval_subscript_assign.
-                    let expr_cloned = expr.clone();
-                    match expr_cloned.content() {
+                    // With the graph/state split, `expr` borrows from `graph`
+                    // and `state.env` is a separate struct — no clone needed.
+                    match expr.content() {
                         AstContent::SubscriptAssign { object, key, value } => {
-                            let (obj, k, v) = (*object.clone(), *key.clone(), *value.clone());
-                            if let Err(e) = eval_subscript_assign(&obj, &k, &v, &mut self.env) {
+                            if let Err(e) =
+                                eval_subscript_assign(object, key, value, &mut state.env)
+                            {
                                 return Some(Err(e));
                             }
                         }
                         _ => {
-                            if let Err(e) = eval_expr(&expr_cloned, &self.env) {
+                            if let Err(e) = eval_expr(expr, &state.env) {
                                 return Some(Err(e));
                             }
                         }
                     }
-                    self.cursor = next_id;
+                    state.cursor = *next;
                 }
 
                 // ── Conditional branch ───────────────────────────────────────
@@ -301,15 +327,14 @@ impl Vm {
                     then_node,
                     else_node,
                 } => {
-                    let (then_id, else_id) = (*then_node, *else_node);
-                    let cond_val = match eval_expr(condition, &self.env) {
+                    let cond_val = match eval_expr(condition, &state.env) {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
                     };
-                    self.cursor = if is_truthy(&cond_val) {
-                        then_id
+                    state.cursor = if is_truthy(&cond_val) {
+                        *then_node
                     } else {
-                        else_id
+                        *else_node
                     };
                 }
 
@@ -319,49 +344,43 @@ impl Vm {
                     arms,
                     default,
                 } => {
-                    let scrutinee_val = match eval_expr(scrutinee, &self.env) {
+                    let scrutinee_val = match eval_expr(scrutinee, &state.env) {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
                     };
 
-                    // Clone arm data so the graph borrow is no longer needed
-                    // while we update self.cursor.
-                    let arms_data: Vec<(MatchPattern, NodeId)> =
-                        arms.iter().map(|a| (a.pattern.clone(), a.target)).collect();
-                    let default_target = *default;
-
                     let mut matched = false;
-                    for (pattern, target) in &arms_data {
-                        let is_match = match pattern {
+                    for arm in arms {
+                        let is_match = match &arm.pattern {
                             MatchPattern::Wildcard => true,
-                            MatchPattern::Value(pat_ast) => match eval_expr(pat_ast, &self.env) {
+                            MatchPattern::Value(pat_ast) => match eval_expr(pat_ast, &state.env) {
                                 Ok(pat_val) => values_equal(&scrutinee_val, &pat_val),
                                 Err(_) => false,
                             },
                         };
                         if is_match {
-                            self.cursor = *target;
+                            state.cursor = arm.target;
                             matched = true;
                             break;
                         }
                     }
 
                     if !matched {
-                        self.cursor = default_target.unwrap_or(NODE_END);
+                        state.cursor = default.unwrap_or(NODE_END);
                     }
                 }
 
                 // ── Unconditional jump ───────────────────────────────────────
                 IrNodeKind::Jump { target } => {
                     // Jump does NOT push a call frame — it is a tail transfer.
-                    self.cursor = *target;
+                    state.cursor = *target;
                 }
 
                 // ── Return ───────────────────────────────────────────────────
                 IrNodeKind::Return { value } => {
                     // Evaluate return value first (before popping the frame).
                     let return_val = if let Some(val_ast) = value {
-                        match eval_expr(val_ast, &self.env) {
+                        match eval_expr(val_ast, &state.env) {
                             Ok(v) => Some(v),
                             Err(e) => return Some(Err(e)),
                         }
@@ -369,20 +388,20 @@ impl Vm {
                         None
                     };
 
-                    match self.call_stack.pop() {
+                    match state.call_stack.pop() {
                         Some(frame) => {
                             // Unwind any extra scopes pushed since the call.
-                            while self.env.depth() > frame.scope_depth {
-                                self.env.pop_scope();
+                            while state.env.depth() > frame.scope_depth {
+                                state.env.pop_scope();
                             }
                             // Store return value if the call frame has a binding.
                             if let (Some(var_name), Some(val)) = (&frame.assign_to_var, return_val)
                             {
-                                if let Err(e) = self.env.set(var_name, val, &DeclKind::Variable) {
+                                if let Err(e) = state.env.set(var_name, val, &DeclKind::Variable) {
                                     return Some(Err(e));
                                 }
                             }
-                            self.cursor = frame.return_cursor;
+                            state.cursor = frame.return_cursor;
                         }
                         None => return None, // No frame → script ends.
                     }
@@ -400,55 +419,49 @@ impl Vm {
                 // ExitScope (on fall-through) and Return (on explicit return) both
                 // pop the LetCall frame and land at `next` (the call-site continuation).
                 IrNodeKind::LetCall { var, target, next } => {
-                    let var_name = var.clone();
-                    let target_id = *target;
-                    let next_id = *next;
-
                     // Resolve body_entry: if the target is an EnterScope node,
                     // jump past it into the body directly.
-                    let body_entry =
-                        match self.graph.nodes.get(target_id.as_index()).map(|n| &n.kind) {
-                            Some(IrNodeKind::EnterScope { next: body, .. }) => *body,
-                            _ => target_id, // fallback: jump to target as-is
-                        };
+                    let body_entry = match graph.nodes.get(target.as_index()).map(|n| &n.kind) {
+                        Some(IrNodeKind::EnterScope { next: body, .. }) => *body,
+                        _ => *target, // fallback: jump to target as-is
+                    };
 
-                    let assign = if var_name.is_empty() {
+                    let assign = if var.is_empty() {
                         None
                     } else {
-                        Some(var_name)
+                        Some(var.clone())
                     };
 
                     // Push a scope to match the eventual ExitScope's pop.
-                    self.env.push_scope();
-                    self.call_stack.push(CallFrame {
-                        return_cursor: next_id,
-                        scope_depth: self.env.depth() - 1,
+                    state.env.push_scope();
+                    state.call_stack.push(CallFrame {
+                        return_cursor: *next,
+                        scope_depth: state.env.depth() - 1,
                         assign_to_var: assign,
                     });
-                    self.cursor = body_entry;
+                    state.cursor = body_entry;
                 }
 
                 // ── Enter labeled-block scope ────────────────────────────────
                 IrNodeKind::EnterScope { label, next } => {
-                    let label_name = label.clone();
-                    let body_start = *next;
+                    // O(1) lookup via pre-built map instead of O(n) scan.
+                    let return_cursor = exit_scope_map
+                        .get(label.as_str())
+                        .copied()
+                        .unwrap_or(NODE_END);
 
-                    // Find the continuation after the matching ExitScope so
-                    // that Return inside this block jumps past the whole block.
-                    let return_cursor = self.find_exit_scope_next(&label_name);
-
-                    self.env.push_scope();
-                    self.call_stack.push(CallFrame {
+                    state.env.push_scope();
+                    state.call_stack.push(CallFrame {
                         return_cursor,
-                        scope_depth: self.env.depth() - 1,
+                        scope_depth: state.env.depth() - 1,
                         assign_to_var: None,
                     });
-                    self.cursor = body_start;
+                    state.cursor = *next;
                 }
 
                 // ── Exit labeled-block scope ─────────────────────────────────
                 IrNodeKind::ExitScope { .. } => {
-                    self.env.pop_scope();
+                    state.env.pop_scope();
                     // Pop the matching call frame (pushed by either EnterScope
                     // on normal fall-through, or LetCall on a subroutine call).
                     // Use the frame's `return_cursor` rather than ExitScope's
@@ -457,13 +470,13 @@ impl Vm {
                     // LetCall node itself.
                     //
                     // For plain EnterScope fall-through, frame.return_cursor ==
-                    // ExitScope.next (both set by find_exit_scope_next), so
-                    // behaviour is unchanged.
-                    let next_id = match self.call_stack.pop() {
+                    // ExitScope.next (both set by exit_scope_map), so behaviour
+                    // is unchanged.
+                    let next_id = match state.call_stack.pop() {
                         Some(frame) => frame.return_cursor,
                         None => NODE_END,
                     };
-                    self.cursor = next_id;
+                    state.cursor = next_id;
                 }
 
                 // ── Enum declaration ─────────────────────────────────────────
@@ -472,11 +485,8 @@ impl Vm {
                     variants,
                     next,
                 } => {
-                    let name = name.clone();
-                    let variants = variants.clone();
-                    let next_id = *next;
-                    self.env.define_enum(name, variants);
-                    self.cursor = next_id;
+                    state.env.define_enum(name.clone(), variants.clone());
+                    state.cursor = *next;
                 }
 
                 // ── Script-defined decorator registration ────────────────────
@@ -492,17 +502,15 @@ impl Vm {
                     body,
                     next,
                 } => {
-                    let name = name.clone();
-                    let next_id = *next;
                     let decorator_val = RuntimeValue::ScriptDecorator {
                         event_constraint: event_constraint.clone(),
                         params: params.clone(),
                         body: Box::new(body.clone()),
                     };
-                    if let Err(e) = self.env.set(&name, decorator_val, &DeclKind::Variable) {
+                    if let Err(e) = state.env.set(name, decorator_val, &DeclKind::Variable) {
                         return Some(Err(e));
                     }
-                    self.cursor = next_id;
+                    state.cursor = *next;
                 }
 
                 // ── Dialogue event ───────────────────────────────────────────
@@ -512,13 +520,11 @@ impl Vm {
                     decorators,
                     next,
                 } => {
-                    let next_id = *next;
-
-                    let speakers_vec = match eval_expr_list(speakers, &self.env) {
+                    let speakers_vec = match eval_expr_list(speakers, &state.env) {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
                     };
-                    let lines_vec = match eval_expr_list(lines, &self.env) {
+                    let lines_vec = match eval_expr_list(lines, &state.env) {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
                     };
@@ -526,16 +532,15 @@ impl Vm {
                     // Evaluate decorators and merge their fields.
                     // `apply_decorator` checks the env first (for script-defined
                     // decorators), then falls back to the Rust registry.
-                    let decorators_cloned: Vec<Decorator> = decorators.to_vec();
                     let mut fields: HashMap<String, RuntimeValue> = HashMap::new();
-                    for dec in &decorators_cloned {
-                        match apply_decorator(dec, &self.env, &self.registry, fields) {
+                    for dec in decorators {
+                        match apply_decorator(dec, &state.env, &state.registry, fields) {
                             Ok(new_fields) => fields = new_fields,
                             Err(e) => return Some(Err(e)),
                         }
                     }
 
-                    self.cursor = next_id;
+                    state.cursor = *next;
                     return Some(Ok(Event::Dialogue {
                         speakers: speakers_vec,
                         lines: lines_vec,
@@ -562,20 +567,20 @@ impl Vm {
                                 return Some(build_choice_event(
                                     options,
                                     decorators,
-                                    &self.env,
-                                    &self.registry,
+                                    &state.env,
+                                    &state.registry,
                                 ));
                             }
                             let entry = options[idx].entry;
-                            self.pending_choice = None;
-                            self.cursor = entry;
+                            state.pending_choice = None;
+                            state.cursor = entry;
                             // Continue loop — the choice selection itself is
                             // not an observable event.
                         }
 
                         // ── No choice provided ───────────────────────────────
                         None => {
-                            if self.pending_choice == Some(node_id) {
+                            if state.pending_choice == Some(node_id) {
                                 // Already waiting for a choice at this node — re-emit.
                                 log::warn!(
                                     "Choice at node {:?} is already pending; \
@@ -583,13 +588,13 @@ impl Vm {
                                     node_id
                                 );
                             } else {
-                                self.pending_choice = Some(node_id);
+                                state.pending_choice = Some(node_id);
                             }
                             return Some(build_choice_event(
                                 options,
                                 decorators,
-                                &self.env,
-                                &self.registry,
+                                &state.env,
+                                &state.registry,
                             ));
                         }
                     }
@@ -600,34 +605,12 @@ impl Vm {
 
     /// Returns a reference to the VM's current [`Environment`].
     pub fn env(&self) -> &Environment {
-        &self.env
+        &self.state.env
     }
 
     /// Returns a reference to the compiled [`IrGraph`].
     pub fn graph(&self) -> &IrGraph {
         &self.graph
-    }
-
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    /// Scan `graph.nodes` for the [`IrNodeKind::ExitScope`] node whose `label`
-    /// matches `label_name` and return its `next` field.
-    ///
-    /// This is used by [`IrNodeKind::EnterScope`] handling to determine the
-    /// correct `return_cursor` for the call frame so that [`IrNodeKind::Return`]
-    /// can jump past the entire labeled block.
-    ///
-    /// Falls back to [`NODE_END`] if no matching ExitScope is found.
-    #[allow(clippy::collapsible_if)]
-    fn find_exit_scope_next(&self, label_name: &str) -> NodeId {
-        for node in &self.graph.nodes {
-            if let IrNodeKind::ExitScope { label, next } = &node.kind {
-                if label == label_name {
-                    return *next;
-                }
-            }
-        }
-        NODE_END
     }
 }
 
@@ -899,7 +882,6 @@ fn build_choice_event(
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{
@@ -1048,9 +1030,9 @@ mod tests {
             "first next(None) should emit Choice, got {:?}",
             ev1
         );
-        let choice_node = vm.cursor;
+        let choice_node = vm.state.cursor;
         assert_eq!(
-            vm.pending_choice,
+            vm.state.pending_choice,
             Some(choice_node),
             "pending_choice must be set after first next(None)"
         );
@@ -1066,7 +1048,7 @@ mod tests {
         // Option 0's body has `let picked = 1` — internal, so the loop ends.
         let ev3 = vm.next(Some(0));
         assert!(
-            vm.pending_choice.is_none(),
+            vm.state.pending_choice.is_none(),
             "pending_choice must be cleared after valid choice"
         );
         // Option body has no dialogue → script ends → None.

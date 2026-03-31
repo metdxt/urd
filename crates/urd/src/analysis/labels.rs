@@ -5,7 +5,7 @@
 
 use crate::analysis::AnalysisError;
 use crate::analysis::context::AnalysisContext;
-use crate::parser::ast::{Ast, AstContent, MatchPattern};
+use crate::parser::ast::{Ast, AstContent, walk_ast};
 
 /// Run the label-resolution check over `ast`.
 ///
@@ -18,135 +18,35 @@ pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
 }
 
 fn check_node(node: &Ast, ctx: &AnalysisContext, errors: &mut Vec<AnalysisError>) {
-    match node.content() {
-        // ── Direct jump ──────────────────────────────────────────────
-        AstContent::Jump { label, .. } => {
+    walk_ast(node, &mut |n| {
+        match n.content() {
+            // ── Direct jump ──────────────────────────────────────────
             // Qualified labels (e.g. `inv.show_inventory`) are cross-module
             // references validated at compile time — skip them here since the
             // single-file analyser has no access to the imported label set.
-            if !label.contains('.') && !ctx.labels.contains(label) {
+            AstContent::Jump { label, .. }
+                if !label.contains('.') && !ctx.labels.contains(label) =>
+            {
                 errors.push(AnalysisError::UndefinedLabel {
                     label: label.clone(),
-                    span: node.span(),
+                    span: n.span(),
                 });
             }
-        }
 
-        // ── let name = jump target and return ────────────────────────
-        AstContent::LetCall { target, .. } => {
+            // ── let name = jump target and return ────────────────────
             // Same cross-module exemption as for Jump above.
-            if !target.contains('.') && !ctx.labels.contains(target) {
+            AstContent::LetCall { target, .. }
+                if !target.contains('.') && !ctx.labels.contains(target) =>
+            {
                 errors.push(AnalysisError::UndefinedLabel {
                     label: target.clone(),
-                    span: node.span(),
+                    span: n.span(),
                 });
             }
-        }
 
-        // ── Containers: recurse into children ────────────────────────
-        AstContent::Block(stmts) | AstContent::ExprList(stmts) | AstContent::List(stmts) => {
-            for stmt in stmts {
-                check_node(stmt, ctx, errors);
-            }
+            _ => {}
         }
-
-        AstContent::LabeledBlock { block, .. } => {
-            check_node(block, ctx, errors);
-        }
-
-        AstContent::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            check_node(condition, ctx, errors);
-            check_node(then_block, ctx, errors);
-            if let Some(eb) = else_block {
-                check_node(eb, ctx, errors);
-            }
-        }
-
-        AstContent::Match { scrutinee, arms } => {
-            check_node(scrutinee, ctx, errors);
-            for arm in arms {
-                if let MatchPattern::Value(v) = &arm.pattern {
-                    check_node(v, ctx, errors);
-                }
-                check_node(&arm.body, ctx, errors);
-            }
-        }
-
-        AstContent::Menu { options } => {
-            for opt in options {
-                check_node(opt, ctx, errors);
-            }
-        }
-
-        AstContent::MenuOption { content, .. } => {
-            check_node(content, ctx, errors);
-        }
-
-        AstContent::Declaration {
-            decl_name,
-            decl_defs,
-            ..
-        } => {
-            check_node(decl_name, ctx, errors);
-            check_node(decl_defs, ctx, errors);
-        }
-
-        AstContent::BinOp { left, right, .. } => {
-            check_node(left, ctx, errors);
-            check_node(right, ctx, errors);
-        }
-
-        AstContent::UnaryOp { expr, .. } => {
-            check_node(expr, ctx, errors);
-        }
-
-        AstContent::Call { func_path, params } => {
-            check_node(func_path, ctx, errors);
-            check_node(params, ctx, errors);
-        }
-
-        AstContent::Dialogue { speakers, content } => {
-            check_node(speakers, ctx, errors);
-            check_node(content, ctx, errors);
-        }
-
-        AstContent::DecoratorDef { body, .. } => {
-            check_node(body, ctx, errors);
-        }
-
-        AstContent::Return { value: Some(v) } => {
-            check_node(v, ctx, errors);
-        }
-
-        AstContent::Subscript { object, key } => {
-            check_node(object, ctx, errors);
-            check_node(key, ctx, errors);
-        }
-
-        AstContent::SubscriptAssign { object, key, value } => {
-            check_node(object, ctx, errors);
-            check_node(key, ctx, errors);
-            check_node(value, ctx, errors);
-        }
-
-        AstContent::Map(pairs) => {
-            for (k, v) in pairs {
-                check_node(k, ctx, errors);
-                check_node(v, ctx, errors);
-            }
-        }
-
-        // Leaf nodes that cannot contain a jump.
-        AstContent::Value(_)
-        | AstContent::Return { value: None }
-        | AstContent::EnumDecl { .. }
-        | AstContent::StructDecl { .. }
-        | AstContent::Import { .. } => {}
-    }
+    });
 }
 
 #[cfg(test)]

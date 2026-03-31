@@ -712,4 +712,88 @@ impl Ast {
     pub fn import(path: String, alias: String) -> Self {
         Self::new(AstContent::Import { path, alias })
     }
+
+    /// Returns references to all direct child [`Ast`] nodes contained in this node.
+    ///
+    /// This provides a single canonical enumeration of children, eliminating the
+    /// need for each analysis pass to hand-roll the same `match` over [`AstContent`]
+    /// variants.
+    pub fn children(&self) -> Vec<&Ast> {
+        match &self.content {
+            AstContent::Value(_)
+            | AstContent::Jump { .. }
+            | AstContent::LetCall { .. }
+            | AstContent::Import { .. }
+            | AstContent::EnumDecl { .. }
+            | AstContent::StructDecl { .. } => vec![],
+
+            AstContent::BinOp { left, right, .. } => vec![left, right],
+            AstContent::UnaryOp { expr, .. } => vec![expr],
+
+            AstContent::ExprList(items) | AstContent::Block(items) | AstContent::List(items) => {
+                items.iter().collect()
+            }
+
+            AstContent::Declaration {
+                decl_name,
+                decl_defs,
+                ..
+            } => vec![decl_name, decl_defs],
+
+            AstContent::Call { func_path, params } => vec![func_path, params],
+
+            AstContent::Map(pairs) => pairs.iter().flat_map(|(k, v)| [k, v]).collect(),
+
+            AstContent::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                let mut c = vec![condition.as_ref(), then_block.as_ref()];
+                if let Some(eb) = else_block {
+                    c.push(eb);
+                }
+                c
+            }
+
+            AstContent::LabeledBlock { block, .. } => vec![block],
+
+            AstContent::Dialogue { speakers, content } => vec![speakers, content],
+
+            AstContent::Menu { options } => options.iter().collect(),
+
+            AstContent::MenuOption { content, .. } => vec![content],
+
+            AstContent::Return { value } => value.iter().map(|v| v.as_ref()).collect(),
+
+            AstContent::Match { scrutinee, arms } => {
+                let mut c = vec![scrutinee.as_ref()];
+                for arm in arms {
+                    if let MatchPattern::Value(v) = &arm.pattern {
+                        c.push(v);
+                    }
+                    c.push(&arm.body);
+                }
+                c
+            }
+
+            AstContent::DecoratorDef { body, .. } => vec![body.as_ref()],
+
+            AstContent::Subscript { object, key } => vec![object, key],
+
+            AstContent::SubscriptAssign { object, key, value } => {
+                vec![object, key, value]
+            }
+        }
+    }
+}
+
+/// Recursively walks the AST tree depth-first, calling `visitor` on each node.
+///
+/// The visitor is called on the node *before* recursing into its children (pre-order).
+pub fn walk_ast<F: FnMut(&Ast)>(node: &Ast, visitor: &mut F) {
+    visitor(node);
+    for child in node.children() {
+        walk_ast(child, visitor);
+    }
 }
