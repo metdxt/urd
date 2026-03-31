@@ -6,7 +6,7 @@
 //! ## Visual language
 //!
 //! * Each `label` block appears as a **participant lifeline**.  Participants
-//!   are listed in compilation order (smallest entry [`NodeId`] first).
+//!   are listed in compilation order (smallest entry [`NodeIndex`] first).
 //! * `LetCall` nodes produce a solid call arrow (`->>`) to the callee lifeline
 //!   and a dashed return arrow (`-->>`) back to the caller.  The callee's body
 //!   is recursively expanded inline, surrounded by Mermaid `activate`/
@@ -16,7 +16,7 @@
 //! * `Dialogue` nodes are rendered as `Note over` annotations showing the
 //!   speaker and the first line of dialogue (truncated to 45 chars).
 //! * `Branch` nodes emit a `Note over` with the condition text and then
-//!   **follow the `else_node` branch** so that any code after the if/elif/else
+//!   **follow the `Else` branch** so that any code after the if/elif/else
 //!   block (where all branches converge to a merge `Nop`) is also emitted.
 //! * `Choice` nodes produce an `alt / else / end` block; each option body is
 //!   walked recursively (options typically end with a `Jump` or `Return` and
@@ -37,11 +37,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
+use petgraph::Direction;
+use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+
 use crate::parser::ast::{AstContent, Operator};
 use crate::runtime::value::RuntimeValue;
 
 use super::render_common::truncate;
-use super::{IrGraph, IrNodeKind, NODE_END, NodeId};
+use super::{IrEdge, IrGraph, IrNodeKind};
 
 // ─── Public surface ───────────────────────────────────────────────────────────
 
@@ -65,25 +69,23 @@ pub fn render_sequence(graph: &IrGraph) -> String {
     writeln!(out, "    autonumber").ok();
     writeln!(out).ok();
 
-    // Build reverse map: entry NodeId → label name (for Jump / LetCall targets).
-    let label_by_entry: HashMap<NodeId, String> = graph
+    // Build reverse map: entry NodeIndex → label name (for Jump / LetCall targets).
+    let label_by_entry: HashMap<NodeIndex, String> = graph
         .labels
         .iter()
         .map(|(name, &id)| (id, name.clone()))
         .collect();
 
-    // Sort labels by their entry NodeId (ascending = compilation order).
-    let mut sorted_labels: Vec<(&String, NodeId)> =
+    // Sort labels by their entry NodeIndex (ascending = compilation order).
+    let mut sorted_labels: Vec<(&String, NodeIndex)> =
         graph.labels.iter().map(|(name, &id)| (name, id)).collect();
-    sorted_labels.sort_by_key(|(_, id)| id.0);
+    sorted_labels.sort_by_key(|(_, id)| id.index());
 
     // Compute reachability so we only declare participants with real content.
     let reachable = super::analysis::reachable_nodes(graph);
     let clusters = super::analysis::compute_clusters(graph, &reachable);
 
     // Emit participant declarations only for labels whose clusters are non-empty.
-    // This also filters out the synthetic `_end` participant when it has no
-    // reachable content.
     for (name, _) in &sorted_labels {
         let has_content = clusters
             .get(name.as_str())
@@ -115,24 +117,30 @@ pub fn render_sequence(graph: &IrGraph) -> String {
 /// state (e.g. `visited`) to coexist.
 #[derive(Debug)]
 enum Action {
-    /// Transparent node — just advance the cursor to `next`.
-    Skip(NodeId),
+    /// Transparent node — just advance the cursor to the next node index.
+    Skip(Option<NodeIndex>),
     /// Terminal node — stop walking.
     Done,
     /// Emit a `Note over` annotation with the given text.
-    Note { text: String, next: NodeId },
+    Note {
+        text: String,
+        next: Option<NodeIndex>,
+    },
     /// Subroutine call via `LetCall`.
     Call {
         var: String,
         callee: String,
-        next: NodeId,
+        next: Option<NodeIndex>,
     },
     /// Unconditional fire-and-forget jump to a named label.
     Jump(String),
     /// Conditional branch; we only need the else branch for sequence walking.
-    Branch { cond: String, else_id: NodeId },
+    Branch {
+        cond: String,
+        else_id: Option<NodeIndex>,
+    },
     /// Menu choice with labelled options.
-    Choice(Vec<(String, NodeId)>),
+    Choice(Vec<(String, Option<NodeIndex>)>),
 }
 
 // ─── Core walk ───────────────────────────────────────────────────────────────
@@ -150,7 +158,7 @@ enum Action {
 fn emit_label(
     label_name: &str,
     graph: &IrGraph,
-    label_by_entry: &HashMap<NodeId, String>,
+    label_by_entry: &HashMap<NodeIndex, String>,
     visited: &mut HashSet<String>,
     out: &mut String,
 ) -> bool {
@@ -165,7 +173,14 @@ fn emit_label(
     };
 
     writeln!(out, "    activate {}", pid(label_name)).ok();
-    walk(entry_id, label_name, graph, label_by_entry, visited, out);
+    walk(
+        Some(entry_id),
+        label_name,
+        graph,
+        label_by_entry,
+        visited,
+        out,
+    );
     true
 }
 
@@ -175,23 +190,25 @@ fn emit_label(
 /// `current_label` is the name of the participant currently on the "stack"
 /// (whose lifeline arrows are drawn from/to).
 fn walk(
-    mut cursor: NodeId,
+    mut cursor: Option<NodeIndex>,
     current_label: &str,
     graph: &IrGraph,
-    label_by_entry: &HashMap<NodeId, String>,
+    label_by_entry: &HashMap<NodeIndex, String>,
     visited: &mut HashSet<String>,
     out: &mut String,
 ) {
     let lid = pid(current_label);
     // Guard against cycles in the node graph (should not happen in well-formed
     // IR, but be defensive).
-    let mut seen: HashSet<NodeId> = HashSet::new();
+    let mut seen: HashSet<NodeIndex> = HashSet::new();
 
     loop {
-        if cursor == NODE_END || cursor.0 as usize >= graph.nodes.len() {
-            break;
-        }
-        if !seen.insert(cursor) {
+        let node_idx = match cursor {
+            None => break,
+            Some(idx) => idx,
+        };
+
+        if !seen.insert(node_idx) {
             // Cycle detected — bail out.
             break;
         }
@@ -199,7 +216,7 @@ fn walk(
         // Decode the current node into an Action, cloning all owned data out
         // so we release the shared borrow on `graph` before any mutable
         // borrows of `visited` / `out` occur.
-        let action = decode_node(graph, cursor, label_by_entry);
+        let action = decode_node(graph, node_idx, label_by_entry);
 
         match action {
             Action::Skip(next) => {
@@ -284,20 +301,32 @@ fn walk(
 /// graph so callers can release the shared borrow before mutating other state.
 fn decode_node(
     graph: &IrGraph,
-    cursor: NodeId,
-    label_by_entry: &HashMap<NodeId, String>,
+    node_idx: NodeIndex,
+    label_by_entry: &HashMap<NodeIndex, String>,
 ) -> Action {
-    let kind = &graph.nodes[cursor.0 as usize].kind;
+    /// Returns the `Next`-edge successor of `node_idx`, or `None`.
+    fn next_of(graph: &IrGraph, node_idx: NodeIndex) -> Option<NodeIndex> {
+        graph
+            .graph
+            .edges_directed(node_idx, Direction::Outgoing)
+            .find(|e| matches!(e.weight(), IrEdge::Next))
+            .map(|e| e.target())
+    }
+
+    let kind = match graph.graph.node_weight(node_idx) {
+        Some(k) => k,
+        None => return Action::Done,
+    };
 
     match kind {
         // ── Transparent / skip ────────────────────────────────────────────
-        IrNodeKind::Nop { next }
-        | IrNodeKind::Assign { next, .. }
-        | IrNodeKind::Eval { next, .. }
-        | IrNodeKind::DefineEnum { next, .. }
-        | IrNodeKind::DefineScriptDecorator { next, .. }
-        | IrNodeKind::EnterScope { next, .. }
-        | IrNodeKind::ExitScope { next, .. } => Action::Skip(*next),
+        IrNodeKind::Nop
+        | IrNodeKind::Assign { .. }
+        | IrNodeKind::Eval { .. }
+        | IrNodeKind::DefineEnum { .. }
+        | IrNodeKind::DefineScriptDecorator { .. }
+        | IrNodeKind::EnterScope { .. }
+        | IrNodeKind::ExitScope { .. } => Action::Skip(next_of(graph, node_idx)),
 
         // ── Terminal ──────────────────────────────────────────────────────
         IrNodeKind::End => Action::Done,
@@ -309,18 +338,12 @@ fn decode_node(
                 Some(ast) => format!("return {}", truncate(&ast_short(ast), 48)),
                 None => "return".to_string(),
             };
-            Action::Note {
-                text,
-                next: NODE_END,
-            }
+            Action::Note { text, next: None }
         }
 
         // ── Dialogue ──────────────────────────────────────────────────────
         IrNodeKind::Dialogue {
-            speakers,
-            lines,
-            next,
-            ..
+            speakers, lines, ..
         } => {
             let speaker = first_str(speakers);
             let line = first_str_from_list(lines);
@@ -329,56 +352,103 @@ fn decode_node(
             } else {
                 format!("{speaker}: \"{}\"", truncate(&line, 45))
             };
-            Action::Note { text, next: *next }
+            Action::Note {
+                text,
+                next: next_of(graph, node_idx),
+            }
         }
 
         // ── LetCall ───────────────────────────────────────────────────────
-        IrNodeKind::LetCall { var, target, next } => {
-            let callee = label_by_entry
-                .get(target)
+        IrNodeKind::LetCall { var } => {
+            let callee_idx = graph
+                .graph
+                .edges_directed(node_idx, Direction::Outgoing)
+                .find(|e| matches!(e.weight(), IrEdge::Call))
+                .map(|e| e.target());
+            let ret_idx = graph
+                .graph
+                .edges_directed(node_idx, Direction::Outgoing)
+                .find(|e| matches!(e.weight(), IrEdge::Ret))
+                .map(|e| e.target());
+
+            let callee = callee_idx
+                .and_then(|ci| label_by_entry.get(&ci))
                 .cloned()
-                .unwrap_or_else(|| format!("N{}", target.0));
+                .unwrap_or_else(|| {
+                    callee_idx
+                        .map(|ci| format!("N{}", ci.index()))
+                        .unwrap_or_else(|| "∅".to_string())
+                });
+
             Action::Call {
                 var: var.clone(),
                 callee,
-                next: *next,
+                next: ret_idx,
             }
         }
 
         // ── Jump ──────────────────────────────────────────────────────────
-        IrNodeKind::Jump { target } => {
-            let target_label = label_by_entry
-                .get(target)
+        IrNodeKind::Jump => {
+            let target_idx = graph
+                .graph
+                .edges_directed(node_idx, Direction::Outgoing)
+                .find(|e| matches!(e.weight(), IrEdge::Jump))
+                .map(|e| e.target());
+
+            let target_label = target_idx
+                .and_then(|ti| label_by_entry.get(&ti))
                 .cloned()
-                .unwrap_or_else(|| format!("N{}", target.0));
+                .unwrap_or_else(|| {
+                    target_idx
+                        .map(|ti| format!("N{}", ti.index()))
+                        .unwrap_or_else(|| "∅".to_string())
+                });
+
             Action::Jump(target_label)
         }
 
         // ── Branch ────────────────────────────────────────────────────────
-        IrNodeKind::Branch {
-            condition,
-            else_node,
-            ..
-        } => {
+        IrNodeKind::Branch { condition } => {
             let cond = truncate(&ast_short(condition), 48);
-            Action::Branch {
-                cond,
-                else_id: *else_node,
-            }
+            let else_id = graph
+                .graph
+                .edges_directed(node_idx, Direction::Outgoing)
+                .find(|e| matches!(e.weight(), IrEdge::Else))
+                .map(|e| e.target());
+            Action::Branch { cond, else_id }
         }
 
         // ── Choice ────────────────────────────────────────────────────────
         IrNodeKind::Choice { options, .. } => {
-            let opts: Vec<(String, NodeId)> = options
+            let opts: Vec<(String, Option<NodeIndex>)> = options
                 .iter()
-                .map(|o| (truncate(&o.label, 48), o.entry))
+                .enumerate()
+                .map(|(i, o)| {
+                    let entry = graph
+                        .graph
+                        .edges_directed(node_idx, Direction::Outgoing)
+                        .find(|e| {
+                            if let IrEdge::Option(j) = e.weight() {
+                                *j == i
+                            } else {
+                                false
+                            }
+                        })
+                        .map(|e| e.target());
+                    (truncate(&o.label, 48), entry)
+                })
                 .collect();
             Action::Choice(opts)
         }
 
         // ── Switch (rare in sequences — treat as a note) ──────────────────
-        IrNodeKind::Switch { default, .. } => {
-            let next = default.unwrap_or(NODE_END);
+        IrNodeKind::Switch { .. } => {
+            let next = graph
+                .graph
+                .edges_directed(node_idx, Direction::Outgoing)
+                .find(|e| matches!(e.weight(), IrEdge::Default))
+                .map(|e| e.target())
+                .or_else(|| next_of(graph, node_idx));
             Action::Note {
                 text: "match ⟨expr⟩".to_string(),
                 next,
@@ -396,28 +466,39 @@ fn decode_node(
 /// found in the opening chain.
 fn find_entry_label(graph: &IrGraph) -> String {
     let mut cursor = graph.entry;
-    for _ in 0..graph.nodes.len() + 1 {
-        if cursor == NODE_END || cursor.0 as usize >= graph.nodes.len() {
-            break;
-        }
-        match &graph.nodes[cursor.0 as usize].kind {
-            IrNodeKind::EnterScope { label, .. } => return label.clone(),
-            IrNodeKind::Nop { next }
-            | IrNodeKind::Assign { next, .. }
-            | IrNodeKind::Eval { next, .. }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. } => {
-                cursor = *next;
+
+    // We limit the walk to avoid infinite loops on pathological graphs.
+    for _ in 0..graph.graph.node_count() + 1 {
+        let idx = match cursor {
+            None => break,
+            Some(i) => i,
+        };
+
+        match graph.graph.node_weight(idx) {
+            Some(IrNodeKind::EnterScope { label, .. }) => return label.clone(),
+            Some(
+                IrNodeKind::Nop
+                | IrNodeKind::Assign { .. }
+                | IrNodeKind::Eval { .. }
+                | IrNodeKind::DefineEnum { .. }
+                | IrNodeKind::DefineScriptDecorator { .. },
+            ) => {
+                // Follow the Next edge.
+                cursor = graph
+                    .graph
+                    .edges_directed(idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Next))
+                    .map(|e| e.target());
             }
             _ => break,
         }
     }
 
-    // Fallback: pick whichever label has the smallest entry NodeId.
+    // Fallback: pick whichever label has the smallest entry NodeIndex.
     graph
         .labels
         .iter()
-        .min_by_key(|&(_, id)| id.0)
+        .min_by_key(|&(_, id)| id.index())
         .map(|(name, _)| name.clone())
         .unwrap_or_default()
 }

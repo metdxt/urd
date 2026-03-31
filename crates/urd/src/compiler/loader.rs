@@ -2,8 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+
 use crate::{
-    ir::{IrGraph, IrNodeKind, NODE_END, NodeId},
+    ir::{IrEdge, IrGraph, IrNodeKind},
     parser::ast::{Ast, AstContent},
 };
 
@@ -130,28 +133,26 @@ pub(super) fn collect_imports(
                 completed.insert(path.clone());
 
                 // Merge into our graph, namespacing all labels as "alias::label".
-                // Record the (offset-adjusted) module entry so we can chain its
-                // prologue (DefineEnum, global assignments, etc.) to run before
-                // the importing module's own code.
-                //
+                // `merge` returns an old→new NodeIndex map. We use it to translate
+                // the module's entry point into a NodeIndex valid in the merged graph.
                 // We skip the prologue entry when the module's entry node is an
                 // EnterScope (meaning the module contains only labels and no
                 // top-level statements). In that case there is nothing to run as
                 // a prologue, and jumping to the entry would execute the first
                 // label body unconditionally.
                 let module_entry = module_graph.entry;
-                let offset = state.graph.merge(module_graph, alias);
-                let adjusted_entry = NodeId(module_entry.0 + offset);
-                let entry_is_label = matches!(
-                    state
-                        .graph
-                        .nodes
-                        .get(adjusted_entry.as_index())
-                        .map(|n| &n.kind),
-                    Some(IrNodeKind::EnterScope { .. })
-                );
-                if !entry_is_label {
-                    state.import_prologues.push(adjusted_entry);
+                let index_map: HashMap<NodeIndex, NodeIndex> =
+                    state.graph.merge(module_graph, alias);
+                if let Some(old_entry) = module_entry {
+                    if let Some(&entry_idx) = index_map.get(&old_entry) {
+                        let entry_is_label = matches!(
+                            state.graph.graph.node_weight(entry_idx),
+                            Some(IrNodeKind::EnterScope { .. })
+                        );
+                        if !entry_is_label {
+                            state.import_prologues.push(entry_idx);
+                        }
+                    }
                 }
             } else {
                 // ── Symbol import ─────────────────────────────────────────────
@@ -164,24 +165,25 @@ pub(super) fn collect_imports(
                 //   2. Merge its graph into ours with an empty namespace so its
                 //      labels are stored as "::label_name" internally (users
                 //      never address those directly).
-                //   3. For each requested symbol, insert a direct label entry
-                //      under the user-specified alias pointing at the merged node.
+                //   3. For each requested symbol, look up "::original_name" in
+                //      the merged graph's labels map and insert the user alias.
 
                 // True cycle guard.
                 if in_progress.contains(path.as_str()) {
                     return Err(CompilerError::CircularImport(path.clone()));
                 }
 
-                // Helper: given the pre-merge label map and the post-merge
-                // offset, register each requested symbol alias into the graph.
-                let apply_aliases = |graph: &mut crate::ir::IrGraph,
-                                     orig_labels: &HashMap<String, NodeId>,
+                // Helper: after merging with empty namespace, labels from `other`
+                // live as "::label_name" in `state.graph.labels`. For each
+                // requested symbol, look up "::original_name" and register the
+                // user-specified alias directly in graph.labels.
+                let apply_aliases = |graph: &mut IrGraph,
                                      symbols: &[crate::parser::ast::ImportSymbol],
-                                     offset: u32| {
+                                     path: &str| {
                     for sym in symbols {
                         if let Some(orig) = &sym.original {
-                            if let Some(&orig_id) = orig_labels.get(orig.as_str()) {
-                                let merged_id = NodeId(orig_id.0 + offset);
+                            let namespaced = format!("::{orig}");
+                            if let Some(&merged_id) = graph.labels.get(&namespaced) {
                                 graph.labels.insert(sym.alias.clone(), merged_id);
                             } else {
                                 log::warn!(
@@ -213,10 +215,9 @@ pub(super) fn collect_imports(
                     inner.scan_labels(&module_ast);
                     let entry = inner.compile_top_level(&module_ast)?;
                     inner.graph.entry = entry;
-                    let orig_labels: HashMap<String, NodeId> = inner.graph.labels.clone();
                     // Merge with empty namespace; labels land as "::label_name".
-                    let offset = state.graph.merge(inner.graph, "");
-                    apply_aliases(&mut state.graph, &orig_labels, symbols, offset);
+                    state.graph.merge(inner.graph, "");
+                    apply_aliases(&mut state.graph, symbols, path);
                     return Ok(());
                 }
 
@@ -238,26 +239,24 @@ pub(super) fn collect_imports(
                 in_progress.remove(path.as_str());
                 completed.insert(path.clone());
 
-                let orig_labels: HashMap<String, NodeId> = module_graph.labels.clone();
-                let module_entry = module_graph.entry;
                 // Merge with empty namespace; labels land as "::label_name".
-                let offset = state.graph.merge(module_graph, "");
-                let adjusted_entry = NodeId(module_entry.0 + offset);
+                let module_entry = module_graph.entry;
+                let index_map: HashMap<NodeIndex, NodeIndex> = state.graph.merge(module_graph, "");
 
                 // Chain prologue if the module has top-level executable nodes.
-                let entry_is_label = matches!(
-                    state
-                        .graph
-                        .nodes
-                        .get(adjusted_entry.as_index())
-                        .map(|n| &n.kind),
-                    Some(IrNodeKind::EnterScope { .. })
-                );
-                if !entry_is_label {
-                    state.import_prologues.push(adjusted_entry);
+                if let Some(old_entry) = module_entry {
+                    if let Some(&entry_idx) = index_map.get(&old_entry) {
+                        let entry_is_label = matches!(
+                            state.graph.graph.node_weight(entry_idx),
+                            Some(IrNodeKind::EnterScope { .. })
+                        );
+                        if !entry_is_label {
+                            state.import_prologues.push(entry_idx);
+                        }
+                    }
                 }
 
-                apply_aliases(&mut state.graph, &orig_labels, symbols, offset);
+                apply_aliases(&mut state.graph, symbols, path);
             }
         }
         // Recurse into other block-like constructs so that nested imports are found.
@@ -292,14 +291,18 @@ pub(super) fn collect_imports(
 /// imported module's top-level nodes (DefineEnum, global assignments, etc.) run
 /// first.
 ///
-/// For each prologue the function walks its linear chain following `next`
-/// pointers until it reaches a node whose `next` is `NODE_END`, then patches
-/// that tail to continue at the next link in the chain. The first prologue's
-/// entry becomes the new overall entry point.
+/// For each prologue the function walks its linear chain following
+/// [`IrEdge::Next`] edges until it reaches the tail, then redirects that tail
+/// to continue at the next link in the chain. The first prologue's entry
+/// becomes the new overall entry point.
 ///
 /// Non-linear nodes (Branch, Switch, Choice, etc.) terminate the walk early;
 /// they will not appear in a well-formed module prologue.
-fn chain_prologues(graph: &mut IrGraph, prologues: &[NodeId], main_entry: NodeId) -> NodeId {
+fn chain_prologues(
+    graph: &mut IrGraph,
+    prologues: &[NodeIndex],
+    main_entry: Option<NodeIndex>,
+) -> Option<NodeIndex> {
     if prologues.is_empty() {
         return main_entry;
     }
@@ -308,83 +311,96 @@ fn chain_prologues(graph: &mut IrGraph, prologues: &[NodeId], main_entry: NodeId
     // then each earlier prologue's tail → the next prologue's entry.
     let mut next_start = main_entry;
     for &prologue in prologues.iter().rev() {
-        if prologue == NODE_END {
-            continue;
+        if let Some(new_next) = next_start {
+            patch_prologue_tail(graph, prologue, new_next);
         }
-        patch_prologue_tail(graph, prologue, next_start);
-        next_start = prologue;
+        next_start = Some(prologue);
     }
     next_start
 }
 
-/// Walk the linear chain starting at `from`, following `next` pointers, and
-/// redirect the chain so that instead of falling into a label body or hitting
-/// `NODE_END`, execution continues at `new_next`.
+/// Walk the linear chain starting at `from`, following [`IrEdge::Next`] edges,
+/// and redirect the chain so that instead of falling into a label body or
+/// terminating, execution continues at `new_next`.
 ///
 /// Two stopping conditions are handled:
 ///
-/// 1. A node whose `next == NODE_END` — patch it directly to `new_next`.
-/// 2. A node whose `next` is an `EnterScope` (a label entry point) or any
-///    other non-linear node — patch *that* node's `next` to `new_next`,
+/// 1. A node with **no outgoing `Next` edge** — add a `Next` edge to `new_next`.
+/// 2. A node whose `Next` edge points at an `EnterScope` (a label entry point)
+///    or any other non-linear node — remove that edge and redirect to `new_next`,
 ///    bypassing the label body entirely.
 ///
 /// This ensures that only top-level prologue nodes (DefineEnum, global
 /// assignments, etc.) run as part of the imported module's prologue, and
 /// label bodies remain reachable only via explicit `jump` instructions.
-fn patch_prologue_tail(graph: &mut IrGraph, from: NodeId, new_next: NodeId) {
+fn patch_prologue_tail(graph: &mut IrGraph, from: NodeIndex, new_next: NodeIndex) {
     let mut current = from;
     let mut visited = HashSet::new();
 
     loop {
-        if current == NODE_END || !visited.insert(current) {
+        if !visited.insert(current) {
+            // Cycle detected — give up.
             break;
         }
 
-        let next = match &graph.nodes[current.as_index()].kind {
-            IrNodeKind::Assign { next, .. }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. }
-            | IrNodeKind::Nop { next }
-            | IrNodeKind::Eval { next, .. } => *next,
-            // Non-linear or terminal — cannot continue walking.
-            _ => break,
-        };
-
-        // Determine whether to patch `current` and stop:
-        // - `next == NODE_END`: end of the linear prologue, patch here.
-        // - `next` points to an EnterScope (label) or other non-prologue node:
-        //   patch `current` to redirect past the label into `new_next`.
-        let should_patch = if next == NODE_END {
-            true
-        } else {
-            matches!(
-                &graph.nodes[next.as_index()].kind,
-                IrNodeKind::EnterScope { .. }
-                    | IrNodeKind::ExitScope { .. }
-                    | IrNodeKind::Dialogue { .. }
-                    | IrNodeKind::Choice { .. }
-                    | IrNodeKind::Branch { .. }
-                    | IrNodeKind::Switch { .. }
-                    | IrNodeKind::Jump { .. }
-                    | IrNodeKind::End
+        // Only walk nodes that are valid linear prologue nodes.
+        let is_walkable = matches!(
+            graph.graph.node_weight(current),
+            Some(
+                IrNodeKind::Assign { .. }
+                    | IrNodeKind::DefineEnum { .. }
+                    | IrNodeKind::DefineScriptDecorator { .. }
+                    | IrNodeKind::Nop
+                    | IrNodeKind::Eval { .. }
             )
-        };
-
-        if should_patch {
-            match &mut graph.nodes[current.as_index()].kind {
-                IrNodeKind::Assign { next, .. }
-                | IrNodeKind::DefineEnum { next, .. }
-                | IrNodeKind::DefineScriptDecorator { next, .. }
-                | IrNodeKind::Nop { next }
-                | IrNodeKind::Eval { next, .. } => {
-                    *next = new_next;
-                }
-                _ => {}
-            }
+        );
+        if !is_walkable {
             break;
         }
 
-        current = next;
+        // Find the outgoing Next edge from `current`, if any.
+        // Collect into an owned value to avoid holding a borrow on `graph`.
+        let next_edge_info: Option<(petgraph::stable_graph::EdgeIndex, NodeIndex)> = graph
+            .graph
+            .edges(current)
+            .find(|e| matches!(e.weight(), IrEdge::Next))
+            .map(|e| (e.id(), e.target()));
+
+        match next_edge_info {
+            None => {
+                // No outgoing Next edge — this is the tail. Extend the chain.
+                graph.add_edge(current, new_next, IrEdge::Next);
+                break;
+            }
+            Some((edge_id, next_target)) => {
+                // Check whether the successor is a "stop" node that should not
+                // be included in the prologue walk (labels, non-linear nodes,
+                // or terminals).
+                let should_patch = matches!(
+                    graph.graph.node_weight(next_target),
+                    Some(
+                        IrNodeKind::EnterScope { .. }
+                            | IrNodeKind::ExitScope { .. }
+                            | IrNodeKind::Dialogue { .. }
+                            | IrNodeKind::Choice { .. }
+                            | IrNodeKind::Branch { .. }
+                            | IrNodeKind::Switch { .. }
+                            | IrNodeKind::Jump
+                            | IrNodeKind::End
+                    )
+                );
+
+                if should_patch {
+                    // Redirect: remove old Next edge and add one to new_next.
+                    graph.graph.remove_edge(edge_id);
+                    graph.add_edge(current, new_next, IrEdge::Next);
+                    break;
+                }
+
+                // Next target is itself a prologue-compatible node — keep walking.
+                current = next_target;
+            }
+        }
     }
 }
 

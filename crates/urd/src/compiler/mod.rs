@@ -7,19 +7,21 @@
 //!    label name, and pre-allocate a [`IrNodeKind::Nop`] placeholder for each so that
 //!    forward [`AstContent::Jump`] references can be resolved.
 //!
-//! 2. **Emit pass** — walk the AST again recursively, emitting [`IrNode`]s into the
-//!    arena.  The core function [`CompilerState::compile_node`] returns the *entry*
-//!    [`NodeId`] of the sub-graph it just emitted; callers thread a `next` continuation
+//! 2. **Emit pass** — walk the AST again recursively, emitting [`IrNodeKind`]s into the
+//!    graph.  The core function [`CompilerState::compile_node`] returns the *entry*
+//!    [`NodeIndex`] of the sub-graph it just emitted; callers thread a `next` continuation
 //!    through every call so that every chain is fully linked on the first pass.
+//!    Control-flow edges are stored in the graph via [`IrEdge`] rather than inline fields.
 
 pub mod loader;
 
 use std::collections::{HashMap, HashSet};
 
+use petgraph::stable_graph::NodeIndex;
 use thiserror::Error;
 
 use crate::{
-    ir::{IrChoiceOption, IrGraph, IrNodeKind, NODE_END, NodeId, SwitchArm},
+    ir::{IrChoiceOption, IrEdge, IrGraph, IrNodeKind, SwitchArm},
     parser::ast::{Ast, AstContent, DeclKind, MatchPattern, Operator},
 };
 
@@ -105,20 +107,20 @@ impl Compiler {
 // ─── Internal compiler state ──────────────────────────────────────────────────
 
 /// Internal mutable state threaded through both compilation passes.
-struct CompilerState {
-    graph: IrGraph,
-    /// Maps label names → the NodeId of their pre-allocated Nop placeholder.
-    label_placeholders: HashMap<String, NodeId>,
-    /// Entry NodeIds of imported modules (offset-adjusted after merge), in
+pub(super) struct CompilerState {
+    pub(super) graph: IrGraph,
+    /// Maps label names → the [`NodeIndex`] of their pre-allocated Nop placeholder.
+    pub(super) label_placeholders: HashMap<String, NodeIndex>,
+    /// Entry [`NodeIndex`]es of imported modules (offset-adjusted after merge), in
     /// import order. Used by `compile_recursive` to chain module prologues
     /// (DefineEnum, global assignments, etc.) before the main entry so that
     /// cross-module enum variants and globals are available at runtime before
     /// the importing module's own code begins executing.
-    import_prologues: Vec<crate::ir::NodeId>,
+    pub(super) import_prologues: Vec<NodeIndex>,
 }
 
 impl CompilerState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         CompilerState {
             graph: IrGraph::new(),
             label_placeholders: HashMap::new(),
@@ -130,11 +132,11 @@ impl CompilerState {
 
     /// Recursively walk `ast` and pre-allocate a [`IrNodeKind::Nop`] for every
     /// [`AstContent::LabeledBlock`] encountered.
-    fn scan_labels(&mut self, ast: &Ast) {
+    pub(super) fn scan_labels(&mut self, ast: &Ast) {
         match ast.content() {
             AstContent::LabeledBlock { label, block } => {
                 // Pre-allocate the placeholder (we will patch it in pass 2).
-                let placeholder = self.graph.push(IrNodeKind::Nop { next: NODE_END });
+                let placeholder = self.graph.push(IrNodeKind::Nop);
                 self.label_placeholders.insert(label.clone(), placeholder);
                 // Recurse into the block body.
                 self.scan_labels(block);
@@ -183,29 +185,32 @@ impl CompilerState {
     /// at after the preamble runs.
     ///
     /// **Compilation order:**
-    /// 1. Labels are compiled first (each independently with `next = NODE_END`
+    /// 1. Labels are compiled first (each independently with `next = None`
     ///    — they are jumped to, not fallen through).
     /// 2. The entry label is determined: `@entry`-decorated label wins,
-    ///    otherwise the first label in source order, otherwise `NODE_END`.
+    ///    otherwise the first label in source order, otherwise `None`.
     /// 3. Preamble definitions are compiled right-to-left, with the last
     ///    definition's `next` pointing at the entry label's placeholder
-    ///    [`NodeId`].
-    /// 4. The returned [`NodeId`] is the first preamble node (so definitions
-    ///    execute before entering the label), or the entry label directly when
-    ///    there is no preamble.
+    ///    [`NodeIndex`].
+    /// 4. The returned [`Option<NodeIndex>`] is the first preamble node (so
+    ///    definitions execute before entering the label), or the entry label
+    ///    directly when there is no preamble.
     ///
     /// If `ast` is not a [`AstContent::Block`], falls back to
     /// [`Self::compile_node`].
-    pub(super) fn compile_top_level(&mut self, ast: &Ast) -> Result<NodeId, CompilerError> {
+    pub(super) fn compile_top_level(
+        &mut self,
+        ast: &Ast,
+    ) -> Result<Option<NodeIndex>, CompilerError> {
         let stmts = match ast.content() {
             AstContent::Block(stmts) => stmts,
             // Not a block — fall back to the general compile path.
-            _ => return self.compile_node(ast, NODE_END),
+            _ => return self.compile_node(ast, None),
         };
 
         if stmts.is_empty() {
-            let id = self.graph.push(IrNodeKind::Nop { next: NODE_END });
-            return Ok(id);
+            let id = self.graph.push(IrNodeKind::Nop);
+            return Ok(Some(id));
         }
 
         // Partition into preamble (definitions / non-label statements) and labels.
@@ -222,20 +227,20 @@ impl CompilerState {
         // ── Phase 1: compile all labels independently ─────────────────────
         // Each label is a jump target; they do not fall through to one another.
         for label_ast in &labels {
-            self.compile_node(label_ast, NODE_END)?;
+            self.compile_node(label_ast, None)?;
         }
 
         // ── Phase 2: determine the entry label ───────────────────────────
-        // Priority: @entry-decorated label > first label in source order > NODE_END
+        // Priority: @entry-decorated label > first label in source order > None
         let entry_label_node = self.find_entry_label(&labels);
 
         // ── Phase 3: compile preamble right-to-left, chaining into entry ──
         if preamble.is_empty() {
-            // No preamble — entry is the label directly (or NODE_END).
+            // No preamble — entry is the label directly (or None).
             return Ok(entry_label_node);
         }
 
-        // If there are no labels, preamble chains to NODE_END (backward compat
+        // If there are no labels, preamble chains to None (backward compat
         // for pure-definition modules like characters.urd).
         let mut continuation = entry_label_node;
         for stmt in preamble.iter().rev() {
@@ -245,19 +250,19 @@ impl CompilerState {
         Ok(continuation)
     }
 
-    /// Find the entry label [`NodeId`] among the given label AST nodes.
+    /// Find the entry label [`NodeIndex`] among the given label AST nodes.
     ///
-    /// 1. If a label has an `@entry` decorator, use its placeholder [`NodeId`].
+    /// 1. If a label has an `@entry` decorator, use its placeholder [`NodeIndex`].
     /// 2. Otherwise, use the first label in source order.
-    /// 3. If no labels exist, return [`NODE_END`].
-    fn find_entry_label(&self, labels: &[&Ast]) -> NodeId {
+    /// 3. If no labels exist, return `None`.
+    fn find_entry_label(&self, labels: &[&Ast]) -> Option<NodeIndex> {
         // Look for @entry decorator first.
         for label_ast in labels {
             if let AstContent::LabeledBlock { label, .. } = label_ast.content()
                 && label_ast.decorators().iter().any(|d| d.name() == "entry")
                 && let Some(&id) = self.label_placeholders.get(label)
             {
-                return id;
+                return Some(id);
             }
         }
 
@@ -266,28 +271,39 @@ impl CompilerState {
             && let AstContent::LabeledBlock { label, .. } = first.content()
             && let Some(&id) = self.label_placeholders.get(label)
         {
-            return id;
+            return Some(id);
         }
 
-        NODE_END
+        None
     }
 
     // ── Pass 2: emit IR nodes ─────────────────────────────────────────────────
 
-    /// Compile `ast` into one or more arena nodes.
+    /// Compile `ast` into one or more graph nodes.
     ///
-    /// Returns the **entry** [`NodeId`] of the sub-graph produced. The VM will
-    /// continue to `next` after this sub-graph finishes (unless the sub-graph
-    /// contains a [`IrNodeKind::Return`] or [`IrNodeKind::Jump`], which ignore
-    /// `next`).
-    fn compile_node(&mut self, ast: &Ast, next: NodeId) -> Result<NodeId, CompilerError> {
+    /// Returns the **entry** [`NodeIndex`] of the sub-graph produced (always
+    /// `Some`). The VM will continue to `next` after this sub-graph finishes
+    /// (unless the sub-graph contains a [`IrNodeKind::Return`] or
+    /// [`IrNodeKind::Jump`], which ignore `next`).
+    ///
+    /// Control-flow edges (`Next`, `Then`, `Else`, `Jump`, etc.) are added to
+    /// the graph via [`IrGraph::add_edge`]; successor information is no longer
+    /// stored as inline fields on [`IrNodeKind`] variants.
+    fn compile_node(
+        &mut self,
+        ast: &Ast,
+        next: Option<NodeIndex>,
+    ) -> Result<Option<NodeIndex>, CompilerError> {
         match ast.content() {
             // ── Block ────────────────────────────────────────────────────────
             AstContent::Block(stmts) => {
                 if stmts.is_empty() {
-                    // Empty block — emit a Nop so there is always a valid NodeId.
-                    let id = self.graph.push(IrNodeKind::Nop { next });
-                    return Ok(id);
+                    // Empty block — emit a Nop so there is always a valid NodeIndex.
+                    let id = self.graph.push(IrNodeKind::Nop);
+                    if let Some(n) = next {
+                        self.graph.add_edge(id, n, IrEdge::Next);
+                    }
+                    return Ok(Some(id));
                 }
                 // Compile right-to-left, threading `next` through each statement.
                 let mut continuation = next;
@@ -304,15 +320,16 @@ impl CompilerState {
                 decl_defs,
                 ..
             } => {
-                // Extract the variable name from the decl_name node.
                 let var = extract_name(decl_name)?;
                 let id = self.graph.push(IrNodeKind::Assign {
                     var,
                     scope: kind.clone(),
                     expr: *decl_defs.clone(),
-                    next,
                 });
-                Ok(id)
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
             }
 
             // ── Assignment BinOp (x = expr) ──────────────────────────────────
@@ -331,9 +348,11 @@ impl CompilerState {
                     var,
                     scope,
                     expr: *right.clone(),
-                    next,
                 });
-                Ok(id)
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
             }
 
             // ── Call (side-effecting) ────────────────────────────────────────
@@ -351,18 +370,18 @@ impl CompilerState {
                 match call_name {
                     Some("end!") => {
                         let id = self.graph.push(IrNodeKind::End);
-                        Ok(id)
+                        Ok(Some(id))
                     }
                     Some("todo!") => {
                         let id = self.graph.push(IrNodeKind::Todo);
-                        Ok(id)
+                        Ok(Some(id))
                     }
                     _ => {
-                        let id = self.graph.push(IrNodeKind::Eval {
-                            expr: ast.clone(),
-                            next,
-                        });
-                        Ok(id)
+                        let id = self.graph.push(IrNodeKind::Eval { expr: ast.clone() });
+                        if let Some(n) = next {
+                            self.graph.add_edge(id, n, IrEdge::Next);
+                        }
+                        Ok(Some(id))
                     }
                 }
             }
@@ -374,25 +393,28 @@ impl CompilerState {
                 else_block,
             } => {
                 // Allocate a merge-point Nop that both branches converge to.
-                let merge = self.graph.push(IrNodeKind::Nop { next });
+                let merge = self.graph.push(IrNodeKind::Nop);
+                if let Some(n) = next {
+                    self.graph.add_edge(merge, n, IrEdge::Next);
+                }
 
-                let then_node = self.compile_node(then_block, merge)?;
-                let else_node = match else_block {
-                    Some(eb) => self.compile_node(eb, merge)?,
+                let then_entry = self.compile_node(then_block, Some(merge))?.unwrap_or(merge);
+                let else_entry = match else_block {
+                    Some(eb) => self.compile_node(eb, Some(merge))?.unwrap_or(merge),
                     None => merge,
                 };
 
                 let id = self.graph.push(IrNodeKind::Branch {
                     condition: *condition.clone(),
-                    then_node,
-                    else_node,
                 });
-                Ok(id)
+                self.graph.add_edge(id, then_entry, IrEdge::Then);
+                self.graph.add_edge(id, else_entry, IrEdge::Else);
+                Ok(Some(id))
             }
 
             // ── LabeledBlock ─────────────────────────────────────────────────
             AstContent::LabeledBlock { label, block } => {
-                // Retrieve the pre-allocated placeholder NodeId from pass 1.
+                // Retrieve the pre-allocated placeholder NodeIndex from pass 1.
                 let placeholder_id = self
                     .label_placeholders
                     .get(label)
@@ -402,22 +424,26 @@ impl CompilerState {
                 // Emit the ExitScope node that runs *after* the block body.
                 let exit_id = self.graph.push(IrNodeKind::ExitScope {
                     label: label.clone(),
-                    next,
                 });
+                if let Some(n) = next {
+                    self.graph.add_edge(exit_id, n, IrEdge::Next);
+                }
 
                 // Compile the block body, continuing to ExitScope.
-                let body_entry = self.compile_node(block, exit_id)?;
+                let body_entry = self.compile_node(block, Some(exit_id))?.unwrap_or(exit_id);
 
-                // Patch the placeholder Nop → EnterScope pointing at body_entry.
-                self.graph.node_mut(placeholder_id).kind = IrNodeKind::EnterScope {
+                // Patch the placeholder Nop → EnterScope.
+                *self.graph.node_mut(placeholder_id) = IrNodeKind::EnterScope {
                     label: label.clone(),
-                    next: body_entry,
                 };
+                // Add the Next edge from EnterScope to the body entry.
+                self.graph
+                    .add_edge(placeholder_id, body_entry, IrEdge::Next);
 
                 // Register in the graph's public label map.
                 self.graph.labels.insert(label.clone(), placeholder_id);
 
-                Ok(placeholder_id)
+                Ok(Some(placeholder_id))
             }
 
             // ── Jump ─────────────────────────────────────────────────────────
@@ -431,15 +457,17 @@ impl CompilerState {
                 if *expects_return {
                     // `jump label and return` — subroutine call without a binding.
                     // Use an empty var name as the "discard return value" sentinel.
-                    let id = self.graph.push(IrNodeKind::LetCall {
-                        var: String::new(),
-                        target,
-                        next,
-                    });
-                    Ok(id)
+                    let id = self.graph.push(IrNodeKind::LetCall { var: String::new() });
+                    self.graph.add_edge(id, target, IrEdge::Call);
+                    if let Some(n) = next {
+                        self.graph.add_edge(id, n, IrEdge::Ret);
+                    }
+                    Ok(Some(id))
                 } else {
-                    let id = self.graph.push(IrNodeKind::Jump { target });
-                    Ok(id)
+                    // Unconditional jump — `next` is intentionally ignored.
+                    let id = self.graph.push(IrNodeKind::Jump);
+                    self.graph.add_edge(id, target, IrEdge::Jump);
+                    Ok(Some(id))
                 }
             }
 
@@ -449,12 +477,12 @@ impl CompilerState {
                 let target_id =
                     resolve_label(target, &self.label_placeholders, &self.graph.labels)?;
 
-                let id = self.graph.push(IrNodeKind::LetCall {
-                    var: name.clone(),
-                    target: target_id,
-                    next,
-                });
-                Ok(id)
+                let id = self.graph.push(IrNodeKind::LetCall { var: name.clone() });
+                self.graph.add_edge(id, target_id, IrEdge::Call);
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Ret);
+                }
+                Ok(Some(id))
             }
 
             // ── Return ───────────────────────────────────────────────────────
@@ -462,7 +490,7 @@ impl CompilerState {
                 let id = self.graph.push(IrNodeKind::Return {
                     value: value.as_deref().cloned(),
                 });
-                Ok(id)
+                Ok(Some(id))
             }
 
             // ── Dialogue ─────────────────────────────────────────────────────
@@ -471,26 +499,29 @@ impl CompilerState {
                     speakers: *speakers.clone(),
                     lines: *content.clone(),
                     decorators: ast.decorators().to_vec(),
-                    next,
                 });
-                Ok(id)
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
             }
 
             // ── Menu ─────────────────────────────────────────────────────────
             AstContent::Menu { options } => {
                 let mut ir_options = Vec::with_capacity(options.len());
+                let mut option_entries: Vec<NodeIndex> = Vec::with_capacity(options.len());
 
                 for opt_ast in options {
                     match opt_ast.content() {
                         AstContent::MenuOption { label, content } => {
-                            // Each option body continues to NODE_END (or `next`
-                            // if the designer wants the menu to fall through —
-                            // we follow the spec: use `next` so options can
-                            // rejoin after the menu).
-                            let entry = self.compile_node(content, next)?;
+                            // Each option body continues to `next` so options
+                            // can rejoin normal execution after the menu.
+                            let entry = self
+                                .compile_node(content, next)?
+                                .unwrap_or_else(|| self.graph.push(IrNodeKind::Nop));
+                            option_entries.push(entry);
                             ir_options.push(IrChoiceOption {
                                 label: label.clone(),
-                                entry,
                                 decorators: opt_ast.decorators().to_vec(),
                             });
                         }
@@ -506,28 +537,35 @@ impl CompilerState {
                     options: ir_options,
                     decorators: ast.decorators().to_vec(),
                 });
-                Ok(id)
+                for (i, entry) in option_entries.iter().enumerate() {
+                    self.graph.add_edge(id, *entry, IrEdge::Option(i));
+                }
+                Ok(Some(id))
             }
 
             // ── Match ────────────────────────────────────────────────────────
             AstContent::Match { scrutinee, arms } => {
-                // Allocate a merge Nop that all non-wildcard arms converge to.
-                let merge = self.graph.push(IrNodeKind::Nop { next });
+                // Allocate a merge Nop that all arms converge to.
+                let merge = self.graph.push(IrNodeKind::Nop);
+                if let Some(n) = next {
+                    self.graph.add_edge(merge, n, IrEdge::Next);
+                }
 
                 let mut switch_arms: Vec<SwitchArm> = Vec::with_capacity(arms.len());
-                let mut default: Option<NodeId> = None;
+                let mut arm_entries: Vec<NodeIndex> = Vec::new();
+                let mut default_entry: Option<NodeIndex> = None;
 
                 for arm in arms {
-                    let target = self.compile_node(&arm.body, merge)?;
+                    let target = self.compile_node(&arm.body, Some(merge))?.unwrap_or(merge);
                     match &arm.pattern {
                         MatchPattern::Wildcard => {
-                            default = Some(target);
+                            default_entry = Some(target);
                         }
                         MatchPattern::Value(_) => {
                             switch_arms.push(SwitchArm {
                                 pattern: arm.pattern.clone(),
-                                target,
                             });
+                            arm_entries.push(target);
                         }
                     }
                 }
@@ -535,9 +573,14 @@ impl CompilerState {
                 let id = self.graph.push(IrNodeKind::Switch {
                     scrutinee: *scrutinee.clone(),
                     arms: switch_arms,
-                    default,
                 });
-                Ok(id)
+                for (i, arm_entry) in arm_entries.iter().enumerate() {
+                    self.graph.add_edge(id, *arm_entry, IrEdge::Arm(i));
+                }
+                if let Some(def_entry) = default_entry {
+                    self.graph.add_edge(id, def_entry, IrEdge::Default);
+                }
+                Ok(Some(id))
             }
 
             // ── EnumDecl ─────────────────────────────────────────────────────
@@ -545,9 +588,11 @@ impl CompilerState {
                 let id = self.graph.push(IrNodeKind::DefineEnum {
                     name: name.clone(),
                     variants: variants.clone(),
-                    next,
                 });
-                Ok(id)
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
             }
 
             // ── Pure expressions at statement level ──────────────────────────
@@ -559,11 +604,11 @@ impl CompilerState {
             | AstContent::Value(_)
             | AstContent::List(_)
             | AstContent::Map(_) => {
-                let id = self.graph.push(IrNodeKind::Eval {
-                    expr: ast.clone(),
-                    next,
-                });
-                Ok(id)
+                let id = self.graph.push(IrNodeKind::Eval { expr: ast.clone() });
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
             }
 
             // ── MenuOption outside a Menu — shouldn't happen ─────────────────
@@ -586,38 +631,52 @@ impl CompilerState {
                     event_constraint: event_constraint.clone(),
                     params: param_names,
                     body: *body.clone(),
-                    next,
                 });
-                Ok(id)
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
             }
 
             // ── Subscript (index read at statement level) ────────────────────
             AstContent::Subscript { .. } => {
-                let id = self.graph.push(IrNodeKind::Eval {
-                    expr: ast.clone(),
-                    next,
-                });
-                Ok(id)
+                let id = self.graph.push(IrNodeKind::Eval { expr: ast.clone() });
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
             }
 
             // ── SubscriptAssign (index write) ────────────────────────────────
             AstContent::SubscriptAssign { .. } => {
-                let id = self.graph.push(IrNodeKind::Eval {
-                    expr: ast.clone(),
-                    next,
-                });
-                Ok(id)
+                let id = self.graph.push(IrNodeKind::Eval { expr: ast.clone() });
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
             }
 
             // ── Import ───────────────────────────────────────────────────────
             // Import nodes are fully resolved during pass 0 (collect_imports).
             // At compile-node time they are no-ops that simply fall through.
-            AstContent::Import { .. } => Ok(self.graph.push(IrNodeKind::Nop { next })),
+            AstContent::Import { .. } => {
+                let id = self.graph.push(IrNodeKind::Nop);
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
+            }
 
             // ── StructDecl ───────────────────────────────────────────────────
             // Struct declarations are analysis-only — no runtime representation
             // is needed. They compile to a Nop so execution flows through them.
-            AstContent::StructDecl { .. } => Ok(self.graph.push(IrNodeKind::Nop { next })),
+            AstContent::StructDecl { .. } => {
+                let id = self.graph.push(IrNodeKind::Nop);
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
+            }
         }
     }
 }
@@ -653,7 +712,7 @@ fn extract_name(ast: &Ast) -> Result<String, CompilerError> {
     }
 }
 
-/// Resolve a label string to a [`NodeId`], handling both local and cross-module
+/// Resolve a label string to a [`NodeIndex`], handling both local and cross-module
 /// (dot-notation `alias.label_name`) references.
 ///
 /// Local labels are looked up in `label_placeholders` (populated by the label scan pass).
@@ -661,9 +720,9 @@ fn extract_name(ast: &Ast) -> Result<String, CompilerError> {
 /// is pre-populated by the import pass.
 fn resolve_label(
     label: &str,
-    label_placeholders: &HashMap<String, NodeId>,
-    graph_labels: &HashMap<String, NodeId>,
-) -> Result<NodeId, CompilerError> {
+    label_placeholders: &HashMap<String, NodeIndex>,
+    graph_labels: &HashMap<String, NodeIndex>,
+) -> Result<NodeIndex, CompilerError> {
     if let Some(dot_pos) = label.find('.') {
         let alias = &label[..dot_pos];
         let label_name = &label[dot_pos + 1..];
@@ -687,11 +746,13 @@ fn resolve_label(
 mod tests {
     use super::*;
     use crate::{
-        ir::{IrNodeKind, NODE_END},
+        ir::{IrEdge, IrGraph, IrNodeKind},
         parser::ast::{Ast, AstContent, DeclKind, MatchArm, MatchPattern},
         runtime::value::RuntimeValue,
         vm::loader::MemLoader,
     };
+    use petgraph::stable_graph::NodeIndex;
+    use petgraph::visit::EdgeRef;
 
     // ── decorator tests ───────────────────────────────────────────────────────
 
@@ -712,15 +773,15 @@ mod tests {
         let script_ast = Ast::block(vec![decorator_ast]);
 
         let graph = Compiler::compile(&script_ast).expect("compile failed");
-        let entry = &graph.nodes[graph.entry.0 as usize];
+        let entry_idx = graph.entry.expect("graph must have an entry node");
         assert!(
             matches!(
-                &entry.kind,
+                node_kind(&graph, entry_idx),
                 IrNodeKind::DefineScriptDecorator { name, params, .. }
                 if name == "shake" && params == &["amount"]
             ),
             "expected DefineScriptDecorator at entry, got {:?}",
-            entry.kind
+            node_kind(&graph, entry_idx)
         );
     }
 
@@ -742,16 +803,19 @@ mod tests {
         let script_ast = Ast::block(vec![dec_ast, dialogue_ast]);
 
         let graph = Compiler::compile(&script_ast).expect("compile failed");
-        let entry_node = &graph.nodes[graph.entry.0 as usize];
-        let IrNodeKind::DefineScriptDecorator { next, .. } = &entry_node.kind else {
-            panic!("expected DefineScriptDecorator, got {:?}", entry_node.kind)
+        let entry_idx = graph.entry.expect("graph must have an entry node");
+        let entry_kind = node_kind(&graph, entry_idx);
+        let IrNodeKind::DefineScriptDecorator { .. } = entry_kind else {
+            panic!("expected DefineScriptDecorator, got {:?}", entry_kind)
         };
+
+        // Follow the Next edge from DefineScriptDecorator to find Dialogue.
+        let next_idx =
+            next_of(&graph, entry_idx).expect("DefineScriptDecorator must have a Next edge");
         assert!(
-            matches!(
-                &graph.nodes[next.0 as usize].kind,
-                IrNodeKind::Dialogue { .. }
-            ),
-            "expected Dialogue after DefineScriptDecorator"
+            matches!(node_kind(&graph, next_idx), IrNodeKind::Dialogue { .. }),
+            "expected Dialogue after DefineScriptDecorator, got {:?}",
+            node_kind(&graph, next_idx)
         );
     }
 
@@ -769,10 +833,10 @@ mod tests {
         let script_ast = Ast::block(vec![decorator_ast]);
 
         let graph = Compiler::compile(&script_ast).expect("compile failed");
-        let entry = &graph.nodes[graph.entry.0 as usize];
+        let entry_idx = graph.entry.expect("entry");
         assert!(
             matches!(
-                &entry.kind,
+                node_kind(&graph, entry_idx),
                 IrNodeKind::DefineScriptDecorator {
                     name,
                     params,
@@ -784,7 +848,7 @@ mod tests {
                     && matches!(event_constraint, crate::parser::ast::EventConstraint::Dialogue)
             ),
             "expected DefineScriptDecorator(highlight) at entry, got {:?}",
-            entry.kind
+            node_kind(&graph, entry_idx)
         );
     }
 
@@ -844,13 +908,37 @@ mod tests {
         Ast::decl(DeclKind::Variable, ident(name), val)
     }
 
-    fn node_kind(graph: &IrGraph, id: NodeId) -> &IrNodeKind {
-        &graph.nodes[id.0 as usize].kind
+    /// Borrow the [`IrNodeKind`] for a given [`NodeIndex`] from the graph.
+    ///
+    /// # Panics
+    /// Panics if `id` is not a valid node in the graph.
+    fn node_kind(graph: &IrGraph, id: NodeIndex) -> &IrNodeKind {
+        &graph.graph[id]
+    }
+
+    /// Follow the single outgoing [`IrEdge::Next`] edge from `id`, returning
+    /// the target [`NodeIndex`] if one exists.
+    fn next_of(graph: &IrGraph, id: NodeIndex) -> Option<NodeIndex> {
+        graph
+            .graph
+            .edges(id)
+            .find(|e| matches!(e.weight(), IrEdge::Next))
+            .map(|e| e.target())
+    }
+
+    /// Follow an outgoing edge of a specific kind from `id`.
+    fn edge_target(graph: &IrGraph, id: NodeIndex, kind: &IrEdge) -> Option<NodeIndex> {
+        graph
+            .graph
+            .edges(id)
+            .find(|e| e.weight() == kind)
+            .map(|e| e.target())
     }
 
     // ── tests ─────────────────────────────────────────────────────────────────
 
-    /// A Block with two declarations compiles to a right-linked Assign chain.
+    /// A Block with two declarations compiles to a right-linked Assign chain
+    /// (connected by Next edges).
     #[test]
     fn test_block_declarations_chain() {
         let ast = Ast::block(vec![decl("x", int(1)), decl("y", int(2))]);
@@ -861,24 +949,21 @@ mod tests {
         };
 
         // entry should be the first Assign (x = 1)
-        let entry = graph.entry;
+        let entry = graph.entry.expect("graph must have entry");
         match node_kind(&graph, entry) {
-            IrNodeKind::Assign {
-                var, scope, next, ..
-            } => {
+            IrNodeKind::Assign { var, scope, .. } => {
                 assert_eq!(var, "x");
                 assert_eq!(*scope, DeclKind::Variable);
-                // next should point at the second Assign
-                let next2 = *next;
+                // Follow the Next edge to the second Assign.
+                let next2 = next_of(&graph, entry).expect("first Assign must have a Next edge");
                 match node_kind(&graph, next2) {
-                    IrNodeKind::Assign {
-                        var: var2,
-                        next: next3,
-                        ..
-                    } => {
+                    IrNodeKind::Assign { var: var2, .. } => {
                         assert_eq!(var2, "y");
-                        // After the last statement the chain should end
-                        assert_eq!(*next3, NODE_END);
+                        // After the last statement the chain must end (no Next edge).
+                        assert!(
+                            next_of(&graph, next2).is_none(),
+                            "last Assign must have no outgoing Next edge"
+                        );
                     }
                     other => panic!("expected second Assign, got {:?}", other),
                 }
@@ -887,8 +972,8 @@ mod tests {
         }
     }
 
-    /// An If without else: `else_node` of the Branch should point directly at
-    /// the merge `Nop`, while `then_node` points at the compiled then-body.
+    /// An If without else: the `Else` edge of the Branch should point directly
+    /// at the merge `Nop`, while the `Then` edge points at the compiled then-body.
     #[test]
     fn test_if_without_else_branch_else_is_merge() {
         let condition = Ast::equals_op(ident("a"), int(0));
@@ -900,34 +985,37 @@ mod tests {
             Err(e) => panic!("compile failed: {}", e),
         };
 
-        let entry = graph.entry;
+        let entry = graph.entry.expect("entry");
         match node_kind(&graph, entry) {
-            IrNodeKind::Branch {
-                then_node,
-                else_node,
-                ..
-            } => {
-                // else_node must be the merge Nop itself (no else body was compiled).
-                match node_kind(&graph, *else_node) {
-                    IrNodeKind::Nop { .. } => {}
+            IrNodeKind::Branch { .. } => {
+                let then_idx = edge_target(&graph, entry, &IrEdge::Then)
+                    .expect("Branch must have a Then edge");
+                let else_idx = edge_target(&graph, entry, &IrEdge::Else)
+                    .expect("Branch must have an Else edge");
+
+                // else_idx must be the merge Nop itself (no else body was compiled).
+                match node_kind(&graph, else_idx) {
+                    IrNodeKind::Nop => {}
                     other => panic!(
-                        "expected else_node to be a Nop merge point, got {:?}",
+                        "expected else target to be a Nop merge point, got {:?}",
                         other
                     ),
                 }
 
-                // then_node must be a different node (the compiled then-body).
+                // then_idx must be a different node (the compiled then-body).
                 assert_ne!(
-                    then_node, else_node,
-                    "then_node must differ from the merge Nop else_node"
+                    then_idx, else_idx,
+                    "then target must differ from the merge Nop else target"
                 );
 
                 // The then-body's last node must link back to the same merge Nop.
-                match node_kind(&graph, *then_node) {
-                    IrNodeKind::Assign { next, .. } => {
+                match node_kind(&graph, then_idx) {
+                    IrNodeKind::Assign { .. } => {
+                        let assign_next = next_of(&graph, then_idx)
+                            .expect("then-body Assign must have a Next edge");
                         assert_eq!(
-                            *next, *else_node,
-                            "then-body's next must point at the merge Nop"
+                            assign_next, else_idx,
+                            "then-body's Next must point at the merge Nop"
                         );
                     }
                     other => panic!("expected Assign as then-body entry, got {:?}", other),
@@ -937,7 +1025,7 @@ mod tests {
         }
     }
 
-    /// LabeledBlock + Jump: Jump.target should equal the EnterScope NodeId.
+    /// LabeledBlock + Jump: the Jump edge target should equal the EnterScope NodeIndex.
     #[test]
     fn test_labeled_block_and_jump_resolve() {
         // label scene1 { let x = 42 }
@@ -954,29 +1042,24 @@ mod tests {
 
         // The labels map must contain "scene1".
         let enter_id = match graph.labels.get("scene1") {
-            Some(id) => *id,
+            Some(&id) => id,
             None => panic!("label 'scene1' not registered in graph.labels"),
         };
 
-        // Find the Jump node by walking the graph nodes.
-        let jump_node = match graph
-            .nodes
-            .iter()
-            .find(|n| matches!(n.kind, IrNodeKind::Jump { .. }))
-        {
-            Some(n) => n,
-            None => panic!("no Jump node found in graph"),
-        };
+        // Find the Jump node by iterating over all nodes.
+        let jump_idx = graph
+            .graph
+            .node_indices()
+            .find(|&idx| matches!(graph.graph[idx], IrNodeKind::Jump))
+            .expect("no Jump node found in graph");
 
-        match &jump_node.kind {
-            IrNodeKind::Jump { target } => {
-                assert_eq!(
-                    *target, enter_id,
-                    "Jump.target must point at EnterScope NodeId"
-                );
-            }
-            _ => unreachable!(),
-        }
+        // The Jump edge must target the EnterScope node.
+        let jump_target =
+            edge_target(&graph, jump_idx, &IrEdge::Jump).expect("Jump node must have a Jump edge");
+        assert_eq!(
+            jump_target, enter_id,
+            "Jump edge target must point at EnterScope NodeIndex"
+        );
 
         // The entry for "scene1" must be an EnterScope node.
         match node_kind(&graph, enter_id) {
@@ -1009,7 +1092,8 @@ mod tests {
             Err(e) => panic!("compile failed: {}", e),
         };
 
-        match node_kind(&graph, graph.entry) {
+        let entry = graph.entry.expect("entry");
+        match node_kind(&graph, entry) {
             IrNodeKind::Dialogue { decorators, .. } => {
                 assert_eq!(decorators.len(), 1);
                 assert_eq!(decorators[0].name(), "mood");
@@ -1018,7 +1102,8 @@ mod tests {
         }
     }
 
-    /// Menu with two options compiles to a Choice with two IrChoiceOptions.
+    /// Menu with two options compiles to a Choice with two IrChoiceOptions and
+    /// outgoing Option(0)/Option(1) edges.
     #[test]
     fn test_menu_two_options() {
         let opt1 = Ast::menu_option(
@@ -1036,20 +1121,35 @@ mod tests {
             Err(e) => panic!("compile failed: {}", e),
         };
 
-        match node_kind(&graph, graph.entry) {
+        let entry = graph.entry.expect("entry");
+        match node_kind(&graph, entry) {
             IrNodeKind::Choice { options, .. } => {
                 assert_eq!(options.len(), 2, "expected 2 options");
                 assert_eq!(options[0].label, "Option A");
                 assert_eq!(options[1].label, "Option B");
-                // Each entry must point at a real node (not NODE_END itself at top).
-                assert_ne!(options[0].entry, NODE_END);
-                assert_ne!(options[1].entry, NODE_END);
+                // Each option must have a corresponding outgoing Option(i) edge.
+                let opt0_entry = graph
+                    .graph
+                    .edges(entry)
+                    .find(|e| matches!(e.weight(), IrEdge::Option(0)))
+                    .map(|e| e.target());
+                let opt1_entry = graph
+                    .graph
+                    .edges(entry)
+                    .find(|e| matches!(e.weight(), IrEdge::Option(1)))
+                    .map(|e| e.target());
+                assert!(opt0_entry.is_some(), "Choice must have an Option(0) edge");
+                assert!(opt1_entry.is_some(), "Choice must have an Option(1) edge");
+                assert_ne!(
+                    opt0_entry, opt1_entry,
+                    "options must target different entry nodes"
+                );
             }
             other => panic!("expected Choice, got {:?}", other),
         }
     }
 
-    /// Match statement compiles to Switch with correct arm count and a Nop merge.
+    /// Match statement compiles to Switch with correct arm count and a Default edge.
     #[test]
     fn test_match_compiles_to_switch() {
         let scrutinee = ident("direction");
@@ -1070,10 +1170,19 @@ mod tests {
             Err(e) => panic!("compile failed: {}", e),
         };
 
-        match node_kind(&graph, graph.entry) {
-            IrNodeKind::Switch { arms, default, .. } => {
+        let entry = graph.entry.expect("entry");
+        match node_kind(&graph, entry) {
+            IrNodeKind::Switch { arms, .. } => {
                 assert_eq!(arms.len(), 1, "expected one non-wildcard arm");
-                assert!(default.is_some(), "expected a default from wildcard arm");
+                // The wildcard arm must produce a Default edge.
+                let has_default = graph
+                    .graph
+                    .edges(entry)
+                    .any(|e| matches!(e.weight(), IrEdge::Default));
+                assert!(
+                    has_default,
+                    "expected a Default edge from Switch for wildcard arm"
+                );
             }
             other => panic!("expected Switch, got {:?}", other),
         }
@@ -1143,7 +1252,7 @@ mod tests {
         );
     }
 
-    /// A `jump alias.label` resolves to the correct (merged) NodeId.
+    /// A `jump alias.label` resolves to the correct (merged) NodeIndex.
     #[test]
     fn test_cross_module_jump_resolves_to_merged_node_id() {
         let mut loader = MemLoader::new();
@@ -1163,22 +1272,19 @@ mod tests {
             .get("scenes::intro")
             .expect("'scenes::intro' not in graph.labels");
 
-        // Find the Jump node and verify its target.
-        let jump_node = graph
-            .nodes
-            .iter()
-            .find(|n| matches!(n.kind, IrNodeKind::Jump { .. }))
+        // Find the Jump node and verify its Jump edge target.
+        let jump_idx = graph
+            .graph
+            .node_indices()
+            .find(|&idx| matches!(graph.graph[idx], IrNodeKind::Jump))
             .expect("no Jump node in graph");
 
-        match &jump_node.kind {
-            IrNodeKind::Jump { target } => {
-                assert_eq!(
-                    *target, enter_id,
-                    "Jump.target must equal the merged EnterScope NodeId"
-                );
-            }
-            _ => unreachable!(),
-        }
+        let jump_target =
+            edge_target(&graph, jump_idx, &IrEdge::Jump).expect("Jump node must have a Jump edge");
+        assert_eq!(
+            jump_target, enter_id,
+            "Jump edge target must equal the merged EnterScope NodeIndex"
+        );
     }
 
     /// Circular imports produce CompilerError::CircularImport.
@@ -1226,8 +1332,6 @@ mod tests {
     /// `end!()` call compiles to an `IrNodeKind::End` terminal node.
     #[test]
     fn test_end_bang_compiles_to_end_node() {
-        // Build a Call AST node with func_path = IdentPath(["end!"]) manually,
-        // without relying on the lexer/parser.
         let func_path = Ast::value(RuntimeValue::IdentPath(vec!["end!".to_string()]));
         let params = Ast::block(vec![]);
         let call_ast = Ast::call(func_path, params);
@@ -1236,17 +1340,16 @@ mod tests {
         let graph = Compiler::compile(&script_ast).expect("compile failed");
         assert!(
             graph
-                .nodes
-                .iter()
-                .any(|n| matches!(n.kind, IrNodeKind::End)),
+                .graph
+                .node_weights()
+                .any(|k| matches!(k, IrNodeKind::End)),
             "expected an End node in the graph, got: {:?}",
-            graph.nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+            graph.graph.node_weights().collect::<Vec<_>>()
         );
     }
 
     #[test]
     fn test_todo_bang_compiles_to_todo_node() {
-        // Build a Call AST node with func_path = IdentPath(["todo!"]) manually.
         let func_path = Ast::value(RuntimeValue::IdentPath(vec!["todo!".to_string()]));
         let params = Ast::block(vec![]);
         let call_ast = Ast::call(func_path, params);
@@ -1255,11 +1358,11 @@ mod tests {
         let graph = Compiler::compile(&script_ast).expect("compile failed");
         assert!(
             graph
-                .nodes
-                .iter()
-                .any(|n| matches!(n.kind, IrNodeKind::Todo)),
+                .graph
+                .node_weights()
+                .any(|k| matches!(k, IrNodeKind::Todo)),
             "expected a Todo node in the graph, got: {:?}",
-            graph.nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+            graph.graph.node_weights().collect::<Vec<_>>()
         );
     }
 
@@ -1361,12 +1464,12 @@ mod tests {
         // The symbol labels should point to valid (different) nodes.
         assert_ne!(
             graph.labels["start"], graph.labels["outro"],
-            "intro and outro must map to different NodeIds"
+            "intro and outro must map to different NodeIndexes"
         );
     }
 
     /// Symbol import aliases point to the same node as the original label would
-    /// after a whole-module import.  Verify that the NodeId for "hello" (aliasing
+    /// after a whole-module import.  Verify that the NodeIndex for "hello" (aliasing
     /// "greet") matches the EnterScope node emitted for that label.
     #[test]
     fn test_symbol_import_alias_points_to_correct_enter_scope_node() {
@@ -1387,12 +1490,9 @@ mod tests {
 
         let hello_id = *graph.labels.get("hello").expect("'hello' not in labels");
         assert!(
-            matches!(
-                graph.nodes[hello_id.as_index()].kind,
-                IrNodeKind::EnterScope { .. }
-            ),
+            matches!(node_kind(&graph, hello_id), IrNodeKind::EnterScope { .. }),
             "alias 'hello' must point to an EnterScope node, got: {:?}",
-            graph.nodes[hello_id.as_index()].kind
+            node_kind(&graph, hello_id)
         );
     }
 
@@ -1446,7 +1546,8 @@ mod tests {
 
         let graph = Compiler::compile(&ast).expect("compile failed");
 
-        match node_kind(&graph, graph.entry) {
+        let entry = graph.entry.expect("entry");
+        match node_kind(&graph, entry) {
             IrNodeKind::Assign { var, scope, .. } => {
                 assert_eq!(var, "mod::counter", "variable name must be namespaced");
                 assert_eq!(

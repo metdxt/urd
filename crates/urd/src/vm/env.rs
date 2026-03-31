@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ir::NodeId;
+use petgraph::stable_graph::NodeIndex;
+
 use crate::lexer::strings::ParsedString;
 use crate::parser::ast::DeclKind;
 use crate::runtime::value::RuntimeValue;
@@ -81,8 +82,7 @@ impl Environment {
             DeclKind::Constant => {
                 if self.constants.contains(name) {
                     return Err(VmError::TypeError(format!(
-                        "cannot reassign constant '{}'",
-                        name
+                        "cannot reassign constant '{name}'"
                     )));
                 }
                 self.constants.insert(name.to_string());
@@ -169,13 +169,12 @@ impl Environment {
         let variants = self
             .enums
             .get(enum_name)
-            .ok_or_else(|| VmError::UndefinedVariable(format!("enum '{}'", enum_name)))?;
+            .ok_or_else(|| VmError::UndefinedVariable(format!("enum '{enum_name}'")))?;
         if variants.iter().any(|v| v == variant_name) {
             Ok(RuntimeValue::Str(ParsedString::new_plain(variant_name)))
         } else {
             Err(VmError::UndefinedVariable(format!(
-                "variant '{}' on enum '{}'",
-                variant_name, enum_name
+                "variant '{variant_name}' on enum '{enum_name}'"
             )))
         }
     }
@@ -190,12 +189,14 @@ impl Environment {
 
 /// Saved execution context pushed when entering a labeled block.
 ///
-/// When [`IrNodeKind::Return`] fires, the top frame is popped and execution
-/// resumes at `return_cursor`.
+/// When [`crate::ir::IrNodeKind::Return`] fires, the top frame is popped and
+/// execution resumes at `return_cursor`.
 #[derive(Debug, Clone)]
 pub struct CallFrame {
     /// The node to resume execution at after the return.
-    pub return_cursor: NodeId,
+    ///
+    /// `None` means "end the script" — analogous to the old `NODE_END` sentinel.
+    pub return_cursor: Option<NodeIndex>,
     /// The scope depth at the time the frame was pushed (used by Return to
     /// unwind extra scopes).
     pub scope_depth: usize,

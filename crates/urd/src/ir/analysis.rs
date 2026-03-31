@@ -11,122 +11,81 @@
 //!
 //! | Function | Purpose |
 //! |---|---|
-//! | [`reachable_nodes`] | BFS from `graph.entry`; excludes dead nodes |
-//! | [`compute_clusters`] | Maps each label name → its member [`NodeId`]s |
+//! | [`reachable_nodes`] | DFS from `graph.entry`; excludes dead nodes |
+//! | [`compute_clusters`] | Maps each label name → its member [`NodeIndex`]es |
 //! | [`follow_nops`] | Collapses compiler merge-point (`Nop`) chains |
 //! | [`entry_cluster_name`] | Finds the first label reached from `graph.entry` |
 //! | [`callee_to_rets`] | Maps callee entry → caller ret continuations |
-//! | [`node_to_cluster`] | Inverts the cluster map: NodeId → owning label |
+//! | [`node_to_cluster`] | Inverts the cluster map: NodeIndex → owning label |
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::{IrGraph, IrNodeKind, NODE_END, NodeId};
+use petgraph::Direction;
+use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::{Dfs, EdgeRef};
+
+use super::{IrEdge, IrGraph, IrNodeKind};
 
 // ─── Reachability ─────────────────────────────────────────────────────────────
 
-/// Returns the set of all [`NodeId`]s reachable from [`IrGraph::entry`].
+/// Returns the set of all [`NodeIndex`]es reachable from [`IrGraph::entry`].
 ///
-/// Performs a BFS following every edge kind — including [`IrNodeKind::Jump`]
-/// targets and both `target` and `next` of [`IrNodeKind::LetCall`] — so that
+/// Uses a petgraph [`Dfs`] traversal following every outgoing edge so that
 /// only genuinely unreachable nodes (e.g. dead `ExitScope` nodes left over
 /// when all paths use `jump`/`return`) are excluded from the result.
 ///
-/// [`NODE_END`] and out-of-bounds indices are silently ignored.
-pub fn reachable_nodes(graph: &IrGraph) -> HashSet<NodeId> {
-    let mut reachable: HashSet<NodeId> = HashSet::new();
-    let mut queue: VecDeque<NodeId> = VecDeque::new();
-
-    if graph.entry != NODE_END {
-        queue.push_back(graph.entry);
-    }
-
-    while let Some(id) = queue.pop_front() {
-        if id == NODE_END || id.0 as usize >= graph.nodes.len() {
-            continue;
-        }
-        if !reachable.insert(id) {
-            continue; // already visited
-        }
-
-        match &graph.nodes[id.0 as usize].kind {
-            // True terminals — no successors to enqueue.
-            IrNodeKind::End | IrNodeKind::Todo | IrNodeKind::Return { .. } => {}
-
-            IrNodeKind::Jump { target } => {
-                queue.push_back(*target);
-            }
-
-            IrNodeKind::LetCall { target, next, .. } => {
-                queue.push_back(*target);
-                queue.push_back(*next);
-            }
-
-            IrNodeKind::Assign { next, .. }
-            | IrNodeKind::Eval { next, .. }
-            | IrNodeKind::EnterScope { next, .. }
-            | IrNodeKind::ExitScope { next, .. }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. }
-            | IrNodeKind::Nop { next }
-            | IrNodeKind::Dialogue { next, .. } => {
-                queue.push_back(*next);
-            }
-
-            IrNodeKind::Branch {
-                then_node,
-                else_node,
-                ..
-            } => {
-                queue.push_back(*then_node);
-                queue.push_back(*else_node);
-            }
-
-            IrNodeKind::Switch { arms, default, .. } => {
-                for arm in arms {
-                    queue.push_back(arm.target);
-                }
-                if let Some(d) = default {
-                    queue.push_back(*d);
-                }
-            }
-
-            IrNodeKind::Choice { options, .. } => {
-                for opt in options {
-                    queue.push_back(opt.entry);
-                }
-            }
+/// Returns an empty set when [`IrGraph::entry`] is `None`.
+pub fn reachable_nodes(graph: &IrGraph) -> HashSet<NodeIndex> {
+    let mut reachable: HashSet<NodeIndex> = HashSet::new();
+    if let Some(entry) = graph.entry {
+        let mut dfs = Dfs::new(&graph.graph, entry);
+        while let Some(idx) = dfs.next(&graph.graph) {
+            reachable.insert(idx);
         }
     }
-
     reachable
 }
 
 // ─── Nop collapsing ───────────────────────────────────────────────────────────
 
-/// Follows a chain of consecutive [`IrNodeKind::Nop`] nodes and returns the
-/// first non-`Nop` [`NodeId`] (or [`NODE_END`] if the chain terminates there).
+/// Follows a chain of consecutive [`IrNodeKind::Nop`] nodes via their single
+/// [`IrEdge::Next`] outgoing edge and returns the first non-`Nop` [`NodeIndex`].
 ///
-/// Used by both renderers to collapse compiler-generated merge points so they
-/// never appear as rendered nodes or intermediate edge targets.
+/// Returns `None` when:
+/// - `idx` refers to a node that has been removed from the graph.
+/// - The Nop chain terminates without a successor (no outgoing `Next` edge).
 ///
-/// Includes a cycle-guard (iterates at most `graph.nodes.len() + 1` times) to
-/// avoid an infinite loop on a pathological graph.
-pub fn follow_nops(graph: &IrGraph, mut id: NodeId) -> NodeId {
-    for _ in 0..graph.nodes.len() + 1 {
-        if id == NODE_END || id.0 as usize >= graph.nodes.len() {
-            break;
-        }
-        match &graph.nodes[id.0 as usize].kind {
-            IrNodeKind::Nop { next } => id = *next,
-            _ => break,
+/// This is the petgraph equivalent of the old `NODE_END` sentinel: the absence
+/// of a `Next` edge *is* the sentinel.
+///
+/// Includes a cycle-guard (iterates at most `graph.graph.node_count() + 1`
+/// times) to avoid an infinite loop on a pathological graph.
+pub fn follow_nops(graph: &IrGraph, mut idx: NodeIndex) -> Option<NodeIndex> {
+    for _ in 0..graph.graph.node_count() + 1 {
+        match graph.graph.node_weight(idx) {
+            None => return None,
+            Some(IrNodeKind::Nop) => {
+                // Follow the single outgoing Next edge, if any.
+                let next = graph
+                    .graph
+                    .edges_directed(idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Next))
+                    .map(|e| e.target());
+                match next {
+                    Some(n) => idx = n,
+                    None => return None,
+                }
+            }
+            Some(_) => return Some(idx),
         }
     }
-    id
+    // Cycle guard hit — return last known position.
+    Some(idx)
 }
 
 // ─── Cluster membership ───────────────────────────────────────────────────────
 
-/// Computes which [`NodeId`]s belong to each named label scope.
+/// Computes which [`NodeIndex`]es belong to each named label scope.
 ///
 /// For each label, performs a BFS from its [`IrNodeKind::EnterScope`] node
 /// while respecting these boundaries:
@@ -136,98 +95,82 @@ pub fn follow_nops(graph: &IrGraph, mut id: NodeId) -> NodeId {
 ///   added to the member set (they are collapsed at render time).
 /// - **Other labels' entry nodes** are not entered — they belong to their own
 ///   cluster.
-/// - **[`IrNodeKind::Jump`]** targets are not followed: a Jump *belongs* to
-///   the current cluster, but its destination belongs to another.
-/// - **[`IrNodeKind::LetCall`]**: the callee (`target`) lives in another
-///   cluster (guarded by `all_entries`), but the continuation (`next`) stays
-///   in this cluster and *is* followed.
+/// - **[`IrNodeKind::Jump`]** belongs to the current cluster, but its
+///   [`IrEdge::Jump`] destination is not followed.
+/// - **[`IrNodeKind::LetCall`]**: only the [`IrEdge::Ret`] continuation stays
+///   in this cluster; the [`IrEdge::Call`] callee is guarded by `all_entries`.
 /// - **[`IrNodeKind::ExitScope`]** for this label stops recursion: the exit
-///   marker is included, but its `next` continuation falls outside the cluster.
-/// - **[`IrNodeKind::Return`]** and **[`IrNodeKind::End`]** are true
-///   terminals — no successors within the cluster.
+///   marker is included, but no outgoing edges are followed.
+/// - **[`IrNodeKind::Return`]**, **[`IrNodeKind::End`]**, and
+///   **[`IrNodeKind::Todo`]** are true terminals — no successors within the
+///   cluster.
 pub fn compute_clusters(
     graph: &IrGraph,
-    reachable: &HashSet<NodeId>,
-) -> HashMap<String, HashSet<NodeId>> {
-    let all_entries: HashSet<NodeId> = graph.labels.values().copied().collect();
-    let mut clusters: HashMap<String, HashSet<NodeId>> = HashMap::new();
+    reachable: &HashSet<NodeIndex>,
+) -> HashMap<String, HashSet<NodeIndex>> {
+    let all_entries: HashSet<NodeIndex> = graph.labels.values().copied().collect();
+    let mut clusters: HashMap<String, HashSet<NodeIndex>> = HashMap::new();
 
     for (label_name, &entry_id) in &graph.labels {
-        let mut members: HashSet<NodeId> = HashSet::new();
-        let mut queue: VecDeque<NodeId> = VecDeque::new();
+        let mut members: HashSet<NodeIndex> = HashSet::new();
+        let mut queue: VecDeque<NodeIndex> = VecDeque::new();
         queue.push_back(entry_id);
 
-        while let Some(node_id) = queue.pop_front() {
-            if node_id == NODE_END || node_id.0 as usize >= graph.nodes.len() {
+        while let Some(node_idx) = queue.pop_front() {
+            if !reachable.contains(&node_idx) {
                 continue;
             }
-            if members.contains(&node_id) {
+            if members.contains(&node_idx) {
                 continue;
-            }
-            if !reachable.contains(&node_id) {
-                continue; // skip dead nodes
             }
             // Do not enter a different label's cluster.
-            if all_entries.contains(&node_id) && node_id != entry_id {
+            if all_entries.contains(&node_idx) && node_idx != entry_id {
                 continue;
             }
 
-            let node = &graph.nodes[node_id.0 as usize];
+            let kind = match graph.graph.node_weight(node_idx) {
+                Some(k) => k,
+                None => continue,
+            };
 
-            // Nop nodes are visited (to reach their successors) but not added.
-            if !matches!(&node.kind, IrNodeKind::Nop { .. }) {
-                members.insert(node_id);
+            // Nop nodes are visited (to reach their successors) but never added
+            // to the member set — they are collapsed at render time.
+            if !matches!(kind, IrNodeKind::Nop) {
+                members.insert(node_idx);
             }
 
-            match &node.kind {
-                // True terminals — no successors within this cluster.
-                IrNodeKind::Jump { .. }
+            match kind {
+                // True terminals within the cluster — no successors to enqueue.
+                IrNodeKind::Jump
                 | IrNodeKind::Return { .. }
                 | IrNodeKind::End
                 | IrNodeKind::Todo => {}
 
-                // LetCall: the callee belongs to another cluster (guarded by
-                // all_entries above), but the continuation (next) stays in
-                // this cluster.
-                IrNodeKind::LetCall { next, .. } => {
-                    queue.push_back(*next);
-                }
-
-                // Our own exit scope: include it, but do not recurse beyond.
-                IrNodeKind::ExitScope { label, .. } if label == label_name => {}
-
-                IrNodeKind::Assign { next, .. }
-                | IrNodeKind::Eval { next, .. }
-                | IrNodeKind::EnterScope { next, .. }
-                | IrNodeKind::ExitScope { next, .. }
-                | IrNodeKind::DefineEnum { next, .. }
-                | IrNodeKind::DefineScriptDecorator { next, .. }
-                | IrNodeKind::Nop { next }
-                | IrNodeKind::Dialogue { next, .. } => {
-                    queue.push_back(*next);
-                }
-
-                IrNodeKind::Branch {
-                    then_node,
-                    else_node,
-                    ..
-                } => {
-                    queue.push_back(*then_node);
-                    queue.push_back(*else_node);
-                }
-
-                IrNodeKind::Switch { arms, default, .. } => {
-                    for arm in arms {
-                        queue.push_back(arm.target);
-                    }
-                    if let Some(d) = default {
-                        queue.push_back(*d);
+                // LetCall: the callee (Call edge) lives in another cluster and
+                // is guarded by `all_entries`.  Only follow the Ret continuation
+                // which stays in this cluster.
+                IrNodeKind::LetCall { .. } => {
+                    for edge in graph.graph.edges_directed(node_idx, Direction::Outgoing) {
+                        if matches!(edge.weight(), IrEdge::Ret) {
+                            queue.push_back(edge.target());
+                        }
                     }
                 }
 
-                IrNodeKind::Choice { options, .. } => {
-                    for opt in options {
-                        queue.push_back(opt.entry);
+                // Our own ExitScope: include the node but do not recurse beyond.
+                IrNodeKind::ExitScope { label } if label == label_name => {}
+
+                // All other nodes (Assign, Eval, EnterScope, ExitScope for a
+                // different label, DefineEnum, DefineScriptDecorator, Nop,
+                // Dialogue, Branch, Switch, Choice): follow all outgoing edges.
+                // Cross-cluster destinations are blocked by the `all_entries`
+                // guard at the top of the loop.
+                _ => {
+                    for neighbor in graph
+                        .graph
+                        .neighbors_directed(node_idx, Direction::Outgoing)
+                    {
+                        queue.push_back(neighbor);
                     }
                 }
             }
@@ -248,35 +191,45 @@ pub fn compute_clusters(
 /// declarations, enum definitions, etc.) falls through to first.  Renderers
 /// use this to give the entry cluster a visually distinct border.
 ///
-/// Returns `None` if `graph.entry` never reaches a label node (e.g. the
-/// script has no `label` blocks at all).
+/// Returns `None` if `graph.entry` is absent or never reaches a label node
+/// (e.g. the script has no `label` blocks at all).
 pub fn entry_cluster_name(graph: &IrGraph) -> Option<String> {
-    let label_by_entry: HashMap<NodeId, &str> = graph
+    let label_by_entry: HashMap<NodeIndex, &str> = graph
         .labels
         .iter()
-        .map(|(name, &id)| (id, name.as_str()))
+        .map(|(name, &idx)| (idx, name.as_str()))
         .collect();
 
-    let mut current = graph.entry;
-    let mut visited: HashSet<NodeId> = HashSet::new();
+    let mut current = graph.entry?;
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
 
     loop {
-        if current == NODE_END || current.0 as usize >= graph.nodes.len() {
-            return None;
-        }
         if !visited.insert(current) {
             return None; // cycle guard
         }
+
         if let Some(name) = label_by_entry.get(&current) {
             return Some((*name).to_string());
         }
-        match &graph.nodes[current.0 as usize].kind {
-            IrNodeKind::Assign { next, .. }
-            | IrNodeKind::Eval { next, .. }
-            | IrNodeKind::Nop { next }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. } => {
-                current = *next;
+
+        match graph.graph.node_weight(current) {
+            Some(
+                IrNodeKind::Assign { .. }
+                | IrNodeKind::Eval { .. }
+                | IrNodeKind::Nop
+                | IrNodeKind::DefineEnum { .. }
+                | IrNodeKind::DefineScriptDecorator { .. },
+            ) => {
+                // Preamble node: follow its single Next edge.
+                let next = graph
+                    .graph
+                    .edges_directed(current, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Next))
+                    .map(|e| e.target());
+                match next {
+                    Some(n) => current = n,
+                    None => return None,
+                }
             }
             _ => return None,
         }
@@ -285,22 +238,38 @@ pub fn entry_cluster_name(graph: &IrGraph) -> Option<String> {
 
 // ─── Callee → ret continuations ──────────────────────────────────────────────
 
-/// Builds a map from **callee entry [`NodeId`]** to the list of **ret
-/// continuation [`NodeId`]**s for every [`IrNodeKind::LetCall`] in the graph.
+/// Builds a map from **callee entry [`NodeIndex`]** to the list of **ret
+/// continuation [`NodeIndex`]**s for every [`IrNodeKind::LetCall`] in the
+/// graph.
 ///
-/// A `LetCall { target, next, .. }` node means "call the subroutine whose
-/// [`IrNodeKind::EnterScope`] is at `target` and resume at `next` when it
-/// returns".  This map inverts that relationship so that a `Return` node inside
-/// a subroutine can look up all caller resumption points and draw back-edges to
-/// them rather than pointing at the misleading `__end__` sink.
+/// A `LetCall` node has an [`IrEdge::Call`] arc to the callee's entry and an
+/// [`IrEdge::Ret`] arc to the return continuation.  This map inverts that
+/// relationship so that a `Return` node inside a subroutine can look up all
+/// caller resumption points and draw back-edges to them.
 ///
-/// `next` values are **not** Nop-followed here — callers should apply
-/// [`follow_nops`] when consuming the returned `NodeId`s.
-pub fn callee_to_rets(graph: &IrGraph) -> HashMap<NodeId, Vec<NodeId>> {
-    let mut map: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-    for node in &graph.nodes {
-        if let IrNodeKind::LetCall { target, next, .. } = &node.kind {
-            map.entry(*target).or_default().push(*next);
+/// `Ret` targets are **not** Nop-followed here — callers should apply
+/// [`follow_nops`] when consuming the returned [`NodeIndex`] values if needed.
+pub fn callee_to_rets(graph: &IrGraph) -> HashMap<NodeIndex, Vec<NodeIndex>> {
+    let mut map: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
+    for idx in graph.graph.node_indices() {
+        if !matches!(
+            graph.graph.node_weight(idx),
+            Some(IrNodeKind::LetCall { .. })
+        ) {
+            continue;
+        }
+        let callee = graph
+            .graph
+            .edges_directed(idx, Direction::Outgoing)
+            .find(|e| matches!(e.weight(), IrEdge::Call))
+            .map(|e| e.target());
+        let ret = graph
+            .graph
+            .edges_directed(idx, Direction::Outgoing)
+            .find(|e| matches!(e.weight(), IrEdge::Ret))
+            .map(|e| e.target());
+        if let (Some(callee_idx), Some(ret_idx)) = (callee, ret) {
+            map.entry(callee_idx).or_default().push(ret_idx);
         }
     }
     map
@@ -308,16 +277,16 @@ pub fn callee_to_rets(graph: &IrGraph) -> HashMap<NodeId, Vec<NodeId>> {
 
 // ─── Inverted cluster map ────────────────────────────────────────────────────
 
-/// Inverts a cluster map, producing a lookup from [`NodeId`] to the name of
+/// Inverts a cluster map, producing a lookup from [`NodeIndex`] to the name of
 /// the label cluster that owns it.
 ///
 /// The returned map borrows label names from `clusters` for zero-copy
 /// efficiency.  If a node somehow appears in multiple clusters (which should
 /// not happen in a well-formed graph) the last one wins.
-pub fn node_to_cluster(clusters: &HashMap<String, HashSet<NodeId>>) -> HashMap<NodeId, &str> {
+pub fn node_to_cluster(clusters: &HashMap<String, HashSet<NodeIndex>>) -> HashMap<NodeIndex, &str> {
     clusters
         .iter()
-        .flat_map(|(name, members)| members.iter().map(move |&id| (id, name.as_str())))
+        .flat_map(|(name, members)| members.iter().map(move |&idx| (idx, name.as_str())))
         .collect()
 }
 
@@ -328,106 +297,112 @@ mod tests {
     #![allow(clippy::expect_used)]
     #![allow(clippy::unwrap_used)]
 
-    use std::collections::HashMap;
+    use petgraph::Direction;
 
     use super::*;
-    use crate::ir::{IrGraph, IrNode, IrNodeKind, NODE_END, NodeId};
+    use crate::ir::{IrEdge, IrGraph, IrNodeKind};
+
+    // ── graph-building helpers ────────────────────────────────────────────────
+
+    /// Build a small graph:
+    ///   N0(Nop) --Next--> N1(Nop) --Next--> N2(End)
+    ///
+    /// Returns `(graph, n0, n1, n2)`.
+    fn nop_chain_graph() -> (IrGraph, NodeIndex, NodeIndex, NodeIndex) {
+        let mut g = IrGraph::new();
+        let n0 = g.push(IrNodeKind::Nop);
+        let n1 = g.push(IrNodeKind::Nop);
+        let n2 = g.push(IrNodeKind::End);
+        g.add_edge(n0, n1, IrEdge::Next);
+        g.add_edge(n1, n2, IrEdge::Next);
+        g.entry = Some(n0);
+        (g, n0, n1, n2)
+    }
+
+    /// Build a small graph:
+    ///   N0(Assign x=0) --Next--> N1(End)
+    ///   N2(Assign y=0)  [no incoming edges — unreachable]
+    ///
+    /// Returns `(graph, n0, n1, n2)`.
+    fn two_node_graph_with_dead() -> (IrGraph, NodeIndex, NodeIndex, NodeIndex) {
+        use crate::parser::ast::Ast;
+        use crate::parser::ast::DeclKind;
+        use crate::runtime::value::RuntimeValue;
+        let dummy_expr = Ast::value(RuntimeValue::Int(0));
+        let dummy_var = Ast::value(RuntimeValue::IdentPath(vec!["x".into()]));
+
+        let mut g = IrGraph::new();
+        let n0 = g.push(IrNodeKind::Assign {
+            var: "x".into(),
+            scope: DeclKind::Variable,
+            expr: dummy_expr,
+        });
+        let n1 = g.push(IrNodeKind::End);
+        let n2 = g.push(IrNodeKind::Assign {
+            var: "y".into(),
+            scope: DeclKind::Variable,
+            expr: dummy_var,
+        });
+        g.add_edge(n0, n1, IrEdge::Next);
+        // n2 has no incoming edges and is therefore unreachable from entry.
+        g.entry = Some(n0);
+        (g, n0, n1, n2)
+    }
 
     // ── follow_nops ──────────────────────────────────────────────────────────
 
-    /// Build a small graph: N0(Nop→N1), N1(Nop→N2), N2(End).
-    fn nop_chain_graph() -> IrGraph {
-        IrGraph {
-            nodes: vec![
-                IrNode {
-                    id: NodeId(0),
-                    kind: IrNodeKind::Nop { next: NodeId(1) },
-                },
-                IrNode {
-                    id: NodeId(1),
-                    kind: IrNodeKind::Nop { next: NodeId(2) },
-                },
-                IrNode {
-                    id: NodeId(2),
-                    kind: IrNodeKind::End,
-                },
-            ],
-            entry: NodeId(0),
-            labels: HashMap::new(),
-        }
-    }
-
     #[test]
     fn follow_nops_skips_full_chain() {
-        let g = nop_chain_graph();
-        assert_eq!(follow_nops(&g, NodeId(0)), NodeId(2));
+        let (g, n0, _n1, n2) = nop_chain_graph();
+        assert_eq!(
+            follow_nops(&g, n0),
+            Some(n2),
+            "follow_nops from chain start must reach the terminal End node"
+        );
     }
 
     #[test]
     fn follow_nops_returns_non_nop_unchanged() {
-        let g = nop_chain_graph();
-        assert_eq!(follow_nops(&g, NodeId(2)), NodeId(2));
+        let (g, _n0, _n1, n2) = nop_chain_graph();
+        assert_eq!(
+            follow_nops(&g, n2),
+            Some(n2),
+            "follow_nops on a non-Nop node must return that node unchanged"
+        );
     }
 
     #[test]
-    fn follow_nops_returns_node_end_unchanged() {
-        let g = nop_chain_graph();
-        assert_eq!(follow_nops(&g, NODE_END), NODE_END);
+    fn follow_nops_returns_none_when_chain_has_no_continuation() {
+        // A standalone Nop with no outgoing edge — equivalent to the old
+        // `follow_nops(&g, NODE_END) == NODE_END` test.  The absence of a Next
+        // edge IS the sentinel in the new petgraph design.
+        let mut g = IrGraph::new();
+        let nop = g.push(IrNodeKind::Nop); // no Next edge added
+        g.entry = Some(nop);
+        assert_eq!(
+            follow_nops(&g, nop),
+            None,
+            "Nop with no outgoing Next edge must return None"
+        );
     }
 
     // ── reachable_nodes ──────────────────────────────────────────────────────
 
-    /// N0(Assign→N1), N1(End).  N2(Assign→NODE_END) is unreachable.
-    fn two_node_graph_with_dead() -> IrGraph {
-        use crate::parser::ast::{Ast, DeclKind};
-        use crate::runtime::value::RuntimeValue;
-        let dummy_expr = Ast::value(RuntimeValue::Int(0));
-        let dummy_var = Ast::value(RuntimeValue::IdentPath(vec!["x".into()]));
-        IrGraph {
-            nodes: vec![
-                IrNode {
-                    id: NodeId(0),
-                    kind: IrNodeKind::Assign {
-                        var: "x".into(),
-                        scope: DeclKind::Variable,
-                        expr: dummy_expr.clone(),
-                        next: NodeId(1),
-                    },
-                },
-                IrNode {
-                    id: NodeId(1),
-                    kind: IrNodeKind::End,
-                },
-                IrNode {
-                    id: NodeId(2),
-                    kind: IrNodeKind::Assign {
-                        var: "y".into(),
-                        scope: DeclKind::Variable,
-                        expr: dummy_var,
-                        next: NODE_END,
-                    },
-                },
-            ],
-            entry: NodeId(0),
-            labels: HashMap::new(),
-        }
-    }
-
     #[test]
     fn reachable_includes_live_nodes() {
-        let g = two_node_graph_with_dead();
+        let (g, n0, n1, _n2) = two_node_graph_with_dead();
         let r = reachable_nodes(&g);
-        assert!(r.contains(&NodeId(0)));
-        assert!(r.contains(&NodeId(1)));
+        assert!(r.contains(&n0), "N0 is reachable from entry");
+        assert!(r.contains(&n1), "N1 is reachable from N0 via Next edge");
     }
 
     #[test]
     fn reachable_excludes_dead_nodes() {
-        let g = two_node_graph_with_dead();
+        let (g, _n0, _n1, n2) = two_node_graph_with_dead();
         let r = reachable_nodes(&g);
         assert!(
-            !r.contains(&NodeId(2)),
-            "N2 is unreachable and must be excluded"
+            !r.contains(&n2),
+            "N2 has no path from entry and must be excluded"
         );
     }
 
@@ -456,7 +431,8 @@ mod tests {
 
     #[test]
     fn compute_clusters_letcall_next_stays_in_cluster() {
-        // After the LetCall, the continuation (next) should remain in the caller's cluster.
+        // After the LetCall, the continuation (Ret edge target) must remain in
+        // the caller's cluster.
         let g = compile(
             r#"
             label start {
@@ -471,33 +447,38 @@ mod tests {
         let r = reachable_nodes(&g);
         let clusters = compute_clusters(&g, &r);
 
-        // Find the LetCall node
-        let letcall_node = g
-            .nodes
-            .iter()
-            .find(|n| matches!(&n.kind, IrNodeKind::LetCall { .. }));
-        assert!(letcall_node.is_some(), "must have a LetCall node");
+        // Find the LetCall node by iterating all node indices.
+        let letcall_idx = g
+            .graph
+            .node_indices()
+            .find(|&idx| matches!(g.graph.node_weight(idx), Some(IrNodeKind::LetCall { .. })));
+        assert!(letcall_idx.is_some(), "must have a LetCall node");
+        let letcall_idx = letcall_idx.unwrap();
 
-        let letcall_id = letcall_node.unwrap().id;
-
-        // The LetCall itself must be in the "start" cluster
+        // The LetCall itself must be in the "start" cluster.
         let start_cluster = clusters.get("start").expect("start cluster must exist");
         assert!(
-            start_cluster.contains(&letcall_id),
+            start_cluster.contains(&letcall_idx),
             "LetCall node must be in the start cluster"
         );
 
-        // Find the Assign(x=1) node — it comes after the LetCall
-        let assign_x = g
-            .nodes
-            .iter()
-            .find(|n| matches!(&n.kind, IrNodeKind::Assign { var, .. } if var == "x"));
-        if let Some(ax) = assign_x {
-            assert!(
-                start_cluster.contains(&ax.id),
-                "node after LetCall (let x=1) must be in the same cluster as the LetCall (start)"
-            );
-        }
+        // The Ret continuation (let x = 1 assign) must also be in "start".
+        let ret_target = g
+            .graph
+            .edges_directed(letcall_idx, Direction::Outgoing)
+            .find(|e| matches!(e.weight(), IrEdge::Ret))
+            .map(|e| e.target());
+        assert!(ret_target.is_some(), "LetCall must have a Ret edge");
+        let ret_idx = ret_target.unwrap();
+
+        // Walk through any Nop mergepoints to the actual Assign node.
+        let after_ret = follow_nops(&g, ret_idx).unwrap_or(ret_idx);
+
+        // Verify the node after LetCall (possibly past Nops) is in "start".
+        assert!(
+            start_cluster.contains(&after_ret) || start_cluster.contains(&ret_idx),
+            "node after LetCall must be in the same cluster as the LetCall (start)"
+        );
     }
 
     // ── entry_cluster_name ───────────────────────────────────────────────────
@@ -561,7 +542,7 @@ mod tests {
         let helper_entry = *g.labels.get("helper").expect("helper must be a label");
         assert!(
             map.contains_key(&helper_entry),
-            "callee_to_rets must have an entry for the helper's entry NodeId"
+            "callee_to_rets must have an entry for the helper's entry NodeIndex"
         );
         let rets = &map[&helper_entry];
         assert_eq!(rets.len(), 1, "one call site → one ret continuation");
@@ -599,13 +580,13 @@ mod tests {
         let clusters = compute_clusters(&g, &r);
         let inv = node_to_cluster(&clusters);
 
-        // Every node that is in a cluster must resolve back to that cluster's name.
+        // Every node that is in a cluster must resolve back to that cluster.
         for (name, members) in &clusters {
-            for &id in members {
+            for &idx in members {
                 assert_eq!(
-                    inv.get(&id),
+                    inv.get(&idx),
                     Some(&name.as_str()),
-                    "node {id:?} must map back to its owning cluster '{name}'"
+                    "node {idx:?} must map back to its owning cluster '{name}'"
                 );
             }
         }
@@ -613,7 +594,7 @@ mod tests {
 
     #[test]
     fn node_to_cluster_does_not_contain_unclustered_nodes() {
-        // A bare assign with no label produces a node outside any cluster.
+        // A bare assign with no label produces nodes outside any cluster.
         let g = compile(
             r#"
             let z = 99
@@ -622,7 +603,7 @@ mod tests {
         let r = reachable_nodes(&g);
         let clusters = compute_clusters(&g, &r);
         let inv = node_to_cluster(&clusters);
-        // Since there are no labels, the inv map must be empty.
+        // Since there are no labels, the inverted map must be empty.
         assert!(inv.is_empty(), "no labels → node_to_cluster must be empty");
     }
 }

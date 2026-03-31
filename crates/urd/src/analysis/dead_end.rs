@@ -98,6 +98,73 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
 /// `errors`.  `parent_span` is the span of the enclosing context (used when
 /// the current node has a zero span).  `location` is a human-readable
 /// description used for ariadne labels and zero-span fallback messages.
+/// If `block` ends with a `Menu` node (the last non-`LabeledBlock` statement),
+/// return a reference to that `Menu` node.  Used by `LabeledBlock` to emit
+/// per-option diagnostics only when the menu is known to be in a terminal
+/// position (i.e. nothing after it provides a terminator).
+fn last_menu_in_block(block: &Ast) -> Option<&Ast> {
+    let stmts = match block.content() {
+        AstContent::Block(s) => s,
+        _ => return None,
+    };
+    // Walk forward, skipping trailing LabeledBlock nodes (they are jump
+    // targets, not inline flow), and return the last inline statement if it
+    // is a Menu.
+    stmts
+        .iter()
+        .rev()
+        .find(|s| !matches!(s.content(), AstContent::LabeledBlock { .. }))
+        .and_then(|s| {
+            if matches!(s.content(), AstContent::Menu { .. }) {
+                Some(s)
+            } else {
+                None
+            }
+        })
+}
+
+/// Emit one [`AnalysisError::DeadEnd`] for each option in `menu_node` whose
+/// content does not terminate.  Only called when the menu is the final
+/// statement in a labeled block that is itself open — i.e. we know there are
+/// no statements after the menu that could provide a terminator.
+///
+/// This gives precise per-option diagnostics without false positives.
+fn emit_terminal_menu_errors(
+    menu_node: &Ast,
+    errors: &mut Vec<AnalysisError>,
+    parent_span: SimpleSpan,
+    location: &NodeDescription,
+) {
+    let options = match menu_node.content() {
+        AstContent::Menu { options } => options,
+        _ => return,
+    };
+    for opt in options {
+        let opt_label: &str = match opt.content() {
+            AstContent::MenuOption { label, .. } => label.as_str(),
+            _ => "(unknown option)",
+        };
+        let opt_loc = NodeDescription::menu_option(opt_label, location);
+        let opt_span = {
+            let s = opt.span();
+            if s.start == 0 && s.end == 0 {
+                parent_span
+            } else {
+                s
+            }
+        };
+        // Re-evaluate without pushing new nested errors (they were already
+        // collected during the main termination_of pass).
+        let t = termination_of(opt, &mut Vec::new(), opt_span, location);
+        if t != Termination::Terminates {
+            errors.push(AnalysisError::DeadEnd {
+                span: opt_span,
+                description: opt_loc,
+            });
+        }
+    }
+}
+
 fn termination_of(
     ast: &Ast,
     errors: &mut Vec<AnalysisError>,
@@ -187,10 +254,19 @@ fn termination_of(
             };
             let t = termination_of(block, errors, block_span, &inner_loc);
             if t != Termination::Terminates {
-                errors.push(AnalysisError::DeadEnd {
-                    span: block_span,
-                    description: inner_loc,
-                });
+                // If the block ends with a menu, emit per-option errors rather
+                // than (or in addition to) a coarse label-level error.  This
+                // only happens here — after we know no statement following the
+                // menu provides a terminator — so there are no false positives
+                // from menus that are followed by a `jump` or `return`.
+                if let Some(menu) = last_menu_in_block(block) {
+                    emit_terminal_menu_errors(menu, errors, block_span, &inner_loc);
+                } else {
+                    errors.push(AnalysisError::DeadEnd {
+                        span: block_span,
+                        description: inner_loc,
+                    });
+                }
             }
             t
         }
@@ -253,56 +329,30 @@ fn termination_of(
                 return Termination::Open;
             }
 
-            // First pass: recurse into every option to surface nested errors
-            // and collect each option's termination status.
-            //
-            // We deliberately separate collection from error-emission so that
-            // we can decide whether asymmetry exists before pushing anything.
-            let mut statuses: Vec<(Termination, SimpleSpan, NodeDescription)> =
-                Vec::with_capacity(options.len());
-
+            // Recurse into every option to surface errors nested *inside*
+            // option bodies (e.g. a nested if-without-else that itself dead-
+            // ends).  Per-option dead-end errors for the options themselves are
+            // NOT emitted here — we don't yet know whether statements after
+            // this menu in the enclosing block will provide a terminator.
+            // `emit_terminal_menu_errors` (called from `LabeledBlock` when
+            // appropriate) handles that responsibility.
+            let mut all_terminate = true;
             for opt in options {
-                let opt_label: &str = match opt.content() {
-                    AstContent::MenuOption { label, .. } => label.as_str(),
-                    _ => "(unknown option)",
-                };
-                let opt_loc = NodeDescription::menu_option(opt_label, location);
                 let opt_span = {
                     let s = opt.span();
                     if s.start == 0 && s.end == 0 { span } else { s }
                 };
-                // Recurse: nested dead-ends inside the option are collected now.
                 let t = termination_of(opt, errors, opt_span, location);
-                statuses.push((t, opt_span, opt_loc));
-            }
-
-            let any_terminates = statuses.iter().any(|(t, ..)| *t == Termination::Terminates);
-            let all_terminate = statuses.iter().all(|(t, ..)| *t == Termination::Terminates);
-
-            if all_terminate {
-                return Termination::Terminates;
-            }
-
-            // Only emit per-option dead-end errors when there is **asymmetry**:
-            // at least one option terminates and at least one does not.  When
-            // ALL options are uniformly open (e.g. they each show dialogue and
-            // fall through) the menu itself is `Open` and the enclosing block
-            // is responsible for deciding whether that constitutes a dead end.
-            // Emitting noise for every open option in that case (as the old
-            // code did) produced false positives whenever more statements
-            // followed the menu in the same label block.
-            if any_terminates {
-                for (t, opt_span, opt_loc) in statuses {
-                    if t != Termination::Terminates {
-                        errors.push(AnalysisError::DeadEnd {
-                            span: opt_span,
-                            description: opt_loc,
-                        });
-                    }
+                if t != Termination::Terminates {
+                    all_terminate = false;
                 }
             }
 
-            Termination::Open
+            if all_terminate {
+                Termination::Terminates
+            } else {
+                Termination::Open
+            }
         }
 
         // MenuOption: delegate to its content block.
@@ -751,9 +801,10 @@ mod tests {
     }
 
     #[test]
-    fn menu_one_option_open_pushes_error() {
-        // Asymmetric menu: one option terminates, one does not.
-        // The open option should be flagged as a dead end.
+    fn menu_one_option_open_is_open_without_errors_from_menu_itself() {
+        // termination_of(Menu) never emits per-option errors — that is the
+        // responsibility of emit_terminal_menu_errors, called only from
+        // LabeledBlock when the menu is known to be in a terminal position.
         let opt_a = Ast::menu_option("Yes".to_owned(), Ast::block(vec![return_node()]));
         let opt_b = Ast::menu_option("No".to_owned(), Ast::block(vec![dialogue_node()]));
         let ast = Ast::menu(vec![opt_a, opt_b]);
@@ -765,21 +816,16 @@ mod tests {
             &NodeDescription::top_level(),
         );
         assert_eq!(t, Termination::Open);
-        assert_eq!(errors.len(), 1);
-        match &errors[0] {
-            AnalysisError::DeadEnd { description, .. } => {
-                assert!(description.0.contains("No"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            errors.is_empty(),
+            "termination_of(Menu) must not emit per-option errors: {errors:?}"
+        );
     }
 
     #[test]
     fn menu_all_options_open_is_open_without_errors() {
         // Uniformly-open menu (all options show dialogue and fall through).
-        // No per-option errors should be emitted — the Open result propagates
-        // to the enclosing block, which decides whether it's a dead end.
-        // This is the "market menu followed by jump" pattern from village.urd.
+        // No errors from the menu node itself.
         let opt_a = Ast::menu_option("Browse".to_owned(), Ast::block(vec![dialogue_node()]));
         let opt_b = Ast::menu_option("Leave".to_owned(), Ast::block(vec![dialogue_node()]));
         let ast = Ast::menu(vec![opt_a, opt_b]);
@@ -794,6 +840,96 @@ mod tests {
         assert!(
             errors.is_empty(),
             "expected no per-option errors for uniformly-open menu, got: {errors:?}"
+        );
+    }
+
+    // -- emit_terminal_menu_errors / LabeledBlock integration ----------------
+
+    /// Build a LabeledBlock whose body is exactly the given statements.
+    fn labeled_block_with_stmts(label: &str, stmts: Vec<Ast>) -> Ast {
+        Ast::labeled_block(label.to_owned(), Ast::block(stmts))
+    }
+
+    #[test]
+    fn terminal_menu_asymmetric_emits_per_option_errors() {
+        // Label block whose only statement is an asymmetric menu (one option
+        // terminates, one does not).  Because nothing follows the menu,
+        // emit_terminal_menu_errors should fire for the open option.
+        let opt_yes = Ast::menu_option("Yes".to_owned(), Ast::block(vec![return_node()]));
+        let opt_no = Ast::menu_option("No".to_owned(), Ast::block(vec![dialogue_node()]));
+        let ast = labeled_block_with_stmts("start", vec![Ast::menu(vec![opt_yes, opt_no])]);
+        let errors = super::super::dead_end::check(&ast);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                AnalysisError::DeadEnd { description, .. } if description.0.contains("No")
+            )),
+            "expected DeadEnd for 'No' option, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_menu_uniformly_open_emits_per_option_errors() {
+        // All options are open and the menu is the last statement — every
+        // option should be flagged.
+        let opt_a = Ast::menu_option("A".to_owned(), Ast::block(vec![dialogue_node()]));
+        let opt_b = Ast::menu_option("B".to_owned(), Ast::block(vec![dialogue_node()]));
+        let ast = labeled_block_with_stmts("start", vec![Ast::menu(vec![opt_a, opt_b])]);
+        let errors = super::super::dead_end::check(&ast);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                AnalysisError::DeadEnd { description, .. } if description.0.contains('A')
+            )),
+            "expected DeadEnd for option A, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                AnalysisError::DeadEnd { description, .. } if description.0.contains('B')
+            )),
+            "expected DeadEnd for option B, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn menu_followed_by_jump_no_per_option_errors() {
+        // Menu (asymmetric: opt A terminates, opts B/C open) followed by
+        // `jump next` in the same label.  The jump covers the open options
+        // so there must be zero errors.
+        let opt_a = Ast::menu_option("A".to_owned(), Ast::block(vec![return_node()]));
+        let opt_b = Ast::menu_option("B".to_owned(), Ast::block(vec![dialogue_node()]));
+        let opt_c = Ast::menu_option("C".to_owned(), Ast::block(vec![dialogue_node()]));
+        let ast = labeled_block_with_stmts(
+            "market",
+            vec![
+                Ast::menu(vec![opt_a, opt_b, opt_c]),
+                Ast::jump_stmt("next".to_owned(), false),
+            ],
+        );
+        let errors = super::super::dead_end::check(&ast);
+        assert!(
+            errors.is_empty(),
+            "expected no errors when menu is followed by a jump, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn menu_followed_by_jump_uniformly_open_no_errors() {
+        // All options open, but a jump follows the menu — no errors.
+        let opt_a = Ast::menu_option("Browse".to_owned(), Ast::block(vec![dialogue_node()]));
+        let opt_b = Ast::menu_option("Leave".to_owned(), Ast::block(vec![dialogue_node()]));
+        let ast = labeled_block_with_stmts(
+            "market",
+            vec![
+                Ast::menu(vec![opt_a, opt_b]),
+                Ast::jump_stmt("village_square".to_owned(), false),
+            ],
+        );
+        let errors = super::super::dead_end::check(&ast);
+        assert!(
+            errors.is_empty(),
+            "expected no errors when all-open menu is followed by a jump, got: {errors:?}"
         );
     }
 

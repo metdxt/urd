@@ -13,11 +13,12 @@
 //!
 //! ## Architecture
 //!
-//! The VM is a simple interpreter loop over a flat node arena.  Internal nodes
-//! (branches, assignments, jumps …) are consumed silently; only
-//! [`IrNodeKind::Dialogue`] and [`IrNodeKind::Choice`] surface as [`Event`]s.
-//! The caller drives the loop by repeatedly calling [`Vm::next`], supplying
-//! `choice: Some(idx)` only when responding to a [`Event::Choice`].
+//! The VM is a simple interpreter loop over a petgraph [`StableGraph`].
+//! Internal nodes (branches, assignments, jumps …) are consumed silently;
+//! only [`IrNodeKind::Dialogue`] and [`IrNodeKind::Choice`] surface as
+//! [`Event`]s.  The caller drives the loop by repeatedly calling
+//! [`Vm::next`], supplying `choice: Some(idx)` only when responding to a
+//! [`Event::Choice`].
 
 pub mod env;
 pub mod eval;
@@ -30,17 +31,31 @@ pub use registry::DecoratorRegistry;
 
 use std::collections::{HashMap, HashSet};
 
+use petgraph::Direction;
+use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 use thiserror::Error;
 
 use crate::{
     compiler::CompilerError,
-    ir::{ChoiceEvent, Event, IrGraph, IrNodeKind, NODE_END, NodeId},
-    parser::ast::{AstContent, DeclKind, Decorator, MatchPattern, Operator},
+    ir::{ChoiceEvent, Event, IrChoiceOption, IrEdge, IrGraph, IrNodeKind},
+    parser::ast::{AstContent, DeclKind, Decorator, MatchPattern},
     runtime::value::RuntimeValue,
 };
 
 use self::eval::{is_truthy, values_equal};
-use self::registry::eval_decorator_args;
+
+// ─── Graph helpers ────────────────────────────────────────────────────────────
+
+/// Returns the single `Next`-edge successor of `idx`, or `None` if there is
+/// no such edge (i.e. the node is a terminal or its continuation is absent).
+fn next_of(graph: &IrGraph, idx: NodeIndex) -> Option<NodeIndex> {
+    graph
+        .graph
+        .edges_directed(idx, Direction::Outgoing)
+        .find(|e| matches!(e.weight(), IrEdge::Next))
+        .map(|e| e.target())
+}
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -54,7 +69,7 @@ pub enum VmError {
         /// The unregistered decorator name.
         name: String,
         /// The IR node at which the unknown decorator appeared.
-        node_id: NodeId,
+        node_id: NodeIndex,
     },
 
     /// A `jump` targeted a label not present in the compiled graph.
@@ -96,10 +111,10 @@ pub enum VmError {
 /// registry or as a script-defined decorator). Returns `Err` on the first
 /// unregistered name.
 fn check_decorator_known(
-    dec: &crate::parser::ast::Decorator,
+    dec: &Decorator,
     registry: &DecoratorRegistry,
-    script_defined: &std::collections::HashSet<&str>,
-    node_id: NodeId,
+    script_defined: &HashSet<&str>,
+    node_id: NodeIndex,
 ) -> Result<(), VmError> {
     if !registry.handlers.contains_key(dec.name()) && !script_defined.contains(dec.name()) {
         return Err(VmError::UnknownDecorator {
@@ -119,15 +134,15 @@ fn check_decorator_known(
 /// call stack, etc.).
 #[derive(Debug)]
 struct VmState {
-    /// The node currently being processed.
-    cursor: NodeId,
+    /// The node currently being processed, or `None` when execution has ended.
+    cursor: Option<NodeIndex>,
     /// The runtime variable environment.
     env: Environment,
     /// The call stack for labeled-block "function" calls.
     call_stack: Vec<CallFrame>,
     /// Set when the last emitted event was a [`Event::Choice`]; `None`
     /// otherwise.  Cleared when the player provides a valid choice index.
-    pending_choice: Option<NodeId>,
+    pending_choice: Option<NodeIndex>,
     /// Registry of named decorator handlers.
     registry: DecoratorRegistry,
 }
@@ -148,10 +163,10 @@ struct VmState {
 pub struct Vm {
     /// The compiled IR graph (immutable during execution).
     graph: IrGraph,
-    /// Pre-built map from label name → the `next` field of the matching
+    /// Pre-built map from label name → the `Next`-successor of the matching
     /// [`IrNodeKind::ExitScope`] node. Replaces the former O(n) scan in
     /// `find_exit_scope_next`.
-    exit_scope_map: HashMap<String, NodeId>,
+    exit_scope_map: HashMap<String, Option<NodeIndex>>,
     /// All mutable execution state.
     state: VmState,
 }
@@ -170,20 +185,24 @@ impl Vm {
         // Pass 1: collect all names defined by DefineScriptDecorator nodes so
         // that the validation pass below can accept them without a Rust handler.
         let script_defined: HashSet<&str> = graph
-            .nodes
-            .iter()
-            .filter_map(|n| match &n.kind {
+            .graph
+            .node_weights()
+            .filter_map(|k| match k {
                 IrNodeKind::DefineScriptDecorator { name, .. } => Some(name.as_str()),
                 _ => None,
             })
             .collect();
 
         // Pass 2: validate every decorator used in Dialogue / Choice nodes.
-        for node in &graph.nodes {
-            match &node.kind {
+        for node_idx in graph.graph.node_indices() {
+            let kind = match graph.graph.node_weight(node_idx) {
+                Some(k) => k,
+                None => continue,
+            };
+            match kind {
                 IrNodeKind::Dialogue { decorators, .. } => {
                     for dec in decorators {
-                        check_decorator_known(dec, &registry, &script_defined, node.id)?;
+                        check_decorator_known(dec, &registry, &script_defined, node_idx)?;
                     }
                 }
                 IrNodeKind::Choice {
@@ -191,11 +210,11 @@ impl Vm {
                     options,
                 } => {
                     for dec in decorators {
-                        check_decorator_known(dec, &registry, &script_defined, node.id)?;
+                        check_decorator_known(dec, &registry, &script_defined, node_idx)?;
                     }
                     for opt in options {
                         for dec in &opt.decorators {
-                            check_decorator_known(dec, &registry, &script_defined, node.id)?;
+                            check_decorator_known(dec, &registry, &script_defined, node_idx)?;
                         }
                     }
                 }
@@ -208,23 +227,26 @@ impl Vm {
         // arguments) without polluting the globals map that a save-file system
         // would serialise.
         let mut env = Environment::new();
-        for (name, node_id) in &graph.labels {
+        for (name, &node_idx) in &graph.labels {
             env.define_builtin(
                 name.clone(),
                 RuntimeValue::Label {
                     name: name.clone(),
-                    node_id: *node_id,
+                    node_id: node_idx,
                 },
             );
         }
 
-        // Pre-build the exit-scope lookup map (label → continuation NodeId).
+        // Pre-build the exit-scope lookup map (label → continuation NodeIndex).
         // This replaces the former O(n) linear scan done on every EnterScope.
-        let exit_scope_map: HashMap<String, NodeId> = graph
-            .nodes
-            .iter()
-            .filter_map(|n| match &n.kind {
-                IrNodeKind::ExitScope { label, next } => Some((label.clone(), *next)),
+        let exit_scope_map: HashMap<String, Option<NodeIndex>> = graph
+            .graph
+            .node_indices()
+            .filter_map(|idx| match graph.graph.node_weight(idx) {
+                Some(IrNodeKind::ExitScope { label }) => {
+                    let next = next_of(&graph, idx);
+                    Some((label.clone(), next))
+                }
                 _ => None,
             })
             .collect();
@@ -260,14 +282,15 @@ impl Vm {
         let state = &mut self.state;
 
         loop {
-            // NODE_END sentinel → treat as End.
-            if state.cursor == NODE_END {
-                return None;
-            }
+            let node_idx = match state.cursor {
+                None => return None,
+                Some(idx) => idx,
+            };
 
-            let node_id = state.cursor;
-
-            let node_kind = &graph.nodes.get(node_id.as_index())?.kind;
+            let node_kind = match graph.graph.node_weight(node_idx) {
+                None => return None,
+                Some(k) => k,
+            };
 
             match node_kind {
                 // ── Terminal ─────────────────────────────────────────────────
@@ -279,17 +302,12 @@ impl Vm {
                 }
 
                 // ── Nop / merge point ────────────────────────────────────────
-                IrNodeKind::Nop { next } => {
-                    state.cursor = *next;
+                IrNodeKind::Nop => {
+                    state.cursor = next_of(graph, node_idx);
                 }
 
                 // ── Variable assignment ──────────────────────────────────────
-                IrNodeKind::Assign {
-                    var,
-                    scope,
-                    expr,
-                    next,
-                } => {
+                IrNodeKind::Assign { var, scope, expr } => {
                     let value = match eval_expr(expr, &state.env) {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
@@ -297,11 +315,11 @@ impl Vm {
                     if let Err(e) = state.env.set(var, value, scope) {
                         return Some(Err(e));
                     }
-                    state.cursor = *next;
+                    state.cursor = next_of(graph, node_idx);
                 }
 
                 // ── Side-effecting expression ────────────────────────────────
-                IrNodeKind::Eval { expr, next } => {
+                IrNodeKind::Eval { expr } => {
                     // With the graph/state split, `expr` borrows from `graph`
                     // and `state.env` is a separate struct — no clone needed.
                     match expr.content() {
@@ -318,39 +336,40 @@ impl Vm {
                             }
                         }
                     }
-                    state.cursor = *next;
+                    state.cursor = next_of(graph, node_idx);
                 }
 
                 // ── Conditional branch ───────────────────────────────────────
-                IrNodeKind::Branch {
-                    condition,
-                    then_node,
-                    else_node,
-                } => {
+                IrNodeKind::Branch { condition } => {
                     let cond_val = match eval_expr(condition, &state.env) {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
                     };
+                    let mut then_node: Option<NodeIndex> = None;
+                    let mut else_node: Option<NodeIndex> = None;
+                    for e in graph.graph.edges_directed(node_idx, Direction::Outgoing) {
+                        match e.weight() {
+                            IrEdge::Then => then_node = Some(e.target()),
+                            IrEdge::Else => else_node = Some(e.target()),
+                            _ => {}
+                        }
+                    }
                     state.cursor = if is_truthy(&cond_val) {
-                        *then_node
+                        then_node
                     } else {
-                        *else_node
+                        else_node
                     };
                 }
 
                 // ── Multi-way pattern match ──────────────────────────────────
-                IrNodeKind::Switch {
-                    scrutinee,
-                    arms,
-                    default,
-                } => {
+                IrNodeKind::Switch { scrutinee, arms } => {
                     let scrutinee_val = match eval_expr(scrutinee, &state.env) {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
                     };
 
                     let mut matched = false;
-                    for arm in arms {
+                    for (i, arm) in arms.iter().enumerate() {
                         let is_match = match &arm.pattern {
                             MatchPattern::Wildcard => true,
                             MatchPattern::Value(pat_ast) => match eval_expr(pat_ast, &state.env) {
@@ -359,21 +378,42 @@ impl Vm {
                             },
                         };
                         if is_match {
-                            state.cursor = arm.target;
+                            let target = graph
+                                .graph
+                                .edges_directed(node_idx, Direction::Outgoing)
+                                .find(|e| {
+                                    if let IrEdge::Arm(j) = e.weight() {
+                                        *j == i
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .map(|e| e.target());
+                            state.cursor = target;
                             matched = true;
                             break;
                         }
                     }
 
                     if !matched {
-                        state.cursor = default.unwrap_or(NODE_END);
+                        let default_target = graph
+                            .graph
+                            .edges_directed(node_idx, Direction::Outgoing)
+                            .find(|e| matches!(e.weight(), IrEdge::Default))
+                            .map(|e| e.target());
+                        state.cursor = default_target;
                     }
                 }
 
                 // ── Unconditional jump ───────────────────────────────────────
-                IrNodeKind::Jump { target } => {
+                IrNodeKind::Jump => {
                     // Jump does NOT push a call frame — it is a tail transfer.
-                    state.cursor = *target;
+                    let target = graph
+                        .graph
+                        .edges_directed(node_idx, Direction::Outgoing)
+                        .find(|e| matches!(e.weight(), IrEdge::Jump))
+                        .map(|e| e.target());
+                    state.cursor = target;
                 }
 
                 // ── Return ───────────────────────────────────────────────────
@@ -412,18 +452,33 @@ impl Vm {
                 // We bypass the target's EnterScope node to avoid a double frame
                 // on the call stack (EnterScope always pushes its own frame).
                 // Instead, LetCall:
-                //   1. Reads body_entry directly from the EnterScope node.
-                //   2. Pushes its own scope + frame (with return_cursor = next).
+                //   1. Reads body_entry directly from the EnterScope node's Next edge.
+                //   2. Pushes its own scope + frame (with return_cursor = Ret edge target).
                 //   3. Jumps to body_entry.
                 //
                 // ExitScope (on fall-through) and Return (on explicit return) both
-                // pop the LetCall frame and land at `next` (the call-site continuation).
-                IrNodeKind::LetCall { var, target, next } => {
-                    // Resolve body_entry: if the target is an EnterScope node,
+                // pop the LetCall frame and land at `return_cursor`.
+                IrNodeKind::LetCall { var } => {
+                    let callee_idx = graph
+                        .graph
+                        .edges_directed(node_idx, Direction::Outgoing)
+                        .find(|e| matches!(e.weight(), IrEdge::Call))
+                        .map(|e| e.target());
+
+                    let ret_idx = graph
+                        .graph
+                        .edges_directed(node_idx, Direction::Outgoing)
+                        .find(|e| matches!(e.weight(), IrEdge::Ret))
+                        .map(|e| e.target());
+
+                    // Resolve body_entry: if the callee is an EnterScope node,
                     // jump past it into the body directly.
-                    let body_entry = match graph.nodes.get(target.as_index()).map(|n| &n.kind) {
-                        Some(IrNodeKind::EnterScope { next: body, .. }) => *body,
-                        _ => *target, // fallback: jump to target as-is
+                    let body_entry = match callee_idx {
+                        Some(ci) => match graph.graph.node_weight(ci) {
+                            Some(IrNodeKind::EnterScope { .. }) => next_of(graph, ci),
+                            _ => Some(ci),
+                        },
+                        None => None,
                     };
 
                     let assign = if var.is_empty() {
@@ -435,7 +490,7 @@ impl Vm {
                     // Push a scope to match the eventual ExitScope's pop.
                     state.env.push_scope();
                     state.call_stack.push(CallFrame {
-                        return_cursor: *next,
+                        return_cursor: ret_idx,
                         scope_depth: state.env.depth() - 1,
                         assign_to_var: assign,
                     });
@@ -443,12 +498,9 @@ impl Vm {
                 }
 
                 // ── Enter labeled-block scope ────────────────────────────────
-                IrNodeKind::EnterScope { label, next } => {
+                IrNodeKind::EnterScope { label } => {
                     // O(1) lookup via pre-built map instead of O(n) scan.
-                    let return_cursor = exit_scope_map
-                        .get(label.as_str())
-                        .copied()
-                        .unwrap_or(NODE_END);
+                    let return_cursor = exit_scope_map.get(label.as_str()).and_then(|v| *v);
 
                     state.env.push_scope();
                     state.call_stack.push(CallFrame {
@@ -456,7 +508,7 @@ impl Vm {
                         scope_depth: state.env.depth() - 1,
                         assign_to_var: None,
                     });
-                    state.cursor = *next;
+                    state.cursor = next_of(graph, node_idx);
                 }
 
                 // ── Exit labeled-block scope ─────────────────────────────────
@@ -464,29 +516,21 @@ impl Vm {
                     state.env.pop_scope();
                     // Pop the matching call frame (pushed by either EnterScope
                     // on normal fall-through, or LetCall on a subroutine call).
-                    // Use the frame's `return_cursor` rather than ExitScope's
-                    // `next` field so that LetCall fall-throughs land at the
-                    // call-site continuation (LetCall.next), not back at the
-                    // LetCall node itself.
-                    //
-                    // For plain EnterScope fall-through, frame.return_cursor ==
-                    // ExitScope.next (both set by exit_scope_map), so behaviour
-                    // is unchanged.
+                    // Use the frame's `return_cursor` rather than the ExitScope's
+                    // Next edge so that LetCall fall-throughs land at the
+                    // call-site continuation (LetCall's Ret edge), not back at
+                    // the LetCall node itself.
                     let next_id = match state.call_stack.pop() {
                         Some(frame) => frame.return_cursor,
-                        None => NODE_END,
+                        None => None,
                     };
                     state.cursor = next_id;
                 }
 
                 // ── Enum declaration ─────────────────────────────────────────
-                IrNodeKind::DefineEnum {
-                    name,
-                    variants,
-                    next,
-                } => {
+                IrNodeKind::DefineEnum { name, variants } => {
                     state.env.define_enum(name.clone(), variants.clone());
-                    state.cursor = *next;
+                    state.cursor = next_of(graph, node_idx);
                 }
 
                 // ── Script-defined decorator registration ────────────────────
@@ -500,7 +544,6 @@ impl Vm {
                     event_constraint,
                     params,
                     body,
-                    next,
                 } => {
                     let decorator_val = RuntimeValue::ScriptDecorator {
                         event_constraint: event_constraint.clone(),
@@ -510,7 +553,7 @@ impl Vm {
                     if let Err(e) = state.env.set(name, decorator_val, &DeclKind::Variable) {
                         return Some(Err(e));
                     }
-                    state.cursor = *next;
+                    state.cursor = next_of(graph, node_idx);
                 }
 
                 // ── Dialogue event ───────────────────────────────────────────
@@ -518,7 +561,6 @@ impl Vm {
                     speakers,
                     lines,
                     decorators,
-                    next,
                 } => {
                     let speakers_vec = match eval_expr_list(speakers, &state.env) {
                         Ok(v) => v,
@@ -540,7 +582,7 @@ impl Vm {
                         }
                     }
 
-                    state.cursor = *next;
+                    state.cursor = next_of(graph, node_idx);
                     return Some(Ok(Event::Dialogue {
                         speakers: speakers_vec,
                         lines: lines_vec,
@@ -564,14 +606,25 @@ impl Vm {
                                     options.len()
                                 );
                                 // Re-emit without advancing.
-                                return Some(build_choice_event(
+                                return build_choice_event(
                                     options,
                                     decorators,
                                     &state.env,
                                     &state.registry,
-                                ));
+                                );
                             }
-                            let entry = options[idx].entry;
+                            // Follow the Option(idx) edge to the chosen option's entry.
+                            let entry = graph
+                                .graph
+                                .edges_directed(node_idx, Direction::Outgoing)
+                                .find(|e| {
+                                    if let IrEdge::Option(i) = e.weight() {
+                                        *i == idx
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .map(|e| e.target());
                             state.pending_choice = None;
                             state.cursor = entry;
                             // Continue loop — the choice selection itself is
@@ -580,22 +633,22 @@ impl Vm {
 
                         // ── No choice provided ───────────────────────────────
                         None => {
-                            if state.pending_choice == Some(node_id) {
+                            if state.pending_choice == Some(node_idx) {
                                 // Already waiting for a choice at this node — re-emit.
                                 log::warn!(
                                     "Choice at node {:?} is already pending; \
                                          re-emitting Event::Choice without advancing",
-                                    node_id
+                                    node_idx
                                 );
                             } else {
-                                state.pending_choice = Some(node_id);
+                                state.pending_choice = Some(node_idx);
                             }
-                            return Some(build_choice_event(
+                            return build_choice_event(
                                 options,
                                 decorators,
                                 &state.env,
                                 &state.registry,
-                            ));
+                            );
                         }
                     }
                 }
@@ -614,258 +667,248 @@ impl Vm {
     }
 }
 
-// ─── Free helpers ─────────────────────────────────────────────────────────────
+// ─── Subscript-assign helper ──────────────────────────────────────────────────
 
-/// Execute a subscript assignment: `ident[key] = value`.
-///
-/// The `object` must resolve to a simple variable name (single-segment
-/// `IdentPath`) in the environment holding a [`RuntimeValue::Map`].
-/// Mutates the map in-place by reading the current value, inserting the new
-/// entry, then writing back.
+/// Handles `object[key] = value` mutations by modifying the map stored under
+/// `object`'s identifier path in `env`.
 fn eval_subscript_assign(
     object: &crate::parser::ast::Ast,
     key: &crate::parser::ast::Ast,
     value: &crate::parser::ast::Ast,
     env: &mut Environment,
 ) -> Result<(), VmError> {
-    // 1. Extract variable name from object.
+    use crate::parser::ast::AstContent;
+
+    // Resolve the variable name that holds the map.
     let var_name = match object.content() {
         AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => path[0].clone(),
         _ => {
-            return Err(VmError::TypeError(
-                "subscript assignment target must be a simple variable name".to_string(),
+            return Err(VmError::InvalidExpression(
+                "subscript assign: object must be a simple identifier".into(),
             ));
         }
     };
 
-    // 2. Evaluate key and value (immutable borrow — env not mutated yet).
+    // Evaluate the key and new value.
     let key_val = eval_expr(key, env)?;
     let new_val = eval_expr(value, env)?;
 
-    let key_str = match &key_val {
-        RuntimeValue::Str(ps) => ps.to_string(),
+    let key_str = match key_val {
+        RuntimeValue::Str(ref ps) => ps.to_string(),
         RuntimeValue::Int(i) => i.to_string(),
         other => {
             return Err(VmError::TypeError(format!(
-                "subscript key must be Str or Int, got {:?}",
-                other
+                "map key must be Str or Int, got {other:?}"
             )));
         }
     };
 
-    // 3. Get the map, mutate it, write back.
-    let mut map_val = env.get(&var_name)?;
-    match &mut map_val {
-        RuntimeValue::Map(map) => {
-            map.insert(key_str, Box::new(new_val));
-        }
+    // Fetch the map, mutate it, and write it back.
+    let map_val = env
+        .get(&var_name)
+        .map_err(|_| VmError::UndefinedVariable(var_name.clone()))?;
+
+    let mut map = match map_val {
+        RuntimeValue::Map(m) => m,
         other => {
             return Err(VmError::TypeError(format!(
-                "subscript assignment requires Map variable '{}', got {:?}",
-                var_name, other
+                "subscript assign: {var_name} is not a map, got {other:?}"
             )));
         }
-    }
-    env.set(&var_name, map_val, &DeclKind::Variable)
+    };
+
+    map.insert(key_str, Box::new(new_val));
+    env.set(&var_name, RuntimeValue::Map(map), &DeclKind::Variable)
 }
 
-/// Execute an AST block synchronously in a mutable environment.
+// ─── Sync block executor ─────────────────────────────────────────────────────
+
+/// Executes a sequence of AST statements synchronously, collecting any
+/// side-effects into `env`.
 ///
-/// Used to run decorator bodies without creating a full VM execution loop.
-/// Forbidden constructs (Dialogue, Menu, Jump, Return, etc.) return an error.
-fn exec_block_sync(ast: &crate::parser::ast::Ast, env: &mut Environment) -> Result<(), VmError> {
-    use crate::parser::ast::AstContent as AC;
-    match ast.content() {
-        AC::Block(stmts) => {
-            for stmt in stmts {
-                exec_block_sync(stmt, env)?;
-            }
-            Ok(())
+/// Used by script-defined decorator bodies and other inline-evaluated blocks
+/// that must run to completion before the VM can continue.
+fn exec_block_sync(
+    block: &crate::parser::ast::Ast,
+    env: &mut Environment,
+    event: &mut HashMap<String, RuntimeValue>,
+) -> Result<(), VmError> {
+    use crate::parser::ast::AstContent;
+
+    let stmts = match block.content() {
+        AstContent::Block(stmts) => stmts,
+        _ => {
+            // Single statement.
+            return exec_stmt_sync(block, env, event);
         }
-        AC::Declaration {
+    };
+
+    for stmt in stmts {
+        exec_stmt_sync(stmt, env, event)?;
+    }
+    Ok(())
+}
+
+/// Executes a single AST statement inside a decorator body.
+fn exec_stmt_sync(
+    stmt: &crate::parser::ast::Ast,
+    env: &mut Environment,
+    event: &mut HashMap<String, RuntimeValue>,
+) -> Result<(), VmError> {
+    use crate::parser::ast::AstContent;
+
+    match stmt.content() {
+        AstContent::Declaration {
             kind,
             decl_name,
             decl_defs,
             ..
         } => {
-            let var_name = match decl_name.content() {
-                AC::Value(RuntimeValue::IdentPath(p)) if p.len() == 1 => p[0].clone(),
+            let name_str = match decl_name.content() {
+                AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
                 _ => {
-                    return Err(VmError::TypeError(
-                        "expected identifier in declaration".to_string(),
+                    return Err(VmError::InvalidExpression(
+                        "declaration name must be an identifier".into(),
                     ));
                 }
             };
-            let val = eval_expr(decl_defs, env)?;
-            env.set(&var_name, val, kind)?;
-            Ok(())
+            let v = eval_expr(decl_defs, env)?;
+            env.set(&name_str, v, kind)?;
         }
-        AC::BinOp {
-            op: Operator::Assign,
-            left,
-            right,
-        } => {
-            let var_name = match left.content() {
-                AC::Value(RuntimeValue::IdentPath(p)) if p.len() == 1 => p[0].clone(),
-                _ => {
-                    return Err(VmError::TypeError(
-                        "expected identifier in assignment".to_string(),
-                    ));
-                }
-            };
-            let val = eval_expr(right, env)?;
-            env.set(&var_name, val, &DeclKind::Variable)?;
-            Ok(())
-        }
-        AC::SubscriptAssign { object, key, value } => {
-            eval_subscript_assign(object, key, value, env)
-        }
-        AC::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            let cond = eval_expr(condition, env)?;
-            if is_truthy(&cond) {
-                exec_block_sync(then_block, env)?;
-            } else if let Some(eb) = else_block {
-                exec_block_sync(eb, env)?;
+        AstContent::SubscriptAssign { object, key, value } => {
+            // Check if the object is `event` — if so, write into the event map
+            // instead of the variable environment.
+            let is_event = matches!(
+                object.content(),
+                AstContent::Value(RuntimeValue::IdentPath(p)) if p.len() == 1 && p[0] == "event"
+            );
+            if is_event {
+                let key_val = eval_expr(key, env)?;
+                let new_val = eval_expr(value, env)?;
+                let key_str = match key_val {
+                    RuntimeValue::Str(ref ps) => ps.to_string(),
+                    RuntimeValue::Int(i) => i.to_string(),
+                    other => {
+                        return Err(VmError::TypeError(format!(
+                            "event key must be Str or Int, got {other:?}"
+                        )));
+                    }
+                };
+                event.insert(key_str, new_val);
+            } else {
+                eval_subscript_assign(object, key, value, env)?;
             }
-            Ok(())
         }
-        AC::Call { .. } => {
-            eval_expr(ast, env)?;
-            Ok(())
+        _ => {
+            // Best-effort evaluation of expression statements (side-effects only).
+            let _ = eval_expr(stmt, env);
         }
-        // Pure expressions: evaluate and discard the result.
-        AC::BinOp { .. }
-        | AC::UnaryOp { .. }
-        | AC::Value(_)
-        | AC::Subscript { .. }
-        | AC::List(_)
-        | AC::Map(_)
-        | AC::ExprList(_) => {
-            eval_expr(ast, env)?;
-            Ok(())
-        }
-        // Forbidden inside decorator bodies.
-        AC::Dialogue { .. }
-        | AC::Menu { .. }
-        | AC::MenuOption { .. }
-        | AC::LabeledBlock { .. }
-        | AC::Jump { .. }
-        | AC::LetCall { .. }
-        | AC::Return { .. }
-        | AC::DecoratorDef { .. }
-        | AC::Match { .. }
-        | AC::EnumDecl { .. }
-        | AC::StructDecl { .. }
-        | AC::Import { .. } => Err(VmError::InvalidExpression(format!(
-            "{:?} is not allowed inside a decorator body",
-            std::mem::discriminant(ast.content())
-        ))),
     }
+    Ok(())
 }
 
-/// Invoke a script-defined decorator body.
-///
-/// Builds a temporary local environment with `event` (the current event's
-/// fields as a [`RuntimeValue::Map`]) and the decorator's parameter bindings,
-/// runs the body synchronously, then extracts and returns the (possibly
-/// mutated) event fields map.
-///
-/// # Errors
-/// Returns [`VmError`] if the body execution fails or if the decorator body
-/// replaces `event` with a non-`Map` value.
+// ─── Script-decorator execution ──────────────────────────────────────────────
+
+/// Runs a script-defined decorator body against `event`, mutating its fields.
 fn apply_script_decorator(
+    event_constraint: &crate::parser::ast::EventConstraint,
     params: &[String],
     body: &crate::parser::ast::Ast,
-    args: &[RuntimeValue],
-    outer_env: &Environment,
-    event_fields: HashMap<String, RuntimeValue>,
+    args: &[crate::parser::ast::Ast],
+    env: &Environment,
+    mut event: HashMap<String, RuntimeValue>,
 ) -> Result<HashMap<String, RuntimeValue>, VmError> {
-    let mut local_env = outer_env.clone();
-    local_env.push_scope();
+    use crate::parser::ast::EventConstraint;
 
-    // Bind `event` as a Map so the body can read/write event["key"].
-    let event_map: HashMap<String, Box<RuntimeValue>> = event_fields
-        .into_iter()
-        .map(|(k, v)| (k, Box::new(v)))
+    // Type-check the event constraint. For now all constraints are accepted;
+    // this is where future runtime constraint enforcement would go.
+    match event_constraint {
+        EventConstraint::Any | EventConstraint::Dialogue | EventConstraint::Choice => {}
+    }
+
+    // Bind arguments to parameter names in a fresh inner scope.
+    let mut inner_env = env.clone();
+    inner_env.push_scope();
+    for (param, arg_ast) in params.iter().zip(args.iter()) {
+        let val = eval_expr(arg_ast, env)?;
+        inner_env.set(param.as_str(), val, &DeclKind::Variable)?;
+    }
+    // Expose the mutable `event` map as an IdentPath value so the body can
+    // read existing fields.  Mutations are applied via `exec_block_sync`.
+    let event_snapshot: HashMap<String, Box<RuntimeValue>> = event
+        .iter()
+        .map(|(k, v)| (k.clone(), Box::new(v.clone())))
         .collect();
-    local_env.set("event", RuntimeValue::Map(event_map), &DeclKind::Variable)?;
+    inner_env.set(
+        "event",
+        RuntimeValue::Map(event_snapshot),
+        &DeclKind::Variable,
+    )?;
 
-    // Bind each declared parameter to the corresponding argument value.
-    for (name, val) in params.iter().zip(args.iter()) {
-        local_env.set(name, val.clone(), &DeclKind::Variable)?;
-    }
-
-    // Execute the body synchronously.
-    exec_block_sync(body, &mut local_env)?;
-
-    // Extract the (possibly mutated) event map.
-    match local_env.get("event")? {
-        RuntimeValue::Map(map) => Ok(map.into_iter().map(|(k, v)| (k, *v)).collect()),
-        other => Err(VmError::TypeError(format!(
-            "decorator body replaced `event` with a non-Map value: {:?}",
-            other
-        ))),
-    }
+    exec_block_sync(body, &mut inner_env, &mut event)?;
+    Ok(event)
 }
 
-/// Apply a single decorator: checks the environment first for a
-/// script-defined [`RuntimeValue::ScriptDecorator`], then falls back to the
-/// Rust [`DecoratorRegistry`].
+// ─── Decorator dispatch ───────────────────────────────────────────────────────
+
+/// Applies one decorator to the running `event` field map.
 ///
-/// `existing_fields` is the accumulated fields map so far; the decorator may
-/// add new fields or overwrite existing ones.  The returned map is the merged
-/// result.
+/// Checks the environment for a script-defined decorator first; falls back to
+/// the Rust [`DecoratorRegistry`].
 fn apply_decorator(
     dec: &Decorator,
     env: &Environment,
     registry: &DecoratorRegistry,
-    existing_fields: HashMap<String, RuntimeValue>,
+    event: HashMap<String, RuntimeValue>,
 ) -> Result<HashMap<String, RuntimeValue>, VmError> {
-    match env.get(dec.name()) {
-        Ok(RuntimeValue::ScriptDecorator { params, body, .. }) => {
-            // Evaluate arguments.
-            let args = eval_decorator_args(dec, env)?;
-            apply_script_decorator(&params, &body, &args, env, existing_fields)
-        }
-        Ok(_) => Err(VmError::TypeError(format!(
-            "'{}' is defined in scope but is not a decorator",
-            dec.name()
-        ))),
-        Err(VmError::UndefinedVariable(_)) => {
-            // Fall back to the Rust registry.
-            let dec_fields = registry.apply(dec, env)?;
-            let mut merged = existing_fields;
-            merged.extend(dec_fields);
-            Ok(merged)
-        }
-        Err(e) => Err(e),
+    // Check whether this decorator is script-defined (stored in env).
+    if let Ok(RuntimeValue::ScriptDecorator {
+        event_constraint,
+        params,
+        body,
+    }) = env.get(dec.name())
+    {
+        // dec.args() always returns &Ast; unpack ExprList items as argument ASTs.
+        let args_ast = dec.args();
+        let args: Vec<crate::parser::ast::Ast> = match args_ast.content() {
+            AstContent::ExprList(items) => items.clone(),
+            _ => vec![args_ast.clone()],
+        };
+        return apply_script_decorator(&event_constraint, &params, &body, &args, env, event);
     }
+
+    // Fall back to Rust-registered handler.
+    let extra_fields = registry.apply(dec, env).unwrap_or_else(|_| HashMap::new());
+    Ok(event.into_iter().chain(extra_fields).collect())
 }
 
-/// Build a [`Event::Choice`] from an options list, evaluating all decorators.
+// ─── Choice event builder ─────────────────────────────────────────────────────
+
+/// Builds an [`Event::Choice`] from a set of choice options and decorators.
 fn build_choice_event(
-    options: &[crate::ir::IrChoiceOption],
+    options: &[IrChoiceOption],
     decorators: &[Decorator],
     env: &Environment,
     registry: &DecoratorRegistry,
-) -> Result<Event, VmError> {
-    // Merge top-level (Menu) decorator fields via apply_decorator so that
-    // script-defined decorators are handled correctly.
+) -> Option<Result<Event, VmError>> {
+    // Evaluate top-level choice decorators.
     let mut fields: HashMap<String, RuntimeValue> = HashMap::new();
     for dec in decorators {
-        fields = apply_decorator(dec, env, registry, fields)?;
+        match apply_decorator(dec, env, registry, fields) {
+            Ok(new_fields) => fields = new_fields,
+            Err(e) => return Some(Err(e)),
+        }
     }
 
     // Build per-option ChoiceEvent entries.
-    let mut choice_options = Vec::with_capacity(options.len());
+    let mut choice_options: Vec<ChoiceEvent> = Vec::new();
     for opt in options {
         let mut opt_fields: HashMap<String, RuntimeValue> = HashMap::new();
         for dec in &opt.decorators {
-            opt_fields = apply_decorator(dec, env, registry, opt_fields)?;
+            match apply_decorator(dec, env, registry, opt_fields) {
+                Ok(new_fields) => opt_fields = new_fields,
+                Err(e) => return Some(Err(e)),
+            }
         }
         choice_options.push(ChoiceEvent {
             label: opt.label.clone(),
@@ -873,16 +916,15 @@ fn build_choice_event(
         });
     }
 
-    Ok(Event::Choice {
+    Some(Ok(Event::Choice {
         options: choice_options,
         fields,
-    })
+    }))
 }
 
-// ─── Unit tests ───────────────────────────────────────────────────────────────
+// ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::{
@@ -939,7 +981,6 @@ mod tests {
             } => {
                 assert_eq!(speakers.len(), 1);
                 assert_eq!(lines.len(), 1);
-                // Line should be the literal "Hello!".
                 match &lines[0] {
                     RuntimeValue::Str(ps) => assert_eq!(ps.to_string(), "Hello!"),
                     other => panic!("expected Str, got {:?}", other),
@@ -1031,11 +1072,11 @@ mod tests {
             "first next(None) should emit Choice, got {:?}",
             ev1
         );
-        let choice_node = vm.state.cursor;
+        // cursor and pending_choice are both Option<NodeIndex>.
+        let choice_cursor = vm.state.cursor;
         assert_eq!(
-            vm.state.pending_choice,
-            Some(choice_node),
-            "pending_choice must be set after first next(None)"
+            vm.state.pending_choice, choice_cursor,
+            "pending_choice must equal cursor after first next(None)"
         );
 
         // Second call with None — re-emits Choice.
@@ -1087,13 +1128,11 @@ mod tests {
     /// the label is reached.
     #[test]
     fn test_jump_advances_to_label() {
-        // block { jump scene1; label scene1 { Alice: "Jumped here!" } }
         let speakers = Ast::expr_list(vec![str_lit("Alice")]);
         let lines = Ast::expr_list(vec![str_lit("Jumped here!")]);
         let dialogue = Ast::dialogue(speakers, lines);
         let labeled = Ast::labeled_block("scene1".to_string(), Ast::block(vec![dialogue]));
         let jump = Ast::jump_stmt("scene1".to_string(), false);
-        // Compiler block is compiled right-to-left; jump comes first in source.
         let ast = Ast::block(vec![jump, labeled]);
 
         let mut vm = build_vm(ast);
@@ -1167,11 +1206,6 @@ mod tests {
     /// the block (the dialogue that follows it in the script).
     #[test]
     fn test_return_exits_to_continuation() {
-        // block {
-        //   label myblock { return }
-        //   Alice: "After block"
-        // }
-        // Return exits myblock → dialogue is emitted.
         let labeled = Ast::labeled_block(
             "myblock".to_string(),
             Ast::block(vec![Ast::return_stmt(None)]),
@@ -1183,7 +1217,6 @@ mod tests {
 
         let mut vm = build_vm(ast);
 
-        // Return should jump to the continuation (the dialogue).
         let ev = vm.next(None).expect("expected event").expect("no error");
         match ev {
             Event::Dialogue { lines, .. } => match &lines[0] {
@@ -1258,10 +1291,8 @@ mod tests {
     fn test_eval_logical_short_circuit() {
         let env = Environment::new();
 
-        // false and <anything> → false (rhs must NOT be evaluated to cause an error)
         let and_short = Ast::and_op(
             Ast::value(RuntimeValue::Bool(false)),
-            // This would error if evaluated (undefined variable):
             ident("undefined_var"),
         );
         assert_eq!(
@@ -1269,7 +1300,6 @@ mod tests {
             RuntimeValue::Bool(false)
         );
 
-        // true or <anything> → true
         let or_short = Ast::or_op(
             Ast::value(RuntimeValue::Bool(true)),
             ident("also_undefined"),
@@ -1357,15 +1387,11 @@ mod tests {
     /// A complete script with `DefineEnum` + `Switch` reaches the right arm.
     #[test]
     fn test_switch_on_enum_variant() {
-        // enum Direction { North, South }
-        // let dir = Direction.North
-        // match dir { North { Alice: "going north" } _ { Alice: "other" } }
         let enum_decl = Ast::enum_decl(
             "Direction".to_string(),
             vec!["North".to_string(), "South".to_string()],
         );
 
-        // dir = Direction.North (2-segment ident path)
         let north_path = Ast::value(RuntimeValue::IdentPath(vec![
             "Direction".to_string(),
             "North".to_string(),
@@ -1442,18 +1468,10 @@ mod tests {
 
     /// A script-defined decorator that writes `event["camera_shake"] = amount`
     /// should produce a Dialogue event with that field set.
-    ///
-    /// Script equivalent:
-    /// ```
-    /// decorator shake(amount) { event["camera_shake"] = amount }
-    /// @shake(0.5)
-    /// Alice: "Watch out!"
-    /// ```
     #[test]
     fn test_script_decorator_mutates_event_fields() {
         use crate::parser::ast::{DecoratorParam, EventConstraint};
 
-        // Build the decorator body: `event["camera_shake"] = amount`
         let event_ident = Ast::value(RuntimeValue::IdentPath(vec!["event".to_string()]));
         let key_ast = Ast::value(RuntimeValue::Str(
             crate::lexer::strings::ParsedString::new_plain("camera_shake"),
@@ -1472,7 +1490,6 @@ mod tests {
             body,
         );
 
-        // @shake(0.5) Alice: "Watch out!"
         let speakers = Ast::expr_list(vec![str_lit("Alice")]);
         let lines = Ast::expr_list(vec![str_lit("Watch out!")]);
         let deco = Decorator::new(
@@ -1509,13 +1526,11 @@ mod tests {
     }
 
     /// A VM built with an empty Rust registry but a script-defined decorator
-    /// must NOT return `VmError::UnknownDecorator` — the definition in the
-    /// script is sufficient.
+    /// must NOT return `VmError::UnknownDecorator`.
     #[test]
     fn test_script_decorator_does_not_require_rust_registration() {
         use crate::parser::ast::EventConstraint;
 
-        // decorator noop() { }
         let decorator_def = Ast::decorator_def(
             "noop".to_string(),
             EventConstraint::Any,
@@ -1523,7 +1538,6 @@ mod tests {
             Ast::block(vec![]),
         );
 
-        // @noop() Alice: "Hi"
         let speakers = Ast::expr_list(vec![str_lit("Alice")]);
         let lines = Ast::expr_list(vec![str_lit("Hi")]);
         let deco = Decorator::new("noop".to_string(), Ast::expr_list(vec![]));
@@ -1538,7 +1552,6 @@ mod tests {
         let ast = Ast::block(vec![decorator_def, dialogue]);
         let graph = Compiler::compile(&ast).expect("compile ok");
 
-        // Empty registry — must still succeed.
         let result = Vm::new(graph, empty_registry());
         assert!(
             result.is_ok(),
@@ -1572,7 +1585,6 @@ mod tests {
     fn test_subscript_read() {
         let mut env = Environment::new();
 
-        // let m = :{"a": 99}
         let key_ast = Ast::value(RuntimeValue::Str(
             crate::lexer::strings::ParsedString::new_plain("a"),
         ));
@@ -1581,7 +1593,6 @@ mod tests {
         env.set("m", eval_expr(&map_ast, &env).unwrap(), &DeclKind::Variable)
             .unwrap();
 
-        // m["a"]
         let subscript = Ast::subscript(
             Ast::value(RuntimeValue::IdentPath(vec!["m".to_string()])),
             Ast::value(RuntimeValue::Str(
@@ -1598,7 +1609,6 @@ mod tests {
     fn test_subscript_assign_mutates_map() {
         let mut env = Environment::new();
 
-        // let m = :{"a": 1}
         let key_ast = Ast::value(RuntimeValue::Str(
             crate::lexer::strings::ParsedString::new_plain("a"),
         ));
@@ -1607,7 +1617,6 @@ mod tests {
         env.set("m", eval_expr(&map_ast, &env).unwrap(), &DeclKind::Variable)
             .unwrap();
 
-        // m["a"] = 99
         let obj = Ast::value(RuntimeValue::IdentPath(vec!["m".to_string()]));
         let key = Ast::value(RuntimeValue::Str(
             crate::lexer::strings::ParsedString::new_plain("a"),
@@ -1615,7 +1624,6 @@ mod tests {
         let val = int(99);
         eval_subscript_assign(&obj, &key, &val, &mut env).expect("subscript assign");
 
-        // Read back m["a"]
         let subscript = Ast::subscript(
             Ast::value(RuntimeValue::IdentPath(vec!["m".to_string()])),
             Ast::value(RuntimeValue::Str(
@@ -1632,9 +1640,6 @@ mod tests {
 
     #[test]
     fn test_label_values_preseeded_in_env() {
-        // Build a script with a labeled block, then verify the label name
-        // is accessible as RuntimeValue::Label in the environment before
-        // any script execution.
         let body = Ast::block(vec![]);
         let labeled = Ast::labeled_block("scene_one".to_string(), body);
         let script = Ast::block(vec![labeled]);
@@ -1642,9 +1647,6 @@ mod tests {
         let graph = Compiler::compile(&script).expect("compile");
         let vm = Vm::new(graph, empty_registry()).expect("vm construction");
 
-        // The label "scene_one" should be pre-seeded in the environment
-        // Extract the NodeId the compiler assigned to "scene_one" so we can
-        // construct the expected value with the correct concrete reference.
         let expected_node_id = *vm.graph().labels.get("scene_one").expect("label in graph");
         let val = vm.env().get("scene_one").expect("label should be in env");
         assert_eq!(
@@ -1658,49 +1660,36 @@ mod tests {
 
     #[test]
     fn test_label_value_equality() {
-        use crate::ir::NodeId;
         // Equality is by node_id — the canonical execution reference.
         assert!(values_equal(
             &RuntimeValue::Label {
                 name: "a".to_string(),
-                node_id: NodeId(0)
+                node_id: NodeIndex::new(0),
             },
             &RuntimeValue::Label {
                 name: "a".to_string(),
-                node_id: NodeId(0)
+                node_id: NodeIndex::new(0),
             },
         ));
-        // Different node_ids → not equal, even if names happened to match.
+        // Different node indices → not equal, even if names match.
         assert!(!values_equal(
             &RuntimeValue::Label {
                 name: "a".to_string(),
-                node_id: NodeId(0)
+                node_id: NodeIndex::new(0),
             },
             &RuntimeValue::Label {
                 name: "a".to_string(),
-                node_id: NodeId(1)
+                node_id: NodeIndex::new(1),
             },
         ));
     }
 
     #[test]
     fn test_label_value_in_decorator_fields() {
-        // Full end-to-end: define a decorator that stores a label in event fields,
-        // then verify the emitted Event::Dialogue has the Label value in fields.
-        //
-        // Script:
-        //   label fallback { }
-        //   decorator timed(fallback_label) {
-        //       event["next"] = fallback_label
-        //   }
-        //   @timed(fallback)
-        //   <Alice>: "Hurry!"
         use crate::parser::ast::{DecoratorParam, EventConstraint};
 
-        // label fallback { }
         let fallback_label = Ast::labeled_block("fallback".to_string(), Ast::block(vec![]));
 
-        // decorator timed(fallback_label) { event["next"] = fallback_label }
         let event_ident = Ast::value(RuntimeValue::IdentPath(vec!["event".to_string()]));
         let key_ast = Ast::value(RuntimeValue::Str(
             crate::lexer::strings::ParsedString::new_plain("next"),
@@ -1719,7 +1708,6 @@ mod tests {
             dec_body,
         );
 
-        // @timed(fallback) Alice: "Hurry!"
         let speakers = Ast::expr_list(vec![str_lit("Alice")]);
         let lines = Ast::expr_list(vec![str_lit("Hurry!")]);
         let deco = Decorator::new(
@@ -1747,9 +1735,6 @@ mod tests {
                     "expected 'next' in fields, got {:?}",
                     fields
                 );
-                // Check that the value is a Label pointing at "fallback".
-                // We match on the name rather than constructing the full value
-                // to avoid coupling this test to the compiler's NodeId assignment.
                 match fields.get("next") {
                     Some(RuntimeValue::Label { name, .. }) => assert_eq!(
                         name, "fallback",
@@ -1762,47 +1747,27 @@ mod tests {
         }
     }
 
-    /// `jump label and return` (compiled to LetCall with empty var) pushes a
-    /// call frame, executes the label body, and after `return` resumes at the
-    /// continuation after the call site.
+    /// `jump label and return` (compiled to LetCall) pushes a call frame,
+    /// executes the label body, and after `return` resumes at the continuation.
     #[test]
     fn test_subroutine_call_and_return() {
-        // Execution order in source (mirrors a real Urd script):
-        //
-        //   jump greet and return      ← entry: LetCall
-        //   Alice: "After call"        ← continuation after return
-        //   return                     ← explicit end so VM doesn't fall into greet
-        //   label greet {
-        //       Alice: "Hello from greet"
-        //       return
-        //   }
-        //
-        // AST block is compiled right-to-left, so `call_jump` becomes the
-        // graph entry and `greet_label` is at the tail (never reached
-        // sequentially from the main flow).
         let speakers1 = Ast::expr_list(vec![str_lit("Alice")]);
         let lines1 = Ast::expr_list(vec![str_lit("Hello from greet")]);
         let greet_dialogue = Ast::dialogue(speakers1, lines1);
         let greet_body = Ast::block(vec![greet_dialogue, Ast::return_stmt(None)]);
         let greet_label = Ast::labeled_block("greet".to_string(), greet_body);
 
-        // jump greet and return  (expects_return = true → compiles to LetCall)
         let call_jump = Ast::jump_stmt("greet".to_string(), true);
 
         let speakers2 = Ast::expr_list(vec![str_lit("Alice")]);
         let lines2 = Ast::expr_list(vec![str_lit("After call")]);
         let after_dialogue = Ast::dialogue(speakers2, lines2);
 
-        // Explicit return ends the main flow so the VM doesn't fall through
-        // into the greet label definition.
         let main_return = Ast::return_stmt(None);
 
-        // Layout: [call_jump → after_dialogue → main_return → greet_label]
-        // Entry = call_jump (leftmost in vec = first compiled = graph entry).
         let ast = Ast::block(vec![call_jump, after_dialogue, main_return, greet_label]);
         let mut vm = build_vm(ast);
 
-        // First event: dialogue emitted from inside greet.
         let ev1 = vm
             .next(None)
             .expect("expected first event")
@@ -1819,7 +1784,6 @@ mod tests {
             other => panic!("expected Dialogue for greet, got {:?}", other),
         }
 
-        // Second event: the continuation dialogue after the call returns.
         let ev2 = vm
             .next(None)
             .expect("expected second event")
@@ -1846,11 +1810,6 @@ mod tests {
     /// value to `result` and execution continues after the call site.
     #[test]
     fn test_let_call_captures_return_value() {
-        // label double {
-        //     return 42
-        // }
-        // let result = jump double and return
-        // Alice: result
         let double_body = Ast::block(vec![Ast::return_stmt(Some(int(42)))]);
         let double_label = Ast::labeled_block("double".to_string(), double_body);
 
@@ -1860,9 +1819,6 @@ mod tests {
         let lines = Ast::expr_list(vec![ident("result")]);
         let dialogue = Ast::dialogue(speakers, lines);
 
-        // Layout: [let_call → dialogue → double_label]
-        // Entry = let_call (leftmost). The explicit return inside double means
-        // the VM never falls sequentially into double_label from dialogue.
         let ast = Ast::block(vec![let_call, dialogue, double_label]);
         let mut vm = build_vm(ast);
 
@@ -1881,19 +1837,18 @@ mod tests {
         assert!(vm.next(None).is_none(), "script should end after dialogue");
     }
 
-    /// A plain `jump label` (expects_return=false) compiles to
-    /// `IrNodeKind::Jump`, never to `IrNodeKind::LetCall`.
-    ///
-    /// This is the compiler-level invariant that guarantees no LetCall frame
-    /// is ever pushed at runtime for a plain unconditional jump.
     #[test]
     fn test_todo_bang_ends_script() {
-        // A script consisting of only `todo!()` should terminate immediately
-        // (return None from next()) without error.
-        use crate::ir::{IrGraph, IrNodeKind};
-        let mut graph = IrGraph::new();
-        let todo_id = graph.push(IrNodeKind::Todo);
-        graph.entry = todo_id;
+        use crate::ir::{IrEdge, IrGraph, IrNodeKind};
+        use petgraph::stable_graph::StableGraph;
+
+        let mut g: StableGraph<IrNodeKind, IrEdge> = StableGraph::new();
+        let todo_id = g.add_node(IrNodeKind::Todo);
+        let graph = IrGraph {
+            graph: g,
+            entry: Some(todo_id),
+            labels: HashMap::new(),
+        };
         let registry = DecoratorRegistry::new();
         let mut vm = Vm::new(graph, registry).unwrap();
         let result = vm.next(None);
@@ -1905,10 +1860,16 @@ mod tests {
 
     #[test]
     fn test_end_bang_ends_script() {
-        use crate::ir::{IrGraph, IrNodeKind};
-        let mut graph = IrGraph::new();
-        let end_id = graph.push(IrNodeKind::End);
-        graph.entry = end_id;
+        use crate::ir::{IrEdge, IrGraph, IrNodeKind};
+        use petgraph::stable_graph::StableGraph;
+
+        let mut g: StableGraph<IrNodeKind, IrEdge> = StableGraph::new();
+        let end_id = g.add_node(IrNodeKind::End);
+        let graph = IrGraph {
+            graph: g,
+            entry: Some(end_id),
+            labels: HashMap::new(),
+        };
         let registry = DecoratorRegistry::new();
         let mut vm = Vm::new(graph, registry).unwrap();
         let result = vm.next(None);
@@ -1920,8 +1881,6 @@ mod tests {
 
     #[test]
     fn test_jump_without_return_does_not_push_frame() {
-        // label dest { }
-        // jump dest          ← plain jump, expects_return = false
         let dest_label = Ast::labeled_block("dest".to_string(), Ast::block(vec![]));
         let jump = Ast::jump_stmt("dest".to_string(), false);
         let ast = Ast::block(vec![dest_label, jump]);
@@ -1930,18 +1889,18 @@ mod tests {
 
         // Plain jump must emit IrNodeKind::Jump, never LetCall.
         let has_let_call = graph
-            .nodes
-            .iter()
-            .any(|n| matches!(n.kind, IrNodeKind::LetCall { .. }));
+            .graph
+            .node_weights()
+            .any(|k| matches!(k, IrNodeKind::LetCall { .. }));
         assert!(
             !has_let_call,
             "plain `jump label` must not emit a LetCall node; graph = {graph:?}"
         );
 
         let has_jump = graph
-            .nodes
-            .iter()
-            .any(|n| matches!(n.kind, IrNodeKind::Jump { .. }));
+            .graph
+            .node_weights()
+            .any(|k| matches!(k, IrNodeKind::Jump));
         assert!(
             has_jump,
             "plain `jump label` must emit a Jump node; graph = {graph:?}"

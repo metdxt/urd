@@ -11,6 +11,7 @@ ariadne.workspace = true
 chumsky.workspace = true
 logos.workspace = true
 logos-display.workspace = true
+petgraph.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 log.workspace = true

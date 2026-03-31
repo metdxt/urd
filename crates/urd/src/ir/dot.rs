@@ -8,7 +8,7 @@
 //!
 //! * Each `label` block is rendered as a **`subgraph cluster`** — a rounded,
 //!   pale-green box containing all nodes compiled from that block.  The first
-//!   label (by compilation order / `NodeId`) gets a thicker border to
+//!   label (by compilation order / `NodeIndex`) gets a thicker border to
 //!   signal it is the script's entry scope.
 //! * `Nop` (compiler merge-point) nodes are **collapsed**: every edge that
 //!   would have pointed to a `Nop` is re-routed through the Nop chain to the
@@ -44,12 +44,16 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
+use petgraph::Direction;
+use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+
 use super::analysis::{self, follow_nops};
 use super::render_common::{
     arm_pattern_label, ast_summary, decl_kw, decorator_line, extract_content_lines,
-    extract_speakers, nid, truncate,
+    extract_speakers, truncate,
 };
-use super::{IrGraph, IrNodeKind, NODE_END, NodeId};
+use super::{IrEdge, IrGraph, IrNodeKind};
 
 // ─── Public surface ──────────────────────────────────────────────────────────
 
@@ -73,31 +77,37 @@ pub fn render_dot(graph: &IrGraph) -> String {
     let reachable = analysis::reachable_nodes(graph);
     let clusters = analysis::compute_clusters(graph, &reachable);
 
-    // Sort cluster names by entry NodeId (ascending = compilation order).
+    // Sort cluster names by entry NodeIndex (ascending = compilation order).
     // This encourages Graphviz to place the first-written label at the top.
     let mut sorted_labels: Vec<&String> = clusters.keys().collect();
-    sorted_labels.sort_by_key(|name| graph.labels.get(*name).map(|id| id.0).unwrap_or(u32::MAX));
+    sorted_labels.sort_by_key(|name| {
+        graph
+            .labels
+            .get(*name)
+            .map(|id| id.index())
+            .unwrap_or(usize::MAX)
+    });
 
-    // The entry cluster is the one whose entry NodeId is reached first from
+    // The entry cluster is the one whose entry NodeIndex is reached first from
     // graph.entry along the linear prologue (assignments, enums, etc.).
     let entry_cluster = analysis::entry_cluster_name(graph);
 
-    // Reverse map: label entry NodeId → label name, used to display human-readable
-    // jump targets instead of raw NodeId numbers.
-    let label_by_entry: HashMap<NodeId, String> = graph
+    // Reverse map: label entry NodeIndex → label name, used to display
+    // human-readable jump targets instead of raw node indices.
+    let label_by_entry: HashMap<NodeIndex, String> = graph
         .labels
         .iter()
         .map(|(name, &id)| (id, name.clone()))
         .collect();
 
-    // For every LetCall site, record: callee entry NodeId → list of ret continuation
-    // NodeIds (the `next` field, after Nop-following).  This lets Return nodes inside
-    // subroutines draw back-edges to their actual caller continuations instead of the
+    // For every LetCall site, record: callee entry NodeIndex → list of ret
+    // continuation NodeIndexes.  This lets Return nodes inside subroutines
+    // draw back-edges to their actual caller continuations instead of the
     // misleading __end__ sink.
     let callee_to_rets = analysis::callee_to_rets(graph);
 
-    // Inverted cluster map: NodeId → owning label name.  Used when routing Return
-    // edges so we know which subroutine a given Return node belongs to.
+    // Inverted cluster map: NodeIndex → owning label name.  Used when routing
+    // Return edges so we know which subroutine a given Return node belongs to.
     let node_to_cluster = analysis::node_to_cluster(&clusters);
 
     // ── DOT header ───────────────────────────────────────────────────────────
@@ -140,19 +150,19 @@ pub fn render_dot(graph: &IrGraph) -> String {
         writeln!(out, "        penwidth={penwidth};").ok();
         writeln!(out).ok();
 
-        let mut sorted_members: Vec<NodeId> = members.iter().copied().collect();
-        sorted_members.sort_by_key(|n| n.0);
+        let mut sorted_members: Vec<NodeIndex> = members.iter().copied().collect();
+        sorted_members.sort_by_key(|n| n.index());
 
-        for node_id in sorted_members {
-            if node_id.0 as usize >= graph.nodes.len() {
-                continue;
-            }
-            let node = &graph.nodes[node_id.0 as usize];
-            let (shape, fill, label) = node_attrs(node.id, &node.kind, &label_by_entry);
+        for node_idx in sorted_members {
+            let kind = match graph.graph.node_weight(node_idx) {
+                Some(k) => k,
+                None => continue,
+            };
+            let (shape, fill, label) = node_attrs(node_idx, kind, graph, &label_by_entry);
             writeln!(
                 out,
                 "        {} [label={}, shape={shape}, style=filled, fillcolor={}];",
-                nid(node.id),
+                nid(node_idx),
                 quoted(&label),
                 quoted(fill),
             )
@@ -164,31 +174,35 @@ pub fn render_dot(graph: &IrGraph) -> String {
     }
 
     // ── Non-clustered reachable non-Nop node definitions (preamble) ─────────
-    let clustered: HashSet<NodeId> = clusters.values().flatten().copied().collect();
+    let clustered: HashSet<NodeIndex> = clusters.values().flatten().copied().collect();
     let mut preamble_lines: Vec<String> = Vec::new();
-    let mut preamble_ids: Vec<NodeId> = Vec::new();
+    let mut preamble_ids: Vec<NodeIndex> = Vec::new();
     let mut any_global = false;
 
-    for node in &graph.nodes {
-        if !reachable.contains(&node.id) {
+    for node_idx in graph.graph.node_indices() {
+        let kind = match graph.graph.node_weight(node_idx) {
+            Some(k) => k,
+            None => continue,
+        };
+        if !reachable.contains(&node_idx) {
             continue;
         }
-        if matches!(&node.kind, IrNodeKind::Nop { .. }) {
+        if matches!(kind, IrNodeKind::Nop) {
             continue;
         }
-        if clustered.contains(&node.id) {
+        if clustered.contains(&node_idx) {
             continue;
         }
-        if is_preamble_kind(&node.kind) {
-            preamble_ids.push(node.id);
-            preamble_lines.push(preamble_summary(&node.kind));
+        if is_preamble_kind(kind) {
+            preamble_ids.push(node_idx);
+            preamble_lines.push(preamble_summary(kind));
         } else {
             any_global = true;
-            let (shape, fill, label) = node_attrs(node.id, &node.kind, &label_by_entry);
+            let (shape, fill, label) = node_attrs(node_idx, kind, graph, &label_by_entry);
             writeln!(
                 out,
                 "    {} [label={}, shape={shape}, style=filled, fillcolor={}];",
-                nid(node.id),
+                nid(node_idx),
                 quoted(&label),
                 quoted(fill),
             )
@@ -214,14 +228,17 @@ pub fn render_dot(graph: &IrGraph) -> String {
     if !preamble_ids.is_empty() {
         writeln!(out, "    __start__ -> __preamble__;").ok();
         let target = preamble_chain_target(graph, graph.entry);
-        if target == NODE_END {
-            has_end_edge = true;
-            writeln!(out, "    __preamble__ -> __end__;").ok();
-        } else {
-            writeln!(out, "    __preamble__ -> {};", nid(target)).ok();
+        match target {
+            None => {
+                has_end_edge = true;
+                writeln!(out, "    __preamble__ -> __end__;").ok();
+            }
+            Some(t) => {
+                writeln!(out, "    __preamble__ -> {};", nid(t)).ok();
+            }
         }
-    } else if graph.entry != NODE_END {
-        writeln!(out, "    __start__ -> {};", nid(graph.entry)).ok();
+    } else if let Some(entry_idx) = graph.entry {
+        writeln!(out, "    __start__ -> {};", nid(entry_idx)).ok();
     }
     writeln!(out).ok();
 
@@ -230,42 +247,56 @@ pub fn render_dot(graph: &IrGraph) -> String {
     // Emitted outside all subgraphs so Graphviz draws cross-cluster arrows
     // correctly.  Every edge target is passed through `follow_nops` so that
     // Nop merge nodes disappear from the visual without losing connectivity.
-    let preamble_id_set: HashSet<NodeId> = preamble_ids.iter().copied().collect();
+    let preamble_id_set: HashSet<NodeIndex> = preamble_ids.iter().copied().collect();
 
-    for node in &graph.nodes {
-        if !reachable.contains(&node.id) {
+    for node_idx in graph.graph.node_indices() {
+        let kind = match graph.graph.node_weight(node_idx) {
+            Some(k) => k,
+            None => continue,
+        };
+        if !reachable.contains(&node_idx) {
             continue;
         }
-        if matches!(&node.kind, IrNodeKind::Nop { .. }) {
+        if matches!(kind, IrNodeKind::Nop) {
             continue;
         }
-        if preamble_id_set.contains(&node.id) {
+        if preamble_id_set.contains(&node_idx) {
             continue;
         }
 
-        let n = nid(node.id);
+        let n = nid(node_idx);
 
-        match &node.kind {
+        match kind {
             // ── Single-successor nodes ────────────────────────────────────
-            IrNodeKind::Assign { next, .. }
-            | IrNodeKind::Eval { next, .. }
-            | IrNodeKind::EnterScope { next, .. }
-            | IrNodeKind::ExitScope { next, .. }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. }
-            | IrNodeKind::Dialogue { next, .. } => {
-                let target = follow_nops(graph, *next);
+            IrNodeKind::Assign { .. }
+            | IrNodeKind::Eval { .. }
+            | IrNodeKind::EnterScope { .. }
+            | IrNodeKind::ExitScope { .. }
+            | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::Dialogue { .. } => {
+                let next_idx = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Next))
+                    .map(|e| e.target());
+                let target = next_idx.and_then(|t| follow_nops(graph, t));
                 write_edge(&mut out, &n, target, None, None, &mut has_end_edge);
             }
 
             // ── Conditional branch ────────────────────────────────────────
-            IrNodeKind::Branch {
-                then_node,
-                else_node,
-                ..
-            } => {
-                let then_t = follow_nops(graph, *then_node);
-                let else_t = follow_nops(graph, *else_node);
+            IrNodeKind::Branch { .. } => {
+                let mut then_raw: Option<NodeIndex> = None;
+                let mut else_raw: Option<NodeIndex> = None;
+                for e in graph.graph.edges_directed(node_idx, Direction::Outgoing) {
+                    match e.weight() {
+                        IrEdge::Then => then_raw = Some(e.target()),
+                        IrEdge::Else => else_raw = Some(e.target()),
+                        _ => {}
+                    }
+                }
+                let then_t = then_raw.and_then(|t| follow_nops(graph, t));
+                let else_t = else_raw.and_then(|t| follow_nops(graph, t));
                 write_edge(&mut out, &n, then_t, Some("then"), None, &mut has_end_edge);
                 write_edge(
                     &mut out,
@@ -278,14 +309,30 @@ pub fn render_dot(graph: &IrGraph) -> String {
             }
 
             // ── Multi-arm switch ──────────────────────────────────────────
-            IrNodeKind::Switch { arms, default, .. } => {
-                for arm in arms {
-                    let t = follow_nops(graph, arm.target);
+            IrNodeKind::Switch { arms, .. } => {
+                for (i, arm) in arms.iter().enumerate() {
+                    let arm_raw = graph
+                        .graph
+                        .edges_directed(node_idx, Direction::Outgoing)
+                        .find(|e| {
+                            if let IrEdge::Arm(j) = e.weight() {
+                                *j == i
+                            } else {
+                                false
+                            }
+                        })
+                        .map(|e| e.target());
+                    let t = arm_raw.and_then(|r| follow_nops(graph, r));
                     let lbl = arm_pattern_label(&arm.pattern);
                     write_edge(&mut out, &n, t, Some(&lbl), None, &mut has_end_edge);
                 }
-                if let Some(def) = default {
-                    let t = follow_nops(graph, *def);
+                let default_raw = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Default))
+                    .map(|e| e.target());
+                if let Some(def_raw) = default_raw {
+                    let t = follow_nops(graph, def_raw);
                     write_edge(
                         &mut out,
                         &n,
@@ -298,49 +345,72 @@ pub fn render_dot(graph: &IrGraph) -> String {
             }
 
             // ── Jump: dashed, constraint=false ────────────────────────────
-            IrNodeKind::Jump { target } => {
-                if *target == NODE_END {
-                    has_end_edge = true;
-                    writeln!(
-                        out,
-                        "    {n} -> __end__ [style=dashed, color=gray40, constraint=false];"
-                    )
-                    .ok();
-                } else {
-                    let dst = nid(*target);
-                    writeln!(
-                        out,
-                        "    {n} -> {dst} [style=dashed, color=gray40, constraint=false];"
-                    )
-                    .ok();
+            IrNodeKind::Jump => {
+                let target_raw = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Jump))
+                    .map(|e| e.target());
+                match target_raw {
+                    None => {
+                        has_end_edge = true;
+                        writeln!(
+                            out,
+                            "    {n} -> __end__ [style=dashed, color=gray40, constraint=false];"
+                        )
+                        .ok();
+                    }
+                    Some(t) => {
+                        let dst = nid(t);
+                        writeln!(
+                            out,
+                            "    {n} -> {dst} [style=dashed, color=gray40, constraint=false];"
+                        )
+                        .ok();
+                    }
                 }
             }
 
             // ── LetCall: dashed edge to callee, solid edge to return continuation ──
-            IrNodeKind::LetCall { target, next, .. } => {
+            IrNodeKind::LetCall { .. } => {
+                let call_raw = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Call))
+                    .map(|e| e.target());
+                let ret_raw = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Ret))
+                    .map(|e| e.target());
+
                 // Dashed edge to the call target (the subroutine entry).
-                if *target == NODE_END {
-                    has_end_edge = true;
-                    writeln!(
-                        out,
-                        "    {n} -> __end__ [style=dashed, color=gray40, constraint=false];"
-                    )
-                    .ok();
-                } else {
-                    let dst = nid(*target);
-                    writeln!(
-                        out,
-                        "    {n} -> {dst} [style=dashed, color=gray40, constraint=false, label=\"call\"];"
-                    )
-                    .ok();
+                match call_raw {
+                    None => {
+                        has_end_edge = true;
+                        writeln!(
+                            out,
+                            "    {n} -> __end__ [style=dashed, color=gray40, constraint=false];"
+                        )
+                        .ok();
+                    }
+                    Some(t) => {
+                        let dst = nid(t);
+                        writeln!(
+                            out,
+                            "    {n} -> {dst} [style=dashed, color=gray40, constraint=false, label=\"call\"];"
+                        )
+                        .ok();
+                    }
                 }
                 // Dashed edge to the return continuation.
-                let ret = follow_nops(graph, *next);
-                let ret_dst_str = if ret == NODE_END {
-                    has_end_edge = true;
-                    "__end__".to_string()
-                } else {
-                    nid(ret)
+                let ret_resolved = ret_raw.and_then(|r| follow_nops(graph, r));
+                let ret_dst_str = match ret_resolved {
+                    None => {
+                        has_end_edge = true;
+                        "__end__".to_string()
+                    }
+                    Some(t) => nid(t),
                 };
                 writeln!(
                     out,
@@ -353,7 +423,18 @@ pub fn render_dot(graph: &IrGraph) -> String {
             // ── Choice fan-out ────────────────────────────────────────────
             IrNodeKind::Choice { options, .. } => {
                 for (i, opt) in options.iter().enumerate() {
-                    let entry = follow_nops(graph, opt.entry);
+                    let opt_raw = graph
+                        .graph
+                        .edges_directed(node_idx, Direction::Outgoing)
+                        .find(|e| {
+                            if let IrEdge::Option(j) = e.weight() {
+                                *j == i
+                            } else {
+                                false
+                            }
+                        })
+                        .map(|e| e.target());
+                    let entry = opt_raw.and_then(|r| follow_nops(graph, r));
                     let lbl = format!("[{i}] {}", truncate(&opt.label, 24));
                     write_edge(
                         &mut out,
@@ -374,32 +455,36 @@ pub fn render_dot(graph: &IrGraph) -> String {
             // point.  A bare top-level return (no LetCall caller) still goes to
             // __end__ as before.
             IrNodeKind::Return { .. } => {
-                let caller_rets: Option<&Vec<NodeId>> = node_to_cluster
-                    .get(&node.id)
+                let caller_rets: Option<&Vec<NodeIndex>> = node_to_cluster
+                    .get(&node_idx)
                     .and_then(|label_name| graph.labels.get(*label_name))
                     .and_then(|entry_id| callee_to_rets.get(entry_id));
 
                 match caller_rets {
                     Some(ret_nodes) if !ret_nodes.is_empty() => {
                         for &ret in ret_nodes {
-                            if ret == NODE_END {
-                                has_end_edge = true;
-                                writeln!(
-                                    out,
-                                    "    {n} -> __end__ \
-                                     [style=dashed, color=darkslateblue, \
-                                     constraint=false, label=\"↩\"];",
-                                )
-                                .ok();
-                            } else {
-                                let dst = nid(follow_nops(graph, ret));
-                                writeln!(
-                                    out,
-                                    "    {n} -> {dst} \
-                                     [style=dashed, color=darkslateblue, \
-                                     constraint=false, label=\"↩\"];",
-                                )
-                                .ok();
+                            let resolved = follow_nops(graph, ret);
+                            match resolved {
+                                None => {
+                                    has_end_edge = true;
+                                    writeln!(
+                                        out,
+                                        "    {n} -> __end__ \
+                                         [style=dashed, color=darkslateblue, \
+                                         constraint=false, label=\"↩\"];",
+                                    )
+                                    .ok();
+                                }
+                                Some(t) => {
+                                    let dst = nid(t);
+                                    writeln!(
+                                        out,
+                                        "    {n} -> {dst} \
+                                         [style=dashed, color=darkslateblue, \
+                                         constraint=false, label=\"↩\"];",
+                                    )
+                                    .ok();
+                                }
                             }
                         }
                     }
@@ -417,7 +502,7 @@ pub fn render_dot(graph: &IrGraph) -> String {
             IrNodeKind::Todo => {}
 
             // Nop is handled at the top of the loop (skipped entirely).
-            IrNodeKind::Nop { .. } => unreachable!("Nop should have been skipped"),
+            IrNodeKind::Nop => unreachable!("Nop should have been skipped"),
         }
     }
 
@@ -440,10 +525,11 @@ pub fn render_dot(graph: &IrGraph) -> String {
 // ─── Visual attributes ───────────────────────────────────────────────────────
 
 /// Returns `(shape, fillcolor, label)` for a given IR node.
-fn node_attrs(
-    id: NodeId,
+fn node_attrs<'a>(
+    idx: NodeIndex,
     kind: &IrNodeKind,
-    label_by_entry: &HashMap<NodeId, String>,
+    graph: &IrGraph,
+    label_by_entry: &'a HashMap<NodeIndex, String>,
 ) -> (&'static str, &'static str, String) {
     match kind {
         IrNodeKind::Assign { var, scope, .. } => (
@@ -460,24 +546,44 @@ fn node_attrs(
             format!("branch\n{}", truncate(&ast_summary(condition), 28)),
         ),
 
-        IrNodeKind::Switch { arms, default, .. } => {
-            let total = arms.len() + usize::from(default.is_some());
+        IrNodeKind::Switch { arms, .. } => {
+            let has_default = graph
+                .graph
+                .edges_directed(idx, Direction::Outgoing)
+                .any(|e| matches!(e.weight(), IrEdge::Default));
+            let total = arms.len() + usize::from(has_default);
             ("diamond", "lightyellow", format!("match ({total} arms)"))
         }
 
-        IrNodeKind::Jump { target } => {
-            let dest = label_by_entry
-                .get(target)
+        IrNodeKind::Jump => {
+            let target_idx = graph
+                .graph
+                .edges_directed(idx, Direction::Outgoing)
+                .find(|e| matches!(e.weight(), IrEdge::Jump))
+                .map(|e| e.target());
+            let dest = target_idx
+                .and_then(|t| label_by_entry.get(&t))
                 .map(|name| format!("jump → {name}"))
-                .unwrap_or_else(|| format!("jump → {}", nid(*target)));
+                .unwrap_or_else(|| match target_idx {
+                    Some(t) => format!("jump → {}", nid(t)),
+                    None => "jump → ∅".to_string(),
+                });
             ("rarrow", "wheat", dest)
         }
 
-        IrNodeKind::LetCall { var, target, .. } => {
-            let callee = label_by_entry
-                .get(target)
+        IrNodeKind::LetCall { var } => {
+            let callee_idx = graph
+                .graph
+                .edges_directed(idx, Direction::Outgoing)
+                .find(|e| matches!(e.weight(), IrEdge::Call))
+                .map(|e| e.target());
+            let callee = callee_idx
+                .and_then(|t| label_by_entry.get(&t))
                 .cloned()
-                .unwrap_or_else(|| nid(*target));
+                .unwrap_or_else(|| match callee_idx {
+                    Some(t) => nid(t),
+                    None => "∅".to_string(),
+                });
             let label = if var.is_empty() {
                 format!("⤑ {callee}")
             } else {
@@ -498,9 +604,9 @@ fn node_attrs(
 
         // Inside a cluster the label name is shown in the cluster title,
         // so the entry/exit markers use a compact arrow prefix.
-        IrNodeKind::EnterScope { label, .. } => ("cds", "palegreen", format!("▶ {label}")),
+        IrNodeKind::EnterScope { label } => ("cds", "palegreen", format!("▶ {label}")),
 
-        IrNodeKind::ExitScope { label, .. } => ("cds", "palegreen", format!("◀ {label}")),
+        IrNodeKind::ExitScope { label } => ("cds", "palegreen", format!("◀ {label}")),
 
         IrNodeKind::DefineEnum { name, variants, .. } => (
             "box",
@@ -514,11 +620,11 @@ fn node_attrs(
             format!("def_decorator\n@{name} ({} params)", params.len()),
         ),
 
-        IrNodeKind::Nop { .. } => {
+        IrNodeKind::Nop => {
             // Nop nodes should never reach node_attrs — they are skipped before
             // this function is called.  Fall back to a visible placeholder so
             // bugs are immediately obvious rather than silent.
-            ("ellipse", "gray90", format!("● {}", id.0))
+            ("ellipse", "gray90", format!("● {}", idx.index()))
         }
 
         IrNodeKind::End => ("doublecircle", "tomato", "end".into()),
@@ -572,21 +678,22 @@ fn node_attrs(
 
 /// Emits a single DOT edge from `src` to `dst`.
 ///
-/// If `dst` is [`NODE_END`], the edge targets the synthetic `__end__` sink
+/// If `dst` is `None`, the edge targets the synthetic `__end__` sink
 /// instead, and `has_end_edge` is set to `true`.
 fn write_edge(
     out: &mut String,
     src: &str,
-    dst: NodeId,
+    dst: Option<NodeIndex>,
     label: Option<&str>,
     extra_attrs: Option<&str>,
     has_end_edge: &mut bool,
 ) {
-    let dst_str = if dst == NODE_END {
-        *has_end_edge = true;
-        "__end__".to_string()
-    } else {
-        nid(dst)
+    let dst_str = match dst {
+        None => {
+            *has_end_edge = true;
+            "__end__".to_string()
+        }
+        Some(idx) => nid(idx),
     };
 
     let mut attrs: Vec<String> = Vec::new();
@@ -602,6 +709,13 @@ fn write_edge(
     } else {
         writeln!(out, "    {src} -> {dst_str} [{}];", attrs.join(", ")).ok();
     }
+}
+
+// ─── Node ID formatting ──────────────────────────────────────────────────────
+
+/// Formats a [`NodeIndex`] as a renderer node identifier string (e.g. `N42`).
+fn nid(idx: NodeIndex) -> String {
+    format!("N{}", idx.index())
 }
 
 // ─── DOT-specific helpers ────────────────────────────────────────────────────
@@ -671,21 +785,37 @@ fn preamble_summary(kind: &IrNodeKind) -> String {
 }
 
 /// Walks the prologue chain from `cursor`, following Assign / DefineEnum /
-/// DefineScriptDecorator / Nop / Eval `next` pointers, until the first
-/// non-preamble node (typically `EnterScope`) or `NODE_END` is reached.
-fn preamble_chain_target(graph: &IrGraph, mut cursor: NodeId) -> NodeId {
-    let mut visited = HashSet::new();
+/// DefineScriptDecorator / Nop / Eval Next edges, until the first
+/// non-preamble node (typically `EnterScope`) or `None` is reached.
+fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<NodeIndex> {
+    let mut current = cursor?;
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
     loop {
-        if cursor == NODE_END || cursor.0 as usize >= graph.nodes.len() || !visited.insert(cursor) {
-            return cursor;
+        if !visited.insert(current) {
+            return Some(current);
         }
-        match &graph.nodes[cursor.0 as usize].kind {
-            IrNodeKind::Assign { next, .. }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. }
-            | IrNodeKind::Nop { next }
-            | IrNodeKind::Eval { next, .. } => cursor = *next,
-            _ => return cursor,
+        let kind = match graph.graph.node_weight(current) {
+            Some(k) => k,
+            None => return None,
+        };
+        match kind {
+            IrNodeKind::Assign { .. }
+            | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::Nop
+            | IrNodeKind::Eval { .. } => {
+                // Follow the Next edge.
+                let next = graph
+                    .graph
+                    .edges_directed(current, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Next))
+                    .map(|e| e.target());
+                match next {
+                    Some(n) => current = n,
+                    None => return None,
+                }
+            }
+            _ => return Some(current),
         }
     }
 }
@@ -807,7 +937,7 @@ mod tests {
 
     #[test]
     fn test_cluster_sorted_by_entry_node_id() {
-        // scene_a compiles first → lower NodeId → appears first in DOT output.
+        // scene_a compiles first → lower NodeIndex → appears first in DOT output.
         let dot = compile(Ast::block(vec![
             Ast::labeled_block(
                 "scene_a".into(),
@@ -1161,7 +1291,7 @@ mod tests {
 
     #[test]
     fn test_end_sentinel_from_assign() {
-        // A bare assignment with next=NODE_END must produce the __end__ sink.
+        // A bare assignment with no Next successor must produce the __end__ sink.
         let dot = compile(Ast::block(vec![Ast::decl(
             DeclKind::Variable,
             Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
@@ -1170,7 +1300,7 @@ mod tests {
         .to_dot();
         assert!(
             dot.contains("__end__"),
-            "NODE_END edge must produce __end__ sink"
+            "missing-next edge must produce __end__ sink"
         );
         assert!(dot.contains("tomato"), "__end__ must use tomato fill");
     }
@@ -1208,11 +1338,13 @@ mod tests {
 
     #[test]
     fn test_truncate_short_unchanged() {
+        use super::super::render_common::truncate;
         assert_eq!(truncate("hello", 10), "hello");
     }
 
     #[test]
     fn test_truncate_long_appends_ellipsis() {
+        use super::super::render_common::truncate;
         let r = truncate("abcdefghijklmnop", 5);
         assert!(r.ends_with('…'));
         assert!(r.chars().count() <= 6);
@@ -1220,40 +1352,32 @@ mod tests {
 
     #[test]
     fn test_follow_nops_skips_chain() {
-        // Build a mini graph: N0(Nop→N1), N1(Nop→N2), N2(End).
-        use super::super::{IrNode, IrNodeKind, NodeId};
+        use crate::ir::{IrEdge, IrGraph, IrNodeKind};
+        use petgraph::stable_graph::StableGraph;
+
+        // Build a mini petgraph: N0(Nop) --Next--> N1(Nop) --Next--> N2(End).
+        let mut g: StableGraph<IrNodeKind, IrEdge> = StableGraph::new();
+        let n0 = g.add_node(IrNodeKind::Nop);
+        let n1 = g.add_node(IrNodeKind::Nop);
+        let n2 = g.add_node(IrNodeKind::End);
+        g.add_edge(n0, n1, IrEdge::Next);
+        g.add_edge(n1, n2, IrEdge::Next);
+
         let graph = IrGraph {
-            nodes: vec![
-                IrNode {
-                    id: NodeId(0),
-                    kind: IrNodeKind::Nop { next: NodeId(1) },
-                },
-                IrNode {
-                    id: NodeId(1),
-                    kind: IrNodeKind::Nop { next: NodeId(2) },
-                },
-                IrNode {
-                    id: NodeId(2),
-                    kind: IrNodeKind::End,
-                },
-            ],
-            entry: NodeId(0),
+            graph: g,
+            entry: Some(n0),
             labels: HashMap::new(),
         };
+
         assert_eq!(
-            analysis::follow_nops(&graph, NodeId(0)),
-            NodeId(2),
+            analysis::follow_nops(&graph, n0),
+            Some(n2),
             "follow_nops must skip both Nop nodes"
         );
         assert_eq!(
-            analysis::follow_nops(&graph, NodeId(2)),
-            NodeId(2),
+            analysis::follow_nops(&graph, n2),
+            Some(n2),
             "follow_nops must return End unchanged"
-        );
-        assert_eq!(
-            analysis::follow_nops(&graph, NODE_END),
-            NODE_END,
-            "follow_nops must return NODE_END unchanged"
         );
     }
 }

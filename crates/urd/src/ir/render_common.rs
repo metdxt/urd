@@ -7,8 +7,6 @@
 use crate::parser::ast::{AstContent, DeclKind, MatchPattern};
 use crate::runtime::value::RuntimeValue;
 
-use super::NodeId;
-
 // ─── Dialogue content extraction ─────────────────────────────────────────────
 
 /// Extracts a human-readable comma-separated speaker string from the speakers
@@ -52,13 +50,6 @@ pub(super) fn extract_simple_val(ast: &crate::parser::ast::Ast) -> String {
         AstContent::Value(RuntimeValue::Dice(c, s)) => format!("{c}d{s}"),
         _ => "⟨?⟩".into(),
     }
-}
-
-// ─── Node ID formatting ──────────────────────────────────────────────────────
-
-/// Formats a [`NodeId`] as a renderer node identifier string (e.g. `N42`).
-pub(super) fn nid(id: NodeId) -> String {
-    format!("N{}", id.0)
 }
 
 // ─── String helpers ──────────────────────────────────────────────────────────

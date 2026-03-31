@@ -24,12 +24,16 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
+use petgraph::Direction;
+use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+
 use super::analysis::{self, follow_nops};
 use super::render_common::{
     arm_pattern_label, ast_summary, decl_kw, decorator_line, extract_content_lines,
-    extract_speakers, nid, truncate,
+    extract_speakers, truncate,
 };
-use super::{IrGraph, IrNodeKind, NODE_END, NodeId};
+use super::{IrEdge, IrGraph, IrNodeKind};
 
 // ─── Public surface ───────────────────────────────────────────────────────────
 
@@ -56,12 +60,18 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
     let node_to_cluster = analysis::node_to_cluster(&clusters);
     let entry_cluster = analysis::entry_cluster_name(graph);
 
-    // Sort cluster names by entry NodeId (ascending = compilation order).
+    // Sort cluster names by entry NodeIndex (ascending = compilation order).
     let mut sorted_labels: Vec<&String> = clusters.keys().collect();
-    sorted_labels.sort_by_key(|name| graph.labels.get(*name).map(|id| id.0).unwrap_or(u32::MAX));
+    sorted_labels.sort_by_key(|name| {
+        graph
+            .labels
+            .get(*name)
+            .map(|id| id.index())
+            .unwrap_or(usize::MAX)
+    });
 
-    // Reverse map: label entry NodeId → label name.
-    let label_by_entry: HashMap<NodeId, String> = graph
+    // Reverse map: label entry NodeIndex → label name.
+    let label_by_entry: HashMap<NodeIndex, String> = graph
         .labels
         .iter()
         .map(|(name, &id)| (id, name.clone()))
@@ -152,19 +162,19 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
         writeln!(out, "    subgraph cluster_{safe}[\"{escaped_name}\"]").ok();
         writeln!(out, "        direction TB").ok();
 
-        let mut sorted_members: Vec<NodeId> = members.iter().copied().collect();
-        sorted_members.sort_by_key(|n| n.0);
+        let mut sorted_members: Vec<NodeIndex> = members.iter().copied().collect();
+        sorted_members.sort_by_key(|n| n.index());
 
-        for node_id in sorted_members {
-            if node_id.0 as usize >= graph.nodes.len() {
-                continue;
-            }
-            let node = &graph.nodes[node_id.0 as usize];
+        for node_idx in sorted_members {
+            let kind = match graph.graph.node_weight(node_idx) {
+                Some(k) => k,
+                None => continue,
+            };
             // Skip Nop nodes — they're collapsed.
-            if matches!(&node.kind, IrNodeKind::Nop { .. }) {
+            if matches!(kind, IrNodeKind::Nop) {
                 continue;
             }
-            let def = mermaid_node_def(node.id, &node.kind, &label_by_entry);
+            let def = mermaid_node_def(node_idx, kind, graph, &label_by_entry);
             writeln!(out, "        {def}").ok();
         }
 
@@ -190,28 +200,32 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
     writeln!(out).ok();
 
     // ── Non-clustered reachable non-Nop node definitions (preamble) ─────────
-    let clustered: HashSet<NodeId> = clusters.values().flatten().copied().collect();
+    let clustered: HashSet<NodeIndex> = clusters.values().flatten().copied().collect();
     let mut preamble_lines: Vec<String> = Vec::new();
-    let mut preamble_ids: Vec<NodeId> = Vec::new();
+    let mut preamble_ids: Vec<NodeIndex> = Vec::new();
 
     let mut any_global = false;
 
-    for node in &graph.nodes {
-        if !reachable.contains(&node.id) {
+    for node_idx in graph.graph.node_indices() {
+        let kind = match graph.graph.node_weight(node_idx) {
+            Some(k) => k,
+            None => continue,
+        };
+        if !reachable.contains(&node_idx) {
             continue;
         }
-        if matches!(&node.kind, IrNodeKind::Nop { .. }) {
+        if matches!(kind, IrNodeKind::Nop) {
             continue;
         }
-        if clustered.contains(&node.id) {
+        if clustered.contains(&node_idx) {
             continue;
         }
-        if is_preamble_kind(&node.kind) {
-            preamble_ids.push(node.id);
-            preamble_lines.push(preamble_summary(&node.kind));
+        if is_preamble_kind(kind) {
+            preamble_ids.push(node_idx);
+            preamble_lines.push(preamble_summary(kind));
         } else {
             any_global = true;
-            let def = mermaid_node_def(node.id, &node.kind, &label_by_entry);
+            let def = mermaid_node_def(node_idx, kind, graph, &label_by_entry);
             writeln!(out, "    {def}").ok();
         }
     }
@@ -223,8 +237,11 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
         // Single (or zero) preamble node — render individually so its native
         // Mermaid class (:::enumDef, :::assign, …) is preserved.
         for &pid in &preamble_ids {
-            let node = &graph.nodes[pid.0 as usize];
-            let def = mermaid_node_def(node.id, &node.kind, &label_by_entry);
+            let kind = match graph.graph.node_weight(pid) {
+                Some(k) => k,
+                None => continue,
+            };
+            let def = mermaid_node_def(pid, kind, graph, &label_by_entry);
             writeln!(out, "    {def}").ok();
         }
         if !preamble_ids.is_empty() {
@@ -242,122 +259,200 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
         writeln!(out).ok();
     }
 
-    let preamble_id_set: HashSet<NodeId> = preamble_ids.iter().copied().collect();
+    let preamble_id_set: HashSet<NodeIndex> = preamble_ids.iter().copied().collect();
 
     // ── START → entry edge ───────────────────────────────────────────────────
     if !preamble_ids.is_empty() {
         // START → preamble → entry label
         writeln!(out, "    __start__ --> __preamble__").ok();
         let preamble_target = preamble_chain_target(graph, graph.entry);
-        if preamble_target == NODE_END {
-            has_end_edge = true;
-            writeln!(out, "    __preamble__ --> __end__").ok();
-        } else {
-            let dst = nid(preamble_target);
-            writeln!(out, "    __preamble__ --> {dst}").ok();
+        match preamble_target {
+            None => {
+                has_end_edge = true;
+                writeln!(out, "    __preamble__ --> __end__").ok();
+            }
+            Some(t) => {
+                let dst = nid(t);
+                writeln!(out, "    __preamble__ --> {dst}").ok();
+            }
         }
-    } else if graph.entry != NODE_END {
-        let entry_resolved = follow_nops(graph, graph.entry);
-        let dst = nid(entry_resolved);
-        writeln!(out, "    __start__ --> {dst}").ok();
+    } else if let Some(entry_idx) = graph.entry {
+        let entry_resolved = follow_nops(graph, entry_idx);
+        match entry_resolved {
+            None => {
+                has_end_edge = true;
+                writeln!(out, "    __start__ --> __end__").ok();
+            }
+            Some(t) => {
+                let dst = nid(t);
+                writeln!(out, "    __start__ --> {dst}").ok();
+            }
+        }
     }
     writeln!(out).ok();
 
     // ── All edges ────────────────────────────────────────────────────────────
-    for node in &graph.nodes {
-        if !reachable.contains(&node.id) {
+    for node_idx in graph.graph.node_indices() {
+        let kind = match graph.graph.node_weight(node_idx) {
+            Some(k) => k,
+            None => continue,
+        };
+        if !reachable.contains(&node_idx) {
             continue;
         }
-        if matches!(&node.kind, IrNodeKind::Nop { .. }) {
+        if matches!(kind, IrNodeKind::Nop) {
             continue;
         }
-        if preamble_id_set.contains(&node.id) {
+        if preamble_id_set.contains(&node_idx) {
             continue;
         }
 
-        let n = nid(node.id);
+        let n = nid(node_idx);
 
-        match &node.kind {
+        match kind {
             // ── Single-successor nodes ─────────────────────────────────────
-            IrNodeKind::Assign { next, .. }
-            | IrNodeKind::Eval { next, .. }
-            | IrNodeKind::EnterScope { next, .. }
-            | IrNodeKind::ExitScope { next, .. }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. }
-            | IrNodeKind::Dialogue { next, .. } => {
-                let target = follow_nops(graph, *next);
+            IrNodeKind::Assign { .. }
+            | IrNodeKind::Eval { .. }
+            | IrNodeKind::EnterScope { .. }
+            | IrNodeKind::ExitScope { .. }
+            | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::Dialogue { .. } => {
+                let next_raw = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Next))
+                    .map(|e| e.target());
+                let target = next_raw.and_then(|t| follow_nops(graph, t));
                 write_mermaid_edge(&mut out, &n, target, None, false, &mut has_end_edge);
             }
 
             // ── Conditional branch ─────────────────────────────────────────
-            IrNodeKind::Branch {
-                then_node,
-                else_node,
-                ..
-            } => {
-                let then_t = follow_nops(graph, *then_node);
-                let else_t = follow_nops(graph, *else_node);
+            IrNodeKind::Branch { .. } => {
+                let mut then_raw: Option<NodeIndex> = None;
+                let mut else_raw: Option<NodeIndex> = None;
+                for e in graph.graph.edges_directed(node_idx, Direction::Outgoing) {
+                    match e.weight() {
+                        IrEdge::Then => then_raw = Some(e.target()),
+                        IrEdge::Else => else_raw = Some(e.target()),
+                        _ => {}
+                    }
+                }
+                let then_t = then_raw.and_then(|t| follow_nops(graph, t));
+                let else_t = else_raw.and_then(|t| follow_nops(graph, t));
                 write_mermaid_edge(&mut out, &n, then_t, Some("then"), false, &mut has_end_edge);
                 write_mermaid_edge(&mut out, &n, else_t, Some("else"), true, &mut has_end_edge);
             }
 
             // ── Multi-arm switch ───────────────────────────────────────────
-            IrNodeKind::Switch { arms, default, .. } => {
-                for arm in arms {
-                    let t = follow_nops(graph, arm.target);
+            IrNodeKind::Switch { arms, .. } => {
+                for (i, arm) in arms.iter().enumerate() {
+                    let arm_raw = graph
+                        .graph
+                        .edges_directed(node_idx, Direction::Outgoing)
+                        .find(|e| {
+                            if let IrEdge::Arm(j) = e.weight() {
+                                *j == i
+                            } else {
+                                false
+                            }
+                        })
+                        .map(|e| e.target());
+                    let t = arm_raw.and_then(|r| follow_nops(graph, r));
                     let lbl = arm_pattern_label(&arm.pattern);
                     write_mermaid_edge(&mut out, &n, t, Some(&lbl), false, &mut has_end_edge);
                 }
-                if let Some(def) = default {
-                    let t = follow_nops(graph, *def);
+                let default_raw = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Default))
+                    .map(|e| e.target());
+                if let Some(def_raw) = default_raw {
+                    let t = follow_nops(graph, def_raw);
                     write_mermaid_edge(&mut out, &n, t, Some("default"), true, &mut has_end_edge);
                 }
             }
 
             // ── Jump: dashed ───────────────────────────────────────────────
-            IrNodeKind::Jump { target } => {
-                if *target == NODE_END {
-                    has_end_edge = true;
-                    writeln!(out, "    {n} -.-> __end__").ok();
-                } else {
-                    let dst = nid(*target);
-                    writeln!(out, "    {n} -.-> {dst}").ok();
+            IrNodeKind::Jump => {
+                let target_raw = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Jump))
+                    .map(|e| e.target());
+                match target_raw {
+                    None => {
+                        has_end_edge = true;
+                        writeln!(out, "    {n} -.-> __end__").ok();
+                    }
+                    Some(t) => {
+                        let dst = nid(t);
+                        writeln!(out, "    {n} -.-> {dst}").ok();
+                    }
                 }
             }
 
             // ── LetCall: dashed "call" edge + dashed "ret" edge ───────────
-            IrNodeKind::LetCall { target, next, .. } => {
+            IrNodeKind::LetCall { .. } => {
+                let call_raw = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Call))
+                    .map(|e| e.target());
+                let ret_raw = graph
+                    .graph
+                    .edges_directed(node_idx, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Ret))
+                    .map(|e| e.target());
+
                 // Dashed edge to the call target (subroutine entry).
-                if *target == NODE_END {
-                    has_end_edge = true;
-                    writeln!(out, "    {n} -. \"call\" .-> __end__").ok();
-                } else {
-                    let dst = nid(*target);
-                    writeln!(out, "    {n} -. \"call\" .-> {dst}").ok();
+                match call_raw {
+                    None => {
+                        has_end_edge = true;
+                        writeln!(out, "    {n} -. \"call\" .-> __end__").ok();
+                    }
+                    Some(t) => {
+                        let dst = nid(t);
+                        writeln!(out, "    {n} -. \"call\" .-> {dst}").ok();
+                    }
                 }
                 // Dashed edge to the return continuation.
-                let ret = follow_nops(graph, *next);
-                if ret == NODE_END {
-                    has_end_edge = true;
-                    writeln!(out, "    {n} -. \"ret\" .-> __end__").ok();
-                } else {
-                    let ret_dst = nid(ret);
-                    writeln!(out, "    {n} -. \"ret\" .-> {ret_dst}").ok();
+                let ret_resolved = ret_raw.and_then(|r| follow_nops(graph, r));
+                match ret_resolved {
+                    None => {
+                        has_end_edge = true;
+                        writeln!(out, "    {n} -. \"ret\" .-> __end__").ok();
+                    }
+                    Some(t) => {
+                        let ret_dst = nid(t);
+                        writeln!(out, "    {n} -. \"ret\" .-> {ret_dst}").ok();
+                    }
                 }
             }
 
             // ── Choice fan-out ─────────────────────────────────────────────
             IrNodeKind::Choice { options, .. } => {
                 for (i, opt) in options.iter().enumerate() {
-                    let entry = follow_nops(graph, opt.entry);
+                    let opt_raw = graph
+                        .graph
+                        .edges_directed(node_idx, Direction::Outgoing)
+                        .find(|e| {
+                            if let IrEdge::Option(j) = e.weight() {
+                                *j == i
+                            } else {
+                                false
+                            }
+                        })
+                        .map(|e| e.target());
+                    let entry = opt_raw.and_then(|r| follow_nops(graph, r));
                     let lbl = format!("[{i}] {}", truncate(&opt.label, 24));
                     let escaped_lbl = escape_mermaid(&lbl);
-                    let dst = if entry == NODE_END {
-                        has_end_edge = true;
-                        "__end__".to_string()
-                    } else {
-                        nid(entry)
+                    let dst = match entry {
+                        None => {
+                            has_end_edge = true;
+                            "__end__".to_string()
+                        }
+                        Some(t) => nid(t),
                     };
                     writeln!(out, "    {n} -->|\"{escaped_lbl}\"| {dst}").ok();
                 }
@@ -368,8 +463,8 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             // back-edges to each caller's ret continuation.  A bare top-level
             // return still goes to __end__.
             IrNodeKind::Return { .. } => {
-                let caller_rets: Option<&Vec<NodeId>> = node_to_cluster
-                    .get(&node.id)
+                let caller_rets: Option<&Vec<NodeIndex>> = node_to_cluster
+                    .get(&node_idx)
                     .and_then(|label_name| graph.labels.get(*label_name))
                     .and_then(|entry_id| callee_to_rets.get(entry_id));
 
@@ -377,12 +472,15 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
                     Some(ret_nodes) if !ret_nodes.is_empty() => {
                         for &ret in ret_nodes {
                             let resolved = follow_nops(graph, ret);
-                            if resolved == NODE_END {
-                                has_end_edge = true;
-                                writeln!(out, "    {n} -. \"↩\" .-> __end__").ok();
-                            } else {
-                                let dst = nid(resolved);
-                                writeln!(out, "    {n} -. \"↩\" .-> {dst}").ok();
+                            match resolved {
+                                None => {
+                                    has_end_edge = true;
+                                    writeln!(out, "    {n} -. \"↩\" .-> __end__").ok();
+                                }
+                                Some(t) => {
+                                    let dst = nid(t);
+                                    writeln!(out, "    {n} -. \"↩\" .-> {dst}").ok();
+                                }
                             }
                         }
                     }
@@ -397,7 +495,7 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             IrNodeKind::End | IrNodeKind::Todo => {}
 
             // Nop is skipped at the top of the loop.
-            IrNodeKind::Nop { .. } => unreachable!("Nop should have been skipped"),
+            IrNodeKind::Nop => unreachable!("Nop should have been skipped"),
         }
     }
 
@@ -418,11 +516,12 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
 /// (Mermaid-escaped), and `:::className` suffix.  It does **not** include
 /// leading indentation.
 fn mermaid_node_def(
-    id: NodeId,
+    idx: NodeIndex,
     kind: &IrNodeKind,
-    label_by_entry: &HashMap<NodeId, String>,
+    graph: &IrGraph,
+    label_by_entry: &HashMap<NodeIndex, String>,
 ) -> String {
-    let n = nid(id);
+    let n = nid(idx);
     match kind {
         // ── Assign / Eval ──────────────────────────────────────────────────
         IrNodeKind::Assign { var, scope, .. } => {
@@ -441,28 +540,48 @@ fn mermaid_node_def(
             format!("{n}{{\"{text}\"}}:::branch")
         }
 
-        IrNodeKind::Switch { arms, default, .. } => {
-            let total = arms.len() + usize::from(default.is_some());
+        IrNodeKind::Switch { arms, .. } => {
+            let has_default = graph
+                .graph
+                .edges_directed(idx, Direction::Outgoing)
+                .any(|e| matches!(e.weight(), IrEdge::Default));
+            let total = arms.len() + usize::from(has_default);
             let text = escape_mermaid(&format!("match ({total} arms)"));
             format!("{n}{{\"{text}\"}}:::branch")
         }
 
         // ── Jump ───────────────────────────────────────────────────────────
-        IrNodeKind::Jump { target } => {
-            let dest = label_by_entry
-                .get(target)
+        IrNodeKind::Jump => {
+            let target_idx = graph
+                .graph
+                .edges_directed(idx, Direction::Outgoing)
+                .find(|e| matches!(e.weight(), IrEdge::Jump))
+                .map(|e| e.target());
+            let dest = target_idx
+                .and_then(|t| label_by_entry.get(&t))
                 .map(|name| format!("jump → {name}"))
-                .unwrap_or_else(|| format!("jump → {}", nid(*target)));
+                .unwrap_or_else(|| match target_idx {
+                    Some(t) => format!("jump → {}", nid(t)),
+                    None => "jump → ∅".to_string(),
+                });
             let text = escape_mermaid(&dest);
             format!("{n}>\"{text}\"]:::jump")
         }
 
         // ── LetCall ────────────────────────────────────────────────────────
-        IrNodeKind::LetCall { var, target, .. } => {
-            let callee = label_by_entry
-                .get(target)
+        IrNodeKind::LetCall { var } => {
+            let callee_idx = graph
+                .graph
+                .edges_directed(idx, Direction::Outgoing)
+                .find(|e| matches!(e.weight(), IrEdge::Call))
+                .map(|e| e.target());
+            let callee = callee_idx
+                .and_then(|t| label_by_entry.get(&t))
                 .cloned()
-                .unwrap_or_else(|| nid(*target));
+                .unwrap_or_else(|| match callee_idx {
+                    Some(t) => nid(t),
+                    None => "∅".to_string(),
+                });
             let raw = if var.is_empty() {
                 format!("⤑ {callee}")
             } else {
@@ -484,12 +603,12 @@ fn mermaid_node_def(
         }
 
         // ── EnterScope / ExitScope ─────────────────────────────────────────
-        IrNodeKind::EnterScope { label, .. } => {
+        IrNodeKind::EnterScope { label } => {
             let text = escape_mermaid(&format!("▶ {label}"));
             format!("{n}{{\"{text}\"}}:::scope")
         }
 
-        IrNodeKind::ExitScope { label, .. } => {
+        IrNodeKind::ExitScope { label } => {
             let text = escape_mermaid(&format!("◀ {label}"));
             format!("{n}{{\"{text}\"}}:::scope")
         }
@@ -508,10 +627,10 @@ fn mermaid_node_def(
         }
 
         // ── Nop ────────────────────────────────────────────────────────────
-        IrNodeKind::Nop { .. } => {
+        IrNodeKind::Nop => {
             // Should never be reached — Nop nodes are filtered before calling
             // this function.  Emit a visible placeholder so bugs are obvious.
-            format!("{n}[\"● {}\"]", id.0)
+            format!("{n}[\"● {}\"]", idx.index())
         }
 
         // ── End ────────────────────────────────────────────────────────────
@@ -572,25 +691,33 @@ fn mermaid_node_def(
     }
 }
 
+// ─── Node ID formatting ──────────────────────────────────────────────────────
+
+/// Formats a [`NodeIndex`] as a renderer node identifier string (e.g. `N42`).
+fn nid(idx: NodeIndex) -> String {
+    format!("N{}", idx.index())
+}
+
 // ─── Edge helper ─────────────────────────────────────────────────────────────
 
 /// Emits a single Mermaid edge from `src` to `dst`.
 ///
 /// `dashed` uses `-.->` syntax; otherwise uses `-->`.
-/// If `dst` is [`NODE_END`] the edge targets `__end__` and sets `has_end_edge`.
+/// If `dst` is `None` the edge targets `__end__` and sets `has_end_edge`.
 fn write_mermaid_edge(
     out: &mut String,
     src: &str,
-    dst: NodeId,
+    dst: Option<NodeIndex>,
     label: Option<&str>,
     dashed: bool,
     has_end_edge: &mut bool,
 ) {
-    let dst_str = if dst == NODE_END {
-        *has_end_edge = true;
-        "__end__".to_string()
-    } else {
-        nid(dst)
+    let dst_str = match dst {
+        None => {
+            *has_end_edge = true;
+            "__end__".to_string()
+        }
+        Some(idx) => nid(idx),
     };
 
     match (label, dashed) {
@@ -643,21 +770,38 @@ fn preamble_summary(kind: &IrNodeKind) -> String {
 }
 
 /// Walks from `cursor` following preamble-style nodes (Assign, DefineEnum,
-/// DefineScriptDecorator, Nop, Eval) until hitting an EnterScope, END, or
-/// any other non-preamble node.  Returns that target [`NodeId`].
-fn preamble_chain_target(graph: &IrGraph, mut cursor: NodeId) -> NodeId {
-    let mut visited = HashSet::new();
+/// DefineScriptDecorator, Nop, Eval) via their Next edges, until hitting an
+/// EnterScope, `None`, or any other non-preamble node.  Returns that target
+/// `Option<NodeIndex>`.
+fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<NodeIndex> {
+    let mut current = cursor?;
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
     loop {
-        if cursor == NODE_END || cursor.0 as usize >= graph.nodes.len() || !visited.insert(cursor) {
-            return cursor;
+        if !visited.insert(current) {
+            return Some(current);
         }
-        match &graph.nodes[cursor.0 as usize].kind {
-            IrNodeKind::Assign { next, .. }
-            | IrNodeKind::DefineEnum { next, .. }
-            | IrNodeKind::DefineScriptDecorator { next, .. }
-            | IrNodeKind::Nop { next }
-            | IrNodeKind::Eval { next, .. } => cursor = *next,
-            _ => return cursor,
+        let kind = match graph.graph.node_weight(current) {
+            Some(k) => k,
+            None => return None,
+        };
+        match kind {
+            IrNodeKind::Assign { .. }
+            | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::Nop
+            | IrNodeKind::Eval { .. } => {
+                // Follow the Next edge.
+                let next = graph
+                    .graph
+                    .edges_directed(current, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Next))
+                    .map(|e| e.target());
+                match next {
+                    Some(n) => current = n,
+                    None => return None,
+                }
+            }
+            _ => return Some(current),
         }
     }
 }
@@ -991,11 +1135,13 @@ mod tests {
 
     #[test]
     fn test_truncate_short_unchanged() {
+        use super::super::render_common::truncate;
         assert_eq!(truncate("hello", 10), "hello");
     }
 
     #[test]
     fn test_truncate_long_appends_ellipsis() {
+        use super::super::render_common::truncate;
         let r = truncate("abcdefghijklmnop", 5);
         assert!(r.ends_with('…'));
         assert!(r.chars().count() <= 6);

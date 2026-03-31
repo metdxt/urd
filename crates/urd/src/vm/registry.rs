@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use crate::ir::NODE_END;
+use petgraph::stable_graph::NodeIndex;
+
 use crate::parser::ast::{AstContent, Decorator};
 use crate::runtime::value::RuntimeValue;
 
@@ -16,11 +17,12 @@ use super::eval::eval_expr;
 type DecoratorHandler = Box<dyn Fn(&[RuntimeValue]) -> HashMap<String, RuntimeValue> + Send + Sync>;
 
 /// Registry of named decorator handlers used to evaluate `@decorator` annotations
-/// attached to [`IrNodeKind::Dialogue`] and [`IrNodeKind::Choice`] nodes.
+/// attached to [`crate::ir::IrNodeKind::Dialogue`] and
+/// [`crate::ir::IrNodeKind::Choice`] nodes.
 ///
 /// Register handlers with [`DecoratorRegistry::register`] before constructing
-/// a [`Vm`]; the VM's validation pass will reject any decorator name that is
-/// not present in the registry.
+/// a [`crate::vm::Vm`]; the VM's validation pass will reject any decorator name
+/// that is not present in the registry.
 pub struct DecoratorRegistry {
     pub(super) handlers: HashMap<String, DecoratorHandler>,
 }
@@ -65,13 +67,13 @@ impl DecoratorRegistry {
     }
 
     /// Registers a no-op Rust-side stub handler under `name` so that the
-    /// validation pass in [`Vm::new`] accepts `@name(args)` on
+    /// validation pass in [`crate::vm::Vm::new`] accepts `@name(args)` on
     /// dialogue/choice nodes.
     ///
     /// Script-defined decorator bodies are already evaluated automatically by
-    /// the VM via [`RuntimeValue::ScriptDecorator`] stored in the environment;
-    /// this method is only needed when you also want a native Rust handler to
-    /// run for the same decorator name.
+    /// the VM via [`crate::runtime::value::RuntimeValue::ScriptDecorator`]
+    /// stored in the environment; this method is only needed when you also want
+    /// a native Rust handler to run for the same decorator name.
     ///
     /// # Errors
     /// Currently infallible; returns `Ok(())` always.  The `Result` return
@@ -85,7 +87,7 @@ impl DecoratorRegistry {
     ) -> Result<(), VmError> {
         // Register a stub handler so `@name` passes the validation pass in
         // `Vm::new` and can be used in dialogue/choice nodes without a native
-        // Rust closure.  Full body evaluation is deferred to a future milestone.
+        // Rust closure.
         self.handlers
             .entry(name)
             .or_insert_with(|| Box::new(|_args: &[RuntimeValue]| HashMap::new()));
@@ -95,9 +97,9 @@ impl DecoratorRegistry {
     /// Evaluates `decorator`'s arguments and invokes the registered handler.
     ///
     /// # Errors
-    /// Returns [`VmError::UnknownDecorator`] (with sentinel node id) if the
-    /// decorator name is not registered.  Callers that know the real node id
-    /// should override it in the error.
+    /// Returns [`VmError::UnknownDecorator`] (with a sentinel [`NodeIndex::end()`])
+    /// if the decorator name is not registered.  Callers that know the real node
+    /// index should override it in the error.
     pub fn apply(
         &self,
         decorator: &Decorator,
@@ -106,27 +108,36 @@ impl DecoratorRegistry {
         let handler = self.handlers.get(decorator.name()).ok_or_else(|| {
             VmError::UnknownDecorator {
                 name: decorator.name().to_string(),
-                node_id: NODE_END, // sentinel; callers may override
+                // Use NodeIndex::end() as the sentinel "no node" value.
+                // This mirrors the former NODE_END sentinel.  Callers that know
+                // the actual node index (e.g. the VM's validation pass) should
+                // supply a real NodeIndex instead.
+                node_id: NodeIndex::end(),
             }
         })?;
 
-        // Evaluate every argument in the ExprList.
-        let args = eval_decorator_args(decorator, env)?;
+        // Evaluate every argument in the ExprList (or a bare single argument).
+        let args = eval_decorator_args(decorator.args(), env)?;
 
         Ok(handler(&args))
     }
 }
 
-/// Evaluate all arguments of a decorator, returning them as a `Vec<RuntimeValue>`.
+/// Evaluates all arguments of a decorator's argument AST, returning them as a
+/// `Vec<RuntimeValue>`.
+///
+/// `args_ast` is the AST node returned by [`Decorator::args()`]; it is either
+/// an [`AstContent::ExprList`] (the common case) or a bare single-expression
+/// node.
 pub(super) fn eval_decorator_args(
-    dec: &Decorator,
+    args_ast: &crate::parser::ast::Ast,
     env: &Environment,
 ) -> Result<Vec<RuntimeValue>, VmError> {
-    match dec.args().content() {
+    match args_ast.content() {
         AstContent::ExprList(items) => items
             .iter()
             .map(|a| eval_expr(a, env))
             .collect::<Result<Vec<_>, _>>(),
-        _ => Ok(vec![eval_expr(dec.args(), env)?]),
+        _ => Ok(vec![eval_expr(args_ast, env)?]),
     }
 }

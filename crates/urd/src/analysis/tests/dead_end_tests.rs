@@ -264,9 +264,13 @@ fn menu_all_options_terminate_is_ok() {
 fn menu_one_option_open_is_dead_end() {
     let opt_a = Ast::menu_option("Agree".to_owned(), Ast::block(vec![return_node()]));
     let opt_b = Ast::menu_option("Disagree".to_owned(), Ast::block(vec![dialogue()])); // open
-    let ast = Ast::block(vec![Ast::menu(vec![opt_a, opt_b])]);
+    // Wrap in a LabeledBlock so dead_end::check treats it as a flow-bearing
+    // root and emit_terminal_menu_errors fires for the open option.
+    let ast = Ast::labeled_block(
+        "start".to_owned(),
+        Ast::block(vec![Ast::menu(vec![opt_a, opt_b])]),
+    );
     let errors = dead_end::check(&ast);
-    // Two errors: one for "Disagree" option, one for the top-level block (not fully terminated).
     assert!(
         !errors.is_empty(),
         "expected at least 1 error, got: {errors:?}"
