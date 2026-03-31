@@ -234,8 +234,8 @@ fn dot_has_scope_nodes_for_every_label() {
         "clusters must use darkgreen border"
     );
     assert!(
-        dot.contains("palegreen"),
-        "scope marker nodes must use palegreen fill"
+        dot.contains("#66bb6a"),
+        "scope marker nodes must use new green fill"
     );
 }
 
@@ -243,8 +243,8 @@ fn dot_has_scope_nodes_for_every_label() {
 fn dot_has_dialogue_nodes() {
     let dot = compile_example().to_dot();
     assert!(
-        dot.contains("lightsalmon"),
-        "DOT must contain at least one dialogue node (lightsalmon fill)"
+        dot.contains("#b8c0cc"),
+        "DOT must contain at least one dialogue node (muted slate fill)"
     );
 }
 
@@ -423,8 +423,8 @@ fn dot_has_return_node() {
     // The "Leave the tavern" option contains a return statement
     assert!(dot.contains("return"), "DOT must contain a Return node");
     assert!(
-        dot.contains("mistyrose"),
-        "Return node must use mistyrose fill"
+        dot.contains("#e8c4c4"),
+        "Return node must use muted rose fill"
     );
 }
 

@@ -27,8 +27,8 @@
 //! * `dialogue` nodes display the actual speaker(s) and line text extracted
 //!   from the AST at render time (best-effort; falls back to `⟨expr⟩`).
 //! * Colour legend: cyan = assign/eval, yellow = branch/match,
-//!   green = scope marker, salmon = dialogue, plum = choice,
-//!   lavender = enum, rose = return, wheat = jump.
+//!   green = scope marker, slate = dialogue, violet = choice,
+//!   lavender = enum, rose = return, wheat = jump, amber = branch/switch.
 //!
 //! # Quick usage
 //!
@@ -689,15 +689,15 @@ fn node_attrs<'a>(
     match kind {
         IrNodeKind::Assign { var, scope, .. } => (
             "box",
-            "lightcyan",
+            "#a8d8d4",
             format!("{} {} = ⟨expr⟩", decl_kw(scope), var),
         ),
 
-        IrNodeKind::Eval { .. } => ("box", "lightcyan", "eval ⟨expr⟩".into()),
+        IrNodeKind::Eval { .. } => ("box", "#a8d8d4", "eval ⟨expr⟩".into()),
 
         IrNodeKind::Branch { condition, .. } => (
             "diamond",
-            "lightyellow",
+            "#ffd54f",
             format!("branch\n{}", truncate(&ast_summary(condition), 28)),
         ),
 
@@ -707,7 +707,7 @@ fn node_attrs<'a>(
                 .edges_directed(idx, Direction::Outgoing)
                 .any(|e| matches!(e.weight(), IrEdge::Default));
             let total = arms.len() + usize::from(has_default);
-            ("diamond", "lightyellow", format!("match ({total} arms)"))
+            ("diamond", "#ffd54f", format!("match ({total} arms)"))
         }
 
         IrNodeKind::Jump => {
@@ -749,7 +749,7 @@ fn node_attrs<'a>(
 
         IrNodeKind::Return { value } => (
             "box",
-            "mistyrose",
+            "#e8c4c4",
             if value.is_some() {
                 "return ⟨expr⟩".into()
             } else {
@@ -759,9 +759,9 @@ fn node_attrs<'a>(
 
         // Inside a cluster the label name is shown in the cluster title,
         // so the entry/exit markers use a compact arrow prefix.
-        IrNodeKind::EnterScope { label } => ("cds", "palegreen", format!("▶ {label}")),
+        IrNodeKind::EnterScope { label } => ("cds", "#66bb6a", format!("▶ {label}")),
 
-        IrNodeKind::ExitScope { label } => ("cds", "palegreen", format!("◀ {label}")),
+        IrNodeKind::ExitScope { label } => ("cds", "#66bb6a", format!("◀ {label}")),
 
         IrNodeKind::DefineEnum { name, variants, .. } => (
             "box",
@@ -810,7 +810,7 @@ fn node_attrs<'a>(
                 parts.push(decs);
             }
 
-            ("box", "lightsalmon", parts.join("\n"))
+            ("box", "#b8c0cc", parts.join("\n"))
         }
 
         IrNodeKind::Choice {
@@ -824,7 +824,7 @@ fn node_attrs<'a>(
             } else {
                 format!("choice ({} opts)\n{decs}", options.len())
             };
-            ("hexagon", "plum", label)
+            ("hexagon", "#b07fe8", label)
         }
     }
 }
@@ -1237,7 +1237,10 @@ mod tests {
             dot.contains("◀ pass_thru"),
             "reachable ExitScope must be rendered"
         );
-        assert!(dot.contains("palegreen"), "scope markers must be palegreen");
+        assert!(
+            dot.contains("#66bb6a"),
+            "scope markers must use new green fill"
+        );
         assert!(dot.contains("cds"), "scope markers must use cds shape");
     }
 
@@ -1299,8 +1302,8 @@ mod tests {
         );
         assert!(dot.contains("return"), "Return node must be rendered");
         assert!(
-            dot.contains("mistyrose"),
-            "Return node must use mistyrose fill"
+            dot.contains("#e8c4c4"),
+            "Return node must use muted rose fill"
         );
     }
 
@@ -1365,8 +1368,8 @@ mod tests {
         )]))
         .to_dot();
         assert!(
-            dot.contains("lightsalmon"),
-            "dialogue must have salmon fill"
+            dot.contains("#b8c0cc"),
+            "dialogue must have muted slate fill"
         );
     }
 

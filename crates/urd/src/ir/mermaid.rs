@@ -96,56 +96,68 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
     writeln!(out).ok();
 
     // ── classDef declarations ────────────────────────────────────────────────
+    // Design intent:
+    //   • Dialogue nodes are the most common — they should recede visually.
+    //   • Branch / Switch / Choice are crossroads — they should pop.
+    //   • Everything else sits in the middle ground.
     writeln!(
         out,
-        "    classDef assign fill:#E0FFFF,stroke:#888,color:#000"
+        "    classDef assign fill:#a8d8d4,stroke:#5ba0a0,color:#000"
     )
     .ok();
     writeln!(
         out,
-        "    classDef dialogue fill:#FFA07A,stroke:#888,color:#000"
+        "    classDef dialogue fill:#b8c0cc,stroke:#7a8494,color:#1a1a2e"
     )
     .ok();
     writeln!(
         out,
-        "    classDef branch fill:#FFFFE0,stroke:#888,color:#000"
+        "    classDef branch fill:#ffd54f,stroke:#e6a800,color:#1a1200"
     )
     .ok();
     writeln!(
         out,
-        "    classDef choice fill:#DDA0DD,stroke:#888,color:#000"
-    )
-    .ok();
-    writeln!(out, "    classDef jump fill:#F5DEB3,stroke:#888,color:#000").ok();
-    writeln!(
-        out,
-        "    classDef letcall fill:#F5DEB3,stroke:#888,color:#000"
-    )
-    .ok();
-    writeln!(out, "    classDef ret fill:#FFE4E1,stroke:#888,color:#000").ok();
-    writeln!(
-        out,
-        "    classDef scope fill:#90EE90,stroke:#228B22,color:#000"
+        "    classDef choice fill:#b07fe8,stroke:#7c3aed,color:#fff"
     )
     .ok();
     writeln!(
         out,
-        "    classDef enumDef fill:#E6E6FA,stroke:#888,color:#000"
+        "    classDef jump fill:#d4c9a8,stroke:#8a7e5a,color:#1a1600"
     )
     .ok();
     writeln!(
         out,
-        "    classDef decoratorDef fill:#E6E6FA,stroke:#888,color:#000"
+        "    classDef letcall fill:#d4c9a8,stroke:#8a7e5a,color:#1a1600"
     )
     .ok();
     writeln!(
         out,
-        "    classDef endNode fill:#FF6347,stroke:#333,color:#fff"
+        "    classDef ret fill:#e8c4c4,stroke:#b07070,color:#1a0000"
     )
     .ok();
     writeln!(
         out,
-        "    classDef startNode fill:#1b4332,stroke:#333,color:#fff"
+        "    classDef scope fill:#66bb6a,stroke:#2e7d32,color:#fff"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef enumDef fill:#c8c4e8,stroke:#6655aa,color:#000"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef decoratorDef fill:#c8c4e8,stroke:#6655aa,color:#000"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef endNode fill:#c0392b,stroke:#922b21,color:#fff"
+    )
+    .ok();
+    writeln!(
+        out,
+        "    classDef startNode fill:#1b4332,stroke:#27ae60,color:#fff"
     )
     .ok();
     writeln!(out).ok();
