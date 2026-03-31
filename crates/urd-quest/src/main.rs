@@ -380,8 +380,23 @@ fn handle_choice_pipe(options: &[urd::ir::ChoiceEvent], stdin: &mut impl BufRead
 
 /// Run all static-analysis passes over `ast` and print rich ariadne diagnostics
 /// to stderr.  Analysis is non-fatal: issues are reported but execution continues.
-fn run_analysis(ast: &urd::parser::ast::Ast, src: &str, filename: &str) {
-    let errors = analysis::analyze(ast);
+fn run_analysis(ast: &urd::parser::ast::Ast, src: &str, filename: &str, loader: &FsLoader) {
+    use std::collections::{HashMap, HashSet};
+
+    let mut imported_structs: HashMap<String, Vec<urd::parser::ast::StructField>> = HashMap::new();
+    let mut imported_enums: HashMap<String, Vec<String>> = HashMap::new();
+    let mut imported_labels: HashSet<String> = HashSet::new();
+
+    collect_analysis_imports(
+        ast,
+        loader,
+        &mut imported_structs,
+        &mut imported_enums,
+        &mut imported_labels,
+    );
+
+    let errors =
+        analysis::analyze_with_imports(ast, imported_structs, imported_enums, imported_labels);
     if !errors.is_empty() {
         analysis::render_errors_stderr(&errors, src, filename);
         eprintln!(
@@ -389,6 +404,93 @@ fn run_analysis(ast: &urd::parser::ast::Ast, src: &str, filename: &str) {
             errors.len(),
             filename
         );
+    }
+}
+
+fn collect_analysis_imports(
+    ast: &urd::parser::ast::Ast,
+    loader: &FsLoader,
+    structs: &mut std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
+    enums: &mut std::collections::HashMap<String, Vec<String>>,
+    labels: &mut std::collections::HashSet<String>,
+) {
+    use urd::parser::ast::AstContent;
+    use urd::vm::loader::FileLoader;
+
+    match ast.content() {
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                collect_analysis_imports(stmt, loader, structs, enums, labels);
+            }
+        }
+        AstContent::Import { path, symbols } => {
+            let src = match loader.load(path) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let module_ast = match urd::compiler::loader::parse_source(&src) {
+                Ok(a) => a,
+                Err(_) => return,
+            };
+            // A whole-module import has a single symbol entry with `original: None`.
+            let is_whole_module = symbols.first().map_or(false, |s| s.original.is_none());
+            let alias = if is_whole_module {
+                symbols[0].alias.as_str()
+            } else {
+                ""
+            };
+            collect_type_defs_from_ast(&module_ast, alias, structs, enums);
+            // For symbol imports, register each directly-imported name as a known label.
+            if !is_whole_module {
+                for sym in symbols {
+                    if sym.original.is_some() {
+                        labels.insert(sym.alias.clone());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_type_defs_from_ast(
+    ast: &urd::parser::ast::Ast,
+    alias: &str,
+    structs: &mut std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
+    enums: &mut std::collections::HashMap<String, Vec<String>>,
+) {
+    use urd::parser::ast::AstContent;
+
+    match ast.content() {
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                collect_type_defs_from_ast(stmt, alias, structs, enums);
+            }
+        }
+        AstContent::StructDecl { name, fields } => {
+            if !alias.is_empty() {
+                structs
+                    .entry(format!("{alias}.{name}"))
+                    .or_insert_with(|| fields.clone());
+            }
+            structs
+                .entry(name.clone())
+                .or_insert_with(|| fields.clone());
+        }
+        AstContent::EnumDecl { name, variants } => {
+            if !alias.is_empty() {
+                enums
+                    .entry(format!("{alias}.{name}"))
+                    .or_insert_with(|| variants.clone());
+            }
+            enums
+                .entry(name.clone())
+                .or_insert_with(|| variants.clone());
+        }
+        AstContent::LabeledBlock { block, .. } => {
+            collect_type_defs_from_ast(block, alias, structs, enums);
+        }
+        _ => {}
     }
 }
 
@@ -404,6 +506,13 @@ fn build_graph(path: &Path) -> Result<IrGraph, String> {
         .map_err(|e| format!("Could not read '{}': {}", path.display(), e))?;
 
     let display_name = path.display().to_string();
+
+    // ── Loader (created early so analysis can resolve imports) ────────────
+    let parent = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let loader = FsLoader::new(parent);
 
     // ── Lex ───────────────────────────────────────────────────────────────
     let lexer = lex_src(&src).spanned().map(|(tok, span)| match tok {
@@ -426,13 +535,7 @@ fn build_graph(path: &Path) -> Result<IrGraph, String> {
 
     let ast = maybe_ast.ok_or_else(|| format!("failed to parse '{display_name}'"))?;
 
-    run_analysis(&ast, &src, &display_name);
-
-    let parent = path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    let loader = FsLoader::new(parent);
+    run_analysis(&ast, &src, &display_name, &loader);
 
     Compiler::compile_with_loader(&ast, &loader)
         .map_err(|e| format!("Compile error in '{}':\n{:?}", path.display(), e))

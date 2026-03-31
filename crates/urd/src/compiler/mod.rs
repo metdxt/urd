@@ -732,8 +732,10 @@ fn resolve_label(
             .copied()
             .ok_or_else(|| CompilerError::UnknownLabel(label.to_owned()))
     } else {
+        // Try locally-defined labels first, then directly-imported labels.
         label_placeholders
             .get(label)
+            .or_else(|| graph_labels.get(label))
             .copied()
             .ok_or_else(|| CompilerError::UnknownLabel(label.to_owned()))
     }
@@ -1533,6 +1535,26 @@ mod tests {
 
     /// Cross-module assignment `alias.var = value` compiles to an Assign node
     /// with Global scope and a namespaced key "alias::var".
+    #[test]
+    fn test_single_symbol_import_label_jumpable() {
+        // `jump show_inventory` should compile when `show_inventory` is a
+        // directly-imported symbol (registered in graph.labels via apply_aliases,
+        // NOT in label_placeholders).
+        let items_src = "label show_inventory {\n  return\n}\n";
+        let main_src =
+            "import (show_inventory) from \"items.urd\"\nlabel start {\n  jump show_inventory\n}\n";
+        let mut loader = MemLoader::new();
+        loader.add("items.urd", items_src);
+        let ast = crate::compiler::loader::parse_source(main_src).expect("parse");
+        let graph = Compiler::compile_with_loader(&ast, &loader).expect("compile");
+        // The graph should have a Jump edge leading to the show_inventory EnterScope node.
+        assert!(
+            graph.labels.contains_key("show_inventory"),
+            "show_inventory must be in labels; got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn test_cross_module_assignment_compiles_to_global_scope() {
         // Build AST for: `mod.counter = 42`
