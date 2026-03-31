@@ -35,6 +35,7 @@
 ; Import
 "import" @keyword.control.import
 "as"     @keyword.control.import
+"from"   @keyword.control.import
 
 ; ── Terminators ───────────────────────────────────────────────────────────────
 
@@ -174,6 +175,11 @@
 (import_statement
   path:  (string)     @string.special.path)
 (import_statement
+  alias: (identifier) @namespace)
+
+(import_symbol
+  name:  (identifier) @variable.other.member)
+(import_symbol
   alias: (identifier) @namespace)
 
 ; ── Function / Call ───────────────────────────────────────────────────────────

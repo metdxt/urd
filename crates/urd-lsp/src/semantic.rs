@@ -306,14 +306,25 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
         }
 
         // ── Imports ──────────────────────────────────────────────────────
-        AstContent::Import { path, alias } => {
-            out.push(Symbol {
-                name: alias.clone(),
-                kind: SymbolKind::Import,
-                span: ast.span(),
-                type_annotation: None,
-                detail: Some(format!("import \"{path}\" as {alias}")),
-            });
+        AstContent::Import { path, symbols } => {
+            for entry in symbols {
+                let detail = match &entry.original {
+                    // Whole-module import: `import "path" as alias`
+                    None => Some(format!("import \"{path}\" as {}", entry.alias)),
+                    // Symbol import: `import sym as alias from "path"`
+                    Some(orig) if orig == &entry.alias => {
+                        Some(format!("import {} from \"{path}\"", entry.alias))
+                    }
+                    Some(orig) => Some(format!("import {orig} as {} from \"{path}\"", entry.alias)),
+                };
+                out.push(Symbol {
+                    name: entry.alias.clone(),
+                    kind: SymbolKind::Import,
+                    span: ast.span(),
+                    type_annotation: None,
+                    detail,
+                });
+            }
         }
 
         // ── LetCall (let name = jump label and return) ───────────────────
@@ -487,8 +498,8 @@ fn find_definition_recursive(ast: &Ast, name: &str) -> Option<SimpleSpan> {
             find_definition_recursive(body, name)
         }
 
-        AstContent::Import { alias, .. } => {
-            if alias == name {
+        AstContent::Import { symbols, .. } => {
+            if symbols.iter().any(|s| s.alias == name) {
                 return Some(ast.span());
             }
             None
@@ -1165,8 +1176,8 @@ fn find_references_recursive(ast: &Ast, name: &str, out: &mut Vec<SimpleSpan>) {
         }
 
         // Imports.
-        AstContent::Import { alias, .. } => {
-            if alias == name {
+        AstContent::Import { symbols, .. } => {
+            if symbols.iter().any(|s| s.alias == name) {
                 out.push(ast.span());
             }
         }

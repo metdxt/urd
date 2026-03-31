@@ -1100,7 +1100,10 @@ mod tests {
         let mut loader = MemLoader::new();
         loader.add("lib.urd", "label greet { let msg = \"hello\" }");
 
-        let main_ast = Ast::block(vec![Ast::import("lib.urd".to_string(), "lib".to_string())]);
+        let main_ast = Ast::block(vec![Ast::import_module(
+            "lib.urd".to_string(),
+            "lib".to_string(),
+        )]);
 
         let graph =
             Compiler::compile_with_loader(&main_ast, &loader).expect("compile_with_loader failed");
@@ -1122,8 +1125,8 @@ mod tests {
         loader.add("mid.urd", "import \"base.urd\" as base");
 
         let main_ast = Ast::block(vec![
-            Ast::import("mid.urd".to_string(), "mid".to_string()),
-            Ast::import("base.urd".to_string(), "base".to_string()),
+            Ast::import_module("mid.urd".to_string(), "mid".to_string()),
+            Ast::import_module("base.urd".to_string(), "base".to_string()),
         ]);
 
         let result = Compiler::compile_with_loader(&main_ast, &loader);
@@ -1146,7 +1149,7 @@ mod tests {
         let mut loader = MemLoader::new();
         loader.add("scenes.urd", "label intro { let x = 1 }");
 
-        let import_node = Ast::import("scenes.urd".to_string(), "scenes".to_string());
+        let import_node = Ast::import_module("scenes.urd".to_string(), "scenes".to_string());
         // jump scenes.intro  → stored as Jump { label: "scenes.intro" }
         let jump_node = Ast::jump_stmt("scenes.intro".to_string(), false);
         let main_ast = Ast::block(vec![import_node, jump_node]);
@@ -1186,7 +1189,10 @@ mod tests {
         loader.add("a.urd", "import \"b.urd\" as b");
         loader.add("b.urd", "import \"a.urd\" as a");
 
-        let main_ast = Ast::block(vec![Ast::import("a.urd".to_string(), "a".to_string())]);
+        let main_ast = Ast::block(vec![Ast::import_module(
+            "a.urd".to_string(),
+            "a".to_string(),
+        )]);
 
         let result = Compiler::compile_with_loader(&main_ast, &loader);
         assert!(
@@ -1201,7 +1207,7 @@ mod tests {
     fn test_missing_module_returns_load_error() {
         let loader = MemLoader::new(); // empty — no files registered
 
-        let main_ast = Ast::block(vec![Ast::import(
+        let main_ast = Ast::block(vec![Ast::import_module(
             "missing.urd".to_string(),
             "missing".to_string(),
         )]);
@@ -1254,6 +1260,174 @@ mod tests {
                 .any(|n| matches!(n.kind, IrNodeKind::Todo)),
             "expected a Todo node in the graph, got: {:?}",
             graph.nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+        );
+    }
+
+    /// Single-symbol import: `import greet as hello from "lib.urd"` should
+    /// expose "hello" directly in graph.labels (no "lib::" prefix).
+    #[test]
+    fn test_single_symbol_import_exposes_alias_directly() {
+        let mut loader = MemLoader::new();
+        loader.add("lib.urd", "label greet { let msg = \"hello\" }");
+
+        let import_node = Ast::import(
+            "lib.urd".to_string(),
+            vec![crate::parser::ast::ImportSymbol {
+                original: Some("greet".to_string()),
+                alias: "hello".to_string(),
+            }],
+        );
+        let main_ast = Ast::block(vec![import_node]);
+
+        let graph =
+            Compiler::compile_with_loader(&main_ast, &loader).expect("compile_with_loader failed");
+
+        assert!(
+            graph.labels.contains_key("hello"),
+            "expected 'hello' in graph.labels, got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
+        );
+        // The whole-module namespace prefix must NOT be present.
+        assert!(
+            !graph.labels.contains_key("lib::greet"),
+            "whole-module namespace 'lib::greet' must not appear for a symbol import"
+        );
+    }
+
+    /// Single-symbol import with no alias: `import greet from "lib.urd"` should
+    /// expose "greet" directly (alias == original).
+    #[test]
+    fn test_single_symbol_import_no_alias_uses_original_name() {
+        let mut loader = MemLoader::new();
+        loader.add("lib.urd", "label greet { let msg = \"hello\" }");
+
+        let import_node = Ast::import(
+            "lib.urd".to_string(),
+            vec![crate::parser::ast::ImportSymbol {
+                original: Some("greet".to_string()),
+                alias: "greet".to_string(),
+            }],
+        );
+        let main_ast = Ast::block(vec![import_node]);
+
+        let graph =
+            Compiler::compile_with_loader(&main_ast, &loader).expect("compile_with_loader failed");
+
+        assert!(
+            graph.labels.contains_key("greet"),
+            "expected 'greet' in graph.labels, got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Multi-symbol import: `import (intro as start, outro) from "scenes.urd"`
+    /// should expose both "start" and "outro" directly in graph.labels.
+    #[test]
+    fn test_multi_symbol_import_exposes_all_aliases() {
+        let mut loader = MemLoader::new();
+        loader.add(
+            "scenes.urd",
+            "label intro { let x = 1 }\nlabel outro { let y = 2 }",
+        );
+
+        let import_node = Ast::import(
+            "scenes.urd".to_string(),
+            vec![
+                crate::parser::ast::ImportSymbol {
+                    original: Some("intro".to_string()),
+                    alias: "start".to_string(),
+                },
+                crate::parser::ast::ImportSymbol {
+                    original: Some("outro".to_string()),
+                    alias: "outro".to_string(),
+                },
+            ],
+        );
+        let main_ast = Ast::block(vec![import_node]);
+
+        let graph =
+            Compiler::compile_with_loader(&main_ast, &loader).expect("compile_with_loader failed");
+
+        assert!(
+            graph.labels.contains_key("start"),
+            "expected 'start' in graph.labels, got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            graph.labels.contains_key("outro"),
+            "expected 'outro' in graph.labels, got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
+        );
+        // The symbol labels should point to valid (different) nodes.
+        assert_ne!(
+            graph.labels["start"], graph.labels["outro"],
+            "intro and outro must map to different NodeIds"
+        );
+    }
+
+    /// Symbol import aliases point to the same node as the original label would
+    /// after a whole-module import.  Verify that the NodeId for "hello" (aliasing
+    /// "greet") matches the EnterScope node emitted for that label.
+    #[test]
+    fn test_symbol_import_alias_points_to_correct_enter_scope_node() {
+        let mut loader = MemLoader::new();
+        loader.add("lib.urd", "label greet { let msg = \"hello\" }");
+
+        let import_node = Ast::import(
+            "lib.urd".to_string(),
+            vec![crate::parser::ast::ImportSymbol {
+                original: Some("greet".to_string()),
+                alias: "hello".to_string(),
+            }],
+        );
+        let main_ast = Ast::block(vec![import_node]);
+
+        let graph =
+            Compiler::compile_with_loader(&main_ast, &loader).expect("compile_with_loader failed");
+
+        let hello_id = *graph.labels.get("hello").expect("'hello' not in labels");
+        assert!(
+            matches!(
+                graph.nodes[hello_id.as_index()].kind,
+                IrNodeKind::EnterScope { .. }
+            ),
+            "alias 'hello' must point to an EnterScope node, got: {:?}",
+            graph.nodes[hello_id.as_index()].kind
+        );
+    }
+
+    /// Symbol import from an already-completed module (diamond-like) still
+    /// registers the alias without re-running the prologue.
+    #[test]
+    fn test_symbol_import_from_already_completed_module_still_aliases() {
+        let mut loader = MemLoader::new();
+        // lib.urd is first imported as a whole module, then its symbol is
+        // also imported directly — the second import hits the `completed` path.
+        loader.add("lib.urd", "label greet { let msg = \"hello\" }");
+
+        let whole_import = Ast::import_module("lib.urd".to_string(), "lib".to_string());
+        let sym_import = Ast::import(
+            "lib.urd".to_string(),
+            vec![crate::parser::ast::ImportSymbol {
+                original: Some("greet".to_string()),
+                alias: "greet_direct".to_string(),
+            }],
+        );
+        let main_ast = Ast::block(vec![whole_import, sym_import]);
+
+        let graph =
+            Compiler::compile_with_loader(&main_ast, &loader).expect("compile_with_loader failed");
+
+        // Whole-module label must still be there.
+        assert!(
+            graph.labels.contains_key("lib::greet"),
+            "whole-module label 'lib::greet' must be present"
+        );
+        // Symbol alias must also be registered even though the path was already compiled.
+        assert!(
+            graph.labels.contains_key("greet_direct"),
+            "symbol alias 'greet_direct' must be present after completed-path import, got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
         );
     }
 

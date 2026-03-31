@@ -226,6 +226,15 @@ impl MatchArm {
     }
 }
 
+/// A single symbol import specifier: `symbol_name as local_alias` or just `symbol_name`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportSymbol {
+    /// The original name in the source module. `None` means the whole module is imported.
+    pub original: Option<String>,
+    /// The local alias to use in the importing file.
+    pub alias: String,
+}
+
 /// Represents the different types of content an AST node can contain.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstContent {
@@ -396,14 +405,19 @@ pub enum AstContent {
         value: Box<Ast>,
     },
 
-    /// Import another script file as a module namespace.
+    /// Import another script file or specific symbols from it.
     ///
-    /// `import "path/to/file" as module_name`
+    /// - Whole-module form: `import "path/to/file" as module_name`
+    /// - Single-symbol form: `import symbol as alias from "path"`
+    /// - Multi-symbol form:  `import (sym1 as a1, sym2) from "path"`
     Import {
         /// The raw file path string as written in source.
         path: String,
-        /// The local alias used to reference the module.
-        alias: String,
+        /// The list of symbols to import. Each entry is `(original_name, local_alias)`.
+        /// For the whole-module form `import "path" as alias`, this will be a single entry
+        /// `(None, alias)` where `None` means "the whole module".
+        /// For symbol imports each entry carries the original name and its local alias.
+        symbols: Vec<ImportSymbol>,
     },
 }
 
@@ -706,11 +720,22 @@ impl Ast {
         })
     }
 
-    /// Creates an `Import` node.
+    /// Creates an `Import` node with an explicit symbol list.
+    pub fn import(path: String, symbols: Vec<ImportSymbol>) -> Self {
+        Self::new(AstContent::Import { path, symbols })
+    }
+
+    /// Convenience constructor for the whole-module form: `import "path" as alias`.
     ///
-    /// `import "path/to/file" as module_name`
-    pub fn import(path: String, alias: String) -> Self {
-        Self::new(AstContent::Import { path, alias })
+    /// Produces a single `ImportSymbol { original: None, alias }` entry.
+    pub fn import_module(path: String, alias: String) -> Self {
+        Self::new(AstContent::Import {
+            path,
+            symbols: vec![ImportSymbol {
+                original: None,
+                alias,
+            }],
+        })
     }
 
     /// Returns references to all direct child [`Ast`] nodes contained in this node.

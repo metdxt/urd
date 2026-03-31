@@ -183,7 +183,11 @@ mod tests {
             // StructDecl
             spanned(Ast::struct_decl("Point".into(), vec![]), 21, 30),
             // Import
-            spanned(Ast::import("other.urd".into(), "other".into()), 31, 40),
+            spanned(
+                Ast::import_module("other.urd".into(), "other".into()),
+                31,
+                40,
+            ),
             // LabeledBlock
             spanned(
                 Ast::labeled_block("main".into(), Ast::block(vec![])),

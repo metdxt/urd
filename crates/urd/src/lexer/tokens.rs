@@ -214,6 +214,9 @@ pub enum Token {
     #[token("import")]
     Import,
 
+    #[token("from")]
+    From,
+
     #[token("as")]
     As,
 
@@ -397,6 +400,13 @@ mod tests {
         assert!(matches!(lex("as"), Token::As));
         // "asset" (with extra chars) must still lex as IdentPath
         assert!(matches!(lex("asset"), Token::IdentPath(_)));
+    }
+
+    #[test]
+    fn from_keyword() {
+        assert!(matches!(lex("from"), Token::From));
+        // "fromage" (with extra chars) must still lex as IdentPath
+        assert!(matches!(lex("fromage"), Token::IdentPath(_)));
     }
 
     #[test]

@@ -654,7 +654,7 @@
     "fields": {
       "alias": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "identifier",
@@ -668,6 +668,42 @@
         "types": [
           {
             "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "symbols": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "import_symbol",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "import_symbol",
+    "named": true,
+    "fields": {
+      "alias": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
             "named": true
           }
         ]
@@ -1249,11 +1285,11 @@
   },
   {
     "type": "dice",
-    "named": true
+    "named": false
   },
   {
     "type": "dice",
-    "named": false
+    "named": true
   },
   {
     "type": "elif",
@@ -1294,6 +1330,10 @@
   {
     "type": "format_spec",
     "named": true
+  },
+  {
+    "type": "from",
+    "named": false
   },
   {
     "type": "global",

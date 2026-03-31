@@ -67,6 +67,7 @@ fn format_token(token: &Token) -> String {
         Token::Match => "'match'".to_owned(),
         Token::DecoratorKw => "'decorator'".to_owned(),
         Token::Import => "'import'".to_owned(),
+        Token::From => "'from'".to_owned(),
         Token::As => "'as'".to_owned(),
         Token::Wildcard => "'_'".to_owned(),
 

@@ -9,7 +9,8 @@ use crate::{
     lexer::Token,
     parser::{
         ast::{
-            Ast, Decorator, DecoratorParam, EventConstraint, MatchArm, MatchPattern, StructField,
+            Ast, Decorator, DecoratorParam, EventConstraint, ImportSymbol, MatchArm, MatchPattern,
+            StructField,
         },
         expr::{comma_separated_exprs, declaration, expr, type_annotation},
     },
@@ -81,7 +82,8 @@ pub fn import_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 }
 
 fn import_statement_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
-    just(Token::Import)
+    // Form 1: `import "path" as alias`  (whole-module import)
+    let form1 = just(Token::Import)
         .ignore_then(select! {
             Token::StrLit(s) => s.to_string(),
         })
@@ -89,8 +91,70 @@ fn import_statement_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I>
         .then(select! {
             Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
         })
-        .map_with(|(path, alias), extra| Ast::import(path, alias).with_span(extra.span()))
-        .boxed()
+        .map_with(|(path, alias), extra| Ast::import_module(path, alias).with_span(extra.span()));
+
+    // Form 2: `import symbol as something from "path"`  (single-symbol import)
+    let form2 = just(Token::Import)
+        .ignore_then(select! {
+            Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
+        })
+        .then(
+            just(Token::As)
+                .ignore_then(select! {
+                    Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
+                })
+                .or_not(),
+        )
+        .then_ignore(just(Token::From))
+        .then(select! {
+            Token::StrLit(s) => s.to_string(),
+        })
+        .map_with(|((original, alias_opt), path), extra| {
+            let alias = alias_opt.unwrap_or_else(|| original.clone());
+            Ast::import(
+                path,
+                vec![ImportSymbol {
+                    original: Some(original),
+                    alias,
+                }],
+            )
+            .with_span(extra.span())
+        });
+
+    // Form 3: `import (sym1 as a1, sym2) from "path"`  (multi-symbol import)
+    let symbol_item = select! {
+        Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
+    }
+    .then(
+        just(Token::As)
+            .ignore_then(select! {
+                Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
+            })
+            .or_not(),
+    )
+    .map(|(original, alias_opt)| {
+        let alias = alias_opt.unwrap_or_else(|| original.clone());
+        ImportSymbol {
+            original: Some(original),
+            alias,
+        }
+    });
+
+    let symbol_list = symbol_item
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LeftParen), just(Token::RightParen));
+
+    let form3 = just(Token::Import)
+        .ignore_then(symbol_list)
+        .then_ignore(just(Token::From))
+        .then(select! {
+            Token::StrLit(s) => s.to_string(),
+        })
+        .map_with(|(symbols, path), extra| Ast::import(path, symbols).with_span(extra.span()));
+
+    choice((form3, form2, form1)).boxed()
 }
 
 /// Parser for a single decorator: `@name` or `@name(arg1, arg2, ...)`
@@ -569,9 +633,11 @@ mod tests {
     fn import_statement_parses() {
         let result = parse_test!(import_statement(), r#"import "foo.urd" as foo"#);
         let ast = result.expect("import statement should parse");
-        if let AstContent::Import { path, alias } = ast.content() {
+        if let AstContent::Import { path, symbols } = ast.content() {
             assert_eq!(path, "foo.urd");
-            assert_eq!(alias, "foo");
+            assert_eq!(symbols.len(), 1);
+            assert_eq!(symbols[0].original, None);
+            assert_eq!(symbols[0].alias, "foo");
         } else {
             panic!("Expected AstContent::Import, got {:?}", ast.content());
         }
@@ -584,9 +650,58 @@ mod tests {
             r#"import "path/to/module.urd" as mymod"#
         );
         let ast = result.expect("import with path separators should parse");
-        if let AstContent::Import { path, alias } = ast.content() {
+        if let AstContent::Import { path, symbols } = ast.content() {
             assert_eq!(path, "path/to/module.urd");
-            assert_eq!(alias, "mymod");
+            assert_eq!(symbols.len(), 1);
+            assert_eq!(symbols[0].original, None);
+            assert_eq!(symbols[0].alias, "mymod");
+        } else {
+            panic!("Expected AstContent::Import, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn import_single_symbol_parses() {
+        let result = parse_test!(import_statement(), r#"import symbol as sym from "foo.urd""#);
+        let ast = result.expect("single-symbol import with alias should parse");
+        if let AstContent::Import { path, symbols } = ast.content() {
+            assert_eq!(path, "foo.urd");
+            assert_eq!(symbols.len(), 1);
+            assert_eq!(symbols[0].original, Some("symbol".to_string()));
+            assert_eq!(symbols[0].alias, "sym");
+        } else {
+            panic!("Expected AstContent::Import, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn import_single_symbol_no_alias_parses() {
+        let result = parse_test!(import_statement(), r#"import symbol from "foo.urd""#);
+        let ast = result.expect("single-symbol import without alias should parse");
+        if let AstContent::Import { path, symbols } = ast.content() {
+            assert_eq!(path, "foo.urd");
+            assert_eq!(symbols.len(), 1);
+            assert_eq!(symbols[0].original, Some("symbol".to_string()));
+            assert_eq!(symbols[0].alias, "symbol");
+        } else {
+            panic!("Expected AstContent::Import, got {:?}", ast.content());
+        }
+    }
+
+    #[test]
+    fn import_multi_symbol_parses() {
+        let result = parse_test!(
+            import_statement(),
+            r#"import (sym1 as a1, sym2) from "foo.urd""#
+        );
+        let ast = result.expect("multi-symbol import should parse");
+        if let AstContent::Import { path, symbols } = ast.content() {
+            assert_eq!(path, "foo.urd");
+            assert_eq!(symbols.len(), 2);
+            assert_eq!(symbols[0].original, Some("sym1".to_string()));
+            assert_eq!(symbols[0].alias, "a1");
+            assert_eq!(symbols[1].original, Some("sym2".to_string()));
+            assert_eq!(symbols[1].alias, "sym2");
         } else {
             panic!("Expected AstContent::Import, got {:?}", ast.content());
         }

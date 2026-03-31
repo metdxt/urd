@@ -1583,6 +1583,103 @@ import "utils/math" as _math
     alias: (identifier)))
 
 ================================================================================
+Import statement single symbol no alias
+================================================================================
+
+import health from "items"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    symbols: (import_symbol
+      name: (identifier))
+    path: (string (string_literal_fragment))))
+
+================================================================================
+Import statement single symbol with alias
+================================================================================
+
+import health as hp from "items"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    symbols: (import_symbol
+      name: (identifier)
+      alias: (identifier))
+    path: (string (string_literal_fragment))))
+
+================================================================================
+Import statement multi-symbol no aliases
+================================================================================
+
+import (health, mana) from "items"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    symbols: (import_symbol
+      name: (identifier))
+    symbols: (import_symbol
+      name: (identifier))
+    path: (string (string_literal_fragment))))
+
+================================================================================
+Import statement multi-symbol with aliases
+================================================================================
+
+import (health as hp, mana as mp) from "items"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    symbols: (import_symbol
+      name: (identifier)
+      alias: (identifier))
+    symbols: (import_symbol
+      name: (identifier)
+      alias: (identifier))
+    path: (string (string_literal_fragment))))
+
+================================================================================
+Import statement multi-symbol mixed aliases
+================================================================================
+
+import (health as hp, mana, stamina as sp) from "quests/cave"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    symbols: (import_symbol
+      name: (identifier)
+      alias: (identifier))
+    symbols: (import_symbol
+      name: (identifier))
+    symbols: (import_symbol
+      name: (identifier)
+      alias: (identifier))
+    path: (string (string_literal_fragment))))
+
+================================================================================
+Import statement multi-symbol single entry
+================================================================================
+
+import (gold) from "items"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    symbols: (import_symbol
+      name: (identifier))
+    path: (string (string_literal_fragment))))
+
+================================================================================
 Block empty
 ================================================================================
 

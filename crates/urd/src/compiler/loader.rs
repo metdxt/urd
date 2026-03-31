@@ -1,6 +1,6 @@
 //! Multi-file compilation: import resolution, recursive compilation, and source parsing.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     ir::{IrGraph, IrNodeKind, NODE_END, NodeId},
@@ -63,24 +63,54 @@ pub(super) fn collect_imports(
                 collect_imports(stmt, state, loader, in_progress, completed)?;
             }
         }
-        AstContent::Import { path, alias } => {
-            // True cycle: this module is already on the current call stack.
-            if in_progress.contains(path.as_str()) {
-                return Err(CompilerError::CircularImport(path.clone()));
-            }
-            // Diamond / repeated import: already compiled successfully, skip.
-            // The caller can still merge it under a different alias if needed,
-            // but we don't re-compile it.  For now we treat a repeated import
-            // under the same or a different alias as a no-op on the second
-            // encounter (the labels were already merged the first time under
-            // the first alias; a second merge under the same alias is fine too,
-            // but the most common case is simply "both A and B import C").
-            if completed.contains(path.as_str()) {
-                // Re-load and re-merge so the alias (label namespace) mapping is
-                // registered even for the second importer, but don't recurse and
-                // don't push to import_prologues — the first compilation already
-                // queued this module's prologue for execution. Re-running it would
-                // redeclare top-level `const` bindings and cause a TypeError.
+        AstContent::Import { path, symbols } => {
+            // Determine whether this is a whole-module import (`import "p" as alias`,
+            // where the single symbol entry has `original: None`) or a symbol import
+            // (`import sym from "p"` / `import (a, b) from "p"`).
+            let is_whole_module = symbols.first().map_or(false, |s| s.original.is_none());
+
+            if is_whole_module {
+                // ── Whole-module import ───────────────────────────────────────
+                // The alias is the namespace prefix: every label in the module
+                // becomes "alias::label_name" in the merged graph.
+                let alias = symbols[0].alias.as_str();
+
+                // True cycle: this module is already on the current call stack.
+                if in_progress.contains(path.as_str()) {
+                    return Err(CompilerError::CircularImport(path.clone()));
+                }
+                // Diamond / repeated import: already compiled successfully.
+                // Re-merge under the new alias without re-running the prologue.
+                if completed.contains(path.as_str()) {
+                    // Re-load and re-merge so the alias (label namespace) mapping
+                    // is registered even for the second importer, but don't push
+                    // to import_prologues — the first compilation already queued
+                    // this module's prologue. Re-running it would redeclare
+                    // top-level `const` bindings and cause a TypeError.
+                    let src = loader
+                        .load(path)
+                        .map_err(|msg| CompilerError::ModuleLoadError {
+                            path: path.clone(),
+                            message: msg,
+                        })?;
+                    let module_ast =
+                        parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
+                            path: path.clone(),
+                            message: msg,
+                        })?;
+                    let mut inner = CompilerState::new();
+                    inner.scan_labels(&module_ast);
+                    let entry = inner.compile_top_level(&module_ast)?;
+                    inner.graph.entry = entry;
+                    state.graph.merge(inner.graph, alias);
+                    // Intentionally NOT pushing to state.import_prologues here.
+                    return Ok(());
+                }
+
+                // Mark as in-progress before descending.
+                in_progress.insert(path.clone());
+
+                // Load and parse the source text.
                 let src = loader
                     .load(path)
                     .map_err(|msg| CompilerError::ModuleLoadError {
@@ -92,63 +122,142 @@ pub(super) fn collect_imports(
                         path: path.clone(),
                         message: msg,
                     })?;
-                // Compile without recursion (no imports re-processed).
-                let mut inner = CompilerState::new();
-                inner.scan_labels(&module_ast);
-                let entry = inner.compile_top_level(&module_ast)?;
-                inner.graph.entry = entry;
-                state.graph.merge(inner.graph, alias);
-                // Intentionally NOT pushing to state.import_prologues here.
-                return Ok(());
-            }
 
-            // Mark as in-progress before descending.
-            in_progress.insert(path.clone());
+                // Compile the module recursively (handles transitive imports).
+                let module_graph = compile_recursive(&module_ast, loader, in_progress, completed)?;
 
-            // Load the source text.
-            let src = loader
-                .load(path)
-                .map_err(|msg| CompilerError::ModuleLoadError {
-                    path: path.clone(),
-                    message: msg,
-                })?;
+                in_progress.remove(path.as_str());
+                completed.insert(path.clone());
 
-            // Parse the source into an AST.
-            let module_ast = parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
-                path: path.clone(),
-                message: msg,
-            })?;
+                // Merge into our graph, namespacing all labels as "alias::label".
+                // Record the (offset-adjusted) module entry so we can chain its
+                // prologue (DefineEnum, global assignments, etc.) to run before
+                // the importing module's own code.
+                //
+                // We skip the prologue entry when the module's entry node is an
+                // EnterScope (meaning the module contains only labels and no
+                // top-level statements). In that case there is nothing to run as
+                // a prologue, and jumping to the entry would execute the first
+                // label body unconditionally.
+                let module_entry = module_graph.entry;
+                let offset = state.graph.merge(module_graph, alias);
+                let adjusted_entry = NodeId(module_entry.0 + offset);
+                let entry_is_label = matches!(
+                    state
+                        .graph
+                        .nodes
+                        .get(adjusted_entry.as_index())
+                        .map(|n| &n.kind),
+                    Some(IrNodeKind::EnterScope { .. })
+                );
+                if !entry_is_label {
+                    state.import_prologues.push(adjusted_entry);
+                }
+            } else {
+                // ── Symbol import ─────────────────────────────────────────────
+                // Forms:
+                //   import sym as alias from "path"
+                //   import (sym1 as a1, sym2) from "path"
+                //
+                // Strategy:
+                //   1. Compile the module (once, recursively).
+                //   2. Merge its graph into ours with an empty namespace so its
+                //      labels are stored as "::label_name" internally (users
+                //      never address those directly).
+                //   3. For each requested symbol, insert a direct label entry
+                //      under the user-specified alias pointing at the merged node.
 
-            // Compile the module recursively (handles transitive imports).
-            let module_graph = compile_recursive(&module_ast, loader, in_progress, completed)?;
+                // True cycle guard.
+                if in_progress.contains(path.as_str()) {
+                    return Err(CompilerError::CircularImport(path.clone()));
+                }
 
-            // Pop from in-progress and mark as completed.
-            in_progress.remove(path.as_str());
-            completed.insert(path.clone());
+                // Helper: given the pre-merge label map and the post-merge
+                // offset, register each requested symbol alias into the graph.
+                let apply_aliases = |graph: &mut crate::ir::IrGraph,
+                                     orig_labels: &HashMap<String, NodeId>,
+                                     symbols: &[crate::parser::ast::ImportSymbol],
+                                     offset: u32| {
+                    for sym in symbols {
+                        if let Some(orig) = &sym.original {
+                            if let Some(&orig_id) = orig_labels.get(orig.as_str()) {
+                                let merged_id = NodeId(orig_id.0 + offset);
+                                graph.labels.insert(sym.alias.clone(), merged_id);
+                            } else {
+                                log::warn!(
+                                    "symbol import: label '{}' not found in module '{}'",
+                                    orig,
+                                    path
+                                );
+                            }
+                        }
+                    }
+                };
 
-            // Merge into our graph, namespacing all labels as "alias::label".
-            // Record the (offset-adjusted) module entry so we can chain its
-            // prologue (DefineEnum, global assignments, etc.) to run before the
-            // importing module's own code.
-            //
-            // We skip the prologue entry when the module's entry node is an
-            // EnterScope (meaning the module contains only labels and no
-            // top-level statements). In that case there is nothing to run as a
-            // prologue, and jumping to the entry would execute the first label
-            // body unconditionally.
-            let module_entry = module_graph.entry;
-            let offset = state.graph.merge(module_graph, alias);
-            let adjusted_entry = NodeId(module_entry.0 + offset);
-            let entry_is_label = matches!(
-                state
-                    .graph
-                    .nodes
-                    .get(adjusted_entry.as_index())
-                    .map(|n| &n.kind),
-                Some(IrNodeKind::EnterScope { .. })
-            );
-            if !entry_is_label {
-                state.import_prologues.push(adjusted_entry);
+                if completed.contains(path.as_str()) {
+                    // Already compiled — re-compile without recursion to obtain
+                    // the label map, merge nodes, then apply aliases.
+                    // Do NOT push to import_prologues (prologue already queued).
+                    let src = loader
+                        .load(path)
+                        .map_err(|msg| CompilerError::ModuleLoadError {
+                            path: path.clone(),
+                            message: msg,
+                        })?;
+                    let module_ast =
+                        parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
+                            path: path.clone(),
+                            message: msg,
+                        })?;
+                    let mut inner = CompilerState::new();
+                    inner.scan_labels(&module_ast);
+                    let entry = inner.compile_top_level(&module_ast)?;
+                    inner.graph.entry = entry;
+                    let orig_labels: HashMap<String, NodeId> = inner.graph.labels.clone();
+                    // Merge with empty namespace; labels land as "::label_name".
+                    let offset = state.graph.merge(inner.graph, "");
+                    apply_aliases(&mut state.graph, &orig_labels, symbols, offset);
+                    return Ok(());
+                }
+
+                // First encounter: full recursive compile.
+                in_progress.insert(path.clone());
+                let src = loader
+                    .load(path)
+                    .map_err(|msg| CompilerError::ModuleLoadError {
+                        path: path.clone(),
+                        message: msg,
+                    })?;
+                let module_ast =
+                    parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
+                        path: path.clone(),
+                        message: msg,
+                    })?;
+                let module_graph = compile_recursive(&module_ast, loader, in_progress, completed)?;
+
+                in_progress.remove(path.as_str());
+                completed.insert(path.clone());
+
+                let orig_labels: HashMap<String, NodeId> = module_graph.labels.clone();
+                let module_entry = module_graph.entry;
+                // Merge with empty namespace; labels land as "::label_name".
+                let offset = state.graph.merge(module_graph, "");
+                let adjusted_entry = NodeId(module_entry.0 + offset);
+
+                // Chain prologue if the module has top-level executable nodes.
+                let entry_is_label = matches!(
+                    state
+                        .graph
+                        .nodes
+                        .get(adjusted_entry.as_index())
+                        .map(|n| &n.kind),
+                    Some(IrNodeKind::EnterScope { .. })
+                );
+                if !entry_is_label {
+                    state.import_prologues.push(adjusted_entry);
+                }
+
+                apply_aliases(&mut state.graph, &orig_labels, symbols, offset);
             }
         }
         // Recurse into other block-like constructs so that nested imports are found.

@@ -41,22 +41,46 @@ pub struct ImportedModule {
     pub symbols: Vec<Symbol>,
     /// Parsed AST of the imported file (`None` on load / parse failure).
     pub ast: Option<Ast>,
+    /// For symbol imports (`import sym as alias from "path"`): the original name
+    /// of the single symbol to expose.  `None` means whole-module import (expose
+    /// all symbols prefixed with `alias`).
+    pub symbol_filter: Option<String>,
 }
 
 impl ImportedModule {
-    /// Return symbols with names prefixed as `alias.original_name`.
+    /// Return symbols visible to the importing file.
     ///
-    /// This is what the importing file sees — e.g. a label `greet` in module
-    /// aliased as `helpers` becomes `helpers.greet`.
+    /// - **Whole-module import** (`symbol_filter == None`): every symbol is
+    ///   exposed with its name prefixed by the module alias, e.g. `helpers.greet`.
+    /// - **Symbol import** (`symbol_filter == Some(orig_name)`): only the one
+    ///   matching symbol is exposed, under `self.alias` directly (no prefix),
+    ///   e.g. `import greet as hello from "helpers.urd"` → visible as `hello`.
     pub fn aliased_symbols(&self) -> Vec<Symbol> {
-        self.symbols
-            .iter()
-            .map(|s| Symbol {
-                name: format!("{}.{}", self.alias, s.name),
-                span: chumsky::span::SimpleSpan::new((), 0..0),
-                ..s.clone()
-            })
-            .collect()
+        match &self.symbol_filter {
+            None => {
+                // Whole-module import: prefix every symbol with the alias.
+                self.symbols
+                    .iter()
+                    .map(|s| Symbol {
+                        name: format!("{}.{}", self.alias, s.name),
+                        span: chumsky::span::SimpleSpan::new((), 0..0),
+                        ..s.clone()
+                    })
+                    .collect()
+            }
+            Some(orig_name) => {
+                // Symbol import: expose only the matching symbol under its alias.
+                self.symbols
+                    .iter()
+                    .filter(|s| &s.name == orig_name)
+                    .map(|s| Symbol {
+                        name: self.alias.clone(),
+                        span: chumsky::span::SimpleSpan::new((), 0..0),
+                        ..s.clone()
+                    })
+                    .collect()
+            }
+        }
     }
 }
 
@@ -347,8 +371,17 @@ fn collect_imports_from_ast(ast: &Ast, base_dir: &Option<PathBuf>, out: &mut Vec
         }
 
         // The import statement itself — load and cache the module.
-        AstContent::Import { path, alias } => {
-            out.push(load_module(path, alias, base_dir));
+        AstContent::Import { path, symbols } => {
+            for entry in symbols {
+                // `entry.original == None`  →  whole-module import
+                // `entry.original == Some(name)` →  single-symbol import
+                out.push(load_module(
+                    path,
+                    &entry.alias,
+                    entry.original.as_deref(),
+                    base_dir,
+                ));
+            }
         }
 
         // Defensively recurse into compound nodes in case imports appear
@@ -392,7 +425,12 @@ fn collect_imports_from_ast(ast: &Ast, base_dir: &Option<PathBuf>, out: &mut Vec
 ///
 /// Never panics — a load or parse failure produces an `ImportedModule` with
 /// empty `symbols` and `ast: None`.
-fn load_module(path: &str, alias: &str, base_dir: &Option<PathBuf>) -> ImportedModule {
+fn load_module(
+    path: &str,
+    alias: &str,
+    symbol_filter: Option<&str>,
+    base_dir: &Option<PathBuf>,
+) -> ImportedModule {
     let full_path = match base_dir {
         Some(dir) => dir.join(path),
         None => PathBuf::from(path),
@@ -412,6 +450,7 @@ fn load_module(path: &str, alias: &str, base_dir: &Option<PathBuf>) -> ImportedM
                 source: String::new(),
                 symbols: Vec::new(),
                 ast: None,
+                symbol_filter: symbol_filter.map(str::to_owned),
             };
         }
     };
@@ -426,6 +465,7 @@ fn load_module(path: &str, alias: &str, base_dir: &Option<PathBuf>) -> ImportedM
         source,
         symbols,
         ast,
+        symbol_filter: symbol_filter.map(str::to_owned),
     }
 }
 

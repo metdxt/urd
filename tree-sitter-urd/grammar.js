@@ -650,13 +650,41 @@ module.exports = grammar({
     // Imports
     // -----------------------------------------------------------------------
 
-    // import "path/to/file" as alias
-    import_statement: ($) =>
+    // A single import symbol specifier: `name` or `name as alias`
+    import_symbol: ($) =>
       seq(
-        "import",
-        field("path", $.string),
-        "as",
-        field("alias", $.identifier),
+        field("name", $.identifier),
+        optional(seq("as", field("alias", $.identifier))),
+      ),
+
+    // import "path/to/file" as alias
+    // import symbol [as alias] from "path"
+    // import (sym1 as a1, sym2, ...) from "path"
+    import_statement: ($) =>
+      choice(
+        // Form 1: import "path" as alias  (whole-module)
+        seq(
+          "import",
+          field("path", $.string),
+          "as",
+          field("alias", $.identifier),
+        ),
+        // Form 2: import symbol [as alias] from "path"  (single symbol)
+        seq(
+          "import",
+          field("symbols", $.import_symbol),
+          "from",
+          field("path", $.string),
+        ),
+        // Form 3: import (sym1 as a1, sym2, ...) from "path"  (multi-symbol)
+        seq(
+          "import",
+          "(",
+          commaSep1(field("symbols", $.import_symbol)),
+          ")",
+          "from",
+          field("path", $.string),
+        ),
       ),
   },
 });
