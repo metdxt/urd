@@ -188,16 +188,16 @@ fn mermaid_has_flowchart_header() {
         &mmd[..mmd.len().min(120)]
     );
     assert!(
-        mmd.contains("flowchart TD"),
-        "Mermaid output must contain 'flowchart TD', got:\n{}",
+        mmd.contains("flowchart LR"),
+        "Mermaid output must contain 'flowchart LR', got:\n{}",
         &mmd[..mmd.len().min(120)]
     );
     // init directive must come before the flowchart declaration
     let init_pos = mmd.find("%%{init:").unwrap();
-    let flowchart_pos = mmd.find("flowchart TD").unwrap();
+    let flowchart_pos = mmd.find("flowchart LR").unwrap();
     assert!(
         init_pos < flowchart_pos,
-        "%%{{init:}} directive must appear before 'flowchart TD'"
+        "%%{{init:}} directive must appear before 'flowchart LR'"
     );
 }
 
@@ -370,13 +370,15 @@ fn mermaid_has_assign_nodes() {
 #[test]
 fn mermaid_has_define_enum_node() {
     let mmd = compile_example().to_mermaid();
+    // Preamble definitions (globals, consts, enums, decorators) are collapsed
+    // into a single __preamble__ summary node.
     assert!(
-        mmd.contains("enum Action"),
-        "Mermaid output must contain a DefineEnum node for 'enum Action'"
+        mmd.contains("__preamble__"),
+        "Mermaid output must contain a __preamble__ summary node for top-level definitions"
     );
     assert!(
-        mmd.contains(":::enumDef"),
-        "DefineEnum node must carry the :::enumDef class"
+        mmd.contains("enum Action"),
+        "Mermaid preamble must mention 'enum Action'"
     );
 }
 

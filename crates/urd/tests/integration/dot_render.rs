@@ -373,24 +373,15 @@ fn dot_has_define_enum_node() {
 #[test]
 fn dot_has_define_script_decorator_node() {
     let dot = compile_example().to_dot();
-    // The def_decorator node label is set by node_attrs for DefineScriptDecorator.
+    // Preamble definitions (globals, consts, enums, decorators) are collapsed
+    // into a single __preamble__ summary node.
     assert!(
-        dot.contains("def_decorator"),
-        "DOT must contain a def_decorator node for the script-defined `timed` decorator"
+        dot.contains("__preamble__"),
+        "DOT must contain a __preamble__ summary node for top-level definitions"
     );
     assert!(
-        dot.contains("@timed"),
-        "DOT must show the decorator name in the def_decorator node label"
-    );
-    // timed now has two params: duration (float) and fallback (label)
-    assert!(
-        dot.contains("@timed (2 params)"),
-        "DOT must show the correct param count (2) for the timed decorator"
-    );
-    // DefineScriptDecorator uses the lavender hex #E6E6FA fill.
-    assert!(
-        dot.contains("#E6E6FA"),
-        "def_decorator node must use lavender hex fill (#E6E6FA)"
+        dot.contains("decorator timed"),
+        "DOT preamble must mention the script-defined `timed` decorator"
     );
 }
 

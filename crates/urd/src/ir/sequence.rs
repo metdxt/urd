@@ -77,9 +77,21 @@ pub fn render_sequence(graph: &IrGraph) -> String {
         graph.labels.iter().map(|(name, &id)| (name, id)).collect();
     sorted_labels.sort_by_key(|(_, id)| id.0);
 
-    // Emit participant declarations.
+    // Compute reachability so we only declare participants with real content.
+    let reachable = super::analysis::reachable_nodes(graph);
+    let clusters = super::analysis::compute_clusters(graph, &reachable);
+
+    // Emit participant declarations only for labels whose clusters are non-empty.
+    // This also filters out the synthetic `_end` participant when it has no
+    // reachable content.
     for (name, _) in &sorted_labels {
-        writeln!(out, "    participant {}", pid(name)).ok();
+        let has_content = clusters
+            .get(name.as_str())
+            .map(|members| !members.is_empty())
+            .unwrap_or(false);
+        if has_content {
+            writeln!(out, "    participant {}", pid(name)).ok();
+        }
     }
     writeln!(out).ok();
 

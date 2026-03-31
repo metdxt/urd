@@ -117,9 +117,6 @@ pub fn render_dot(graph: &IrGraph) -> String {
     )
     .ok();
 
-    if graph.entry != NODE_END {
-        writeln!(out, "    __start__ -> {};", nid(graph.entry)).ok();
-    }
     writeln!(out).ok();
 
     // ── Cluster subgraphs (node definitions only, no edges) ──────────────────
@@ -128,6 +125,9 @@ pub fn render_dot(graph: &IrGraph) -> String {
     // Edges are emitted after all subgraphs (idiomatic DOT).
     for label_name in &sorted_labels {
         let members = &clusters[*label_name];
+        if members.is_empty() {
+            continue;
+        }
         let safe = sanitize_id(label_name);
         let is_entry = entry_cluster.as_deref() == Some(label_name.as_str());
         let penwidth = if is_entry { "3.0" } else { "1.5" };
@@ -163,8 +163,10 @@ pub fn render_dot(graph: &IrGraph) -> String {
         writeln!(out).ok();
     }
 
-    // ── Non-clustered reachable non-Nop node definitions ────────────────────
+    // ── Non-clustered reachable non-Nop node definitions (preamble) ─────────
     let clustered: HashSet<NodeId> = clusters.values().flatten().copied().collect();
+    let mut preamble_lines: Vec<String> = Vec::new();
+    let mut preamble_ids: Vec<NodeId> = Vec::new();
     let mut any_global = false;
 
     for node in &graph.nodes {
@@ -177,31 +179,67 @@ pub fn render_dot(graph: &IrGraph) -> String {
         if clustered.contains(&node.id) {
             continue;
         }
-        any_global = true;
-        let (shape, fill, label) = node_attrs(node.id, &node.kind, &label_by_entry);
-        writeln!(
-            out,
-            "    {} [label={}, shape={shape}, style=filled, fillcolor={}];",
-            nid(node.id),
-            quoted(&label),
-            quoted(fill),
-        )
-        .ok();
+        if is_preamble_kind(&node.kind) {
+            preamble_ids.push(node.id);
+            preamble_lines.push(preamble_summary(&node.kind));
+        } else {
+            any_global = true;
+            let (shape, fill, label) = node_attrs(node.id, &node.kind, &label_by_entry);
+            writeln!(
+                out,
+                "    {} [label={}, shape={shape}, style=filled, fillcolor={}];",
+                nid(node.id),
+                quoted(&label),
+                quoted(fill),
+            )
+            .ok();
+        }
     }
     if any_global {
         writeln!(out).ok();
     }
+
+    if !preamble_lines.is_empty() {
+        let label_text = preamble_lines.join("\\n");
+        writeln!(
+            out,
+            "    __preamble__ [label={}, shape=note, style=filled, fillcolor=\"lavender\"];",
+            quoted(&label_text),
+        )
+        .ok();
+        writeln!(out).ok();
+    }
+
+    // ── START edge ───────────────────────────────────────────────────────────
+    if !preamble_ids.is_empty() {
+        writeln!(out, "    __start__ -> __preamble__;").ok();
+        let target = preamble_chain_target(graph, graph.entry);
+        if target == NODE_END {
+            has_end_edge = true;
+            writeln!(out, "    __preamble__ -> __end__;").ok();
+        } else {
+            writeln!(out, "    __preamble__ -> {};", nid(target)).ok();
+        }
+    } else if graph.entry != NODE_END {
+        writeln!(out, "    __start__ -> {};", nid(graph.entry)).ok();
+    }
+    writeln!(out).ok();
 
     // ── All edges ────────────────────────────────────────────────────────────
     //
     // Emitted outside all subgraphs so Graphviz draws cross-cluster arrows
     // correctly.  Every edge target is passed through `follow_nops` so that
     // Nop merge nodes disappear from the visual without losing connectivity.
+    let preamble_id_set: HashSet<NodeId> = preamble_ids.iter().copied().collect();
+
     for node in &graph.nodes {
         if !reachable.contains(&node.id) {
             continue;
         }
         if matches!(&node.kind, IrNodeKind::Nop { .. }) {
+            continue;
+        }
+        if preamble_id_set.contains(&node.id) {
             continue;
         }
 
@@ -601,6 +639,55 @@ fn sanitize_id(s: &str) -> String {
             }
         })
         .collect()
+}
+
+// ─── Preamble helpers ────────────────────────────────────────────────────────
+
+/// Returns `true` for node kinds that belong to the script preamble
+/// (assignments, enum/decorator definitions, evals) and should be collapsed
+/// into the single `__preamble__` summary node.
+fn is_preamble_kind(kind: &IrNodeKind) -> bool {
+    matches!(
+        kind,
+        IrNodeKind::Assign { .. }
+            | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::Eval { .. }
+    )
+}
+
+/// Returns a short human-readable summary for a preamble node (assignment,
+/// enum definition, etc.).  Used to build the collapsed `__preamble__` node.
+fn preamble_summary(kind: &IrNodeKind) -> String {
+    match kind {
+        IrNodeKind::Assign { var, scope, .. } => {
+            format!("{} {var}", decl_kw(scope))
+        }
+        IrNodeKind::DefineEnum { name, .. } => format!("enum {name}"),
+        IrNodeKind::DefineScriptDecorator { name, .. } => format!("decorator {name}"),
+        IrNodeKind::Eval { .. } => "⟨eval⟩".into(),
+        _ => "⟨init⟩".into(),
+    }
+}
+
+/// Walks the prologue chain from `cursor`, following Assign / DefineEnum /
+/// DefineScriptDecorator / Nop / Eval `next` pointers, until the first
+/// non-preamble node (typically `EnterScope`) or `NODE_END` is reached.
+fn preamble_chain_target(graph: &IrGraph, mut cursor: NodeId) -> NodeId {
+    let mut visited = HashSet::new();
+    loop {
+        if cursor == NODE_END || cursor.0 as usize >= graph.nodes.len() || !visited.insert(cursor) {
+            return cursor;
+        }
+        match &graph.nodes[cursor.0 as usize].kind {
+            IrNodeKind::Assign { next, .. }
+            | IrNodeKind::DefineEnum { next, .. }
+            | IrNodeKind::DefineScriptDecorator { next, .. }
+            | IrNodeKind::Nop { next }
+            | IrNodeKind::Eval { next, .. } => cursor = *next,
+            _ => return cursor,
+        }
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

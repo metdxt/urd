@@ -1,6 +1,6 @@
 //! Mermaid flowchart renderer for [`super::IrGraph`].
 //!
-//! Produces a `flowchart TD` string renderable by any Mermaid-compatible
+//! Produces a `flowchart LR` string renderable by any Mermaid-compatible
 //! viewer (mermaid.live, GitHub/GitLab markdown, Obsidian, etc.) without
 //! needing Graphviz installed.
 //!
@@ -34,7 +34,7 @@ use super::{IrGraph, IrNodeKind, NODE_END, NodeId};
 // ─── Public surface ───────────────────────────────────────────────────────────
 
 impl IrGraph {
-    /// Renders this graph as a Mermaid `flowchart TD` string.
+    /// Renders this graph as a Mermaid `flowchart LR` string.
     ///
     /// See the [module documentation][self] for usage and visual legend.
     pub fn to_mermaid(&self) -> String {
@@ -42,7 +42,7 @@ impl IrGraph {
     }
 }
 
-/// Renders `graph` as a Mermaid `flowchart TD` string.
+/// Renders `graph` as a Mermaid `flowchart LR` string.
 ///
 /// Prefer calling [`IrGraph::to_mermaid`] instead of this free function.
 pub fn render_mermaid(graph: &IrGraph) -> String {
@@ -78,7 +78,7 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
          'edgeLabelBackground': '#ffffff'}}}}}}%%"
     )
     .ok();
-    writeln!(out, "flowchart TD").ok();
+    writeln!(out, "flowchart LR").ok();
     writeln!(out).ok();
 
     // ── classDef declarations ────────────────────────────────────────────────
@@ -143,6 +143,9 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
     // ── Subgraph clusters (node definitions only) ────────────────────────────
     for label_name in &sorted_labels {
         let members = &clusters[*label_name];
+        if members.is_empty() {
+            continue;
+        }
         let safe = sanitize_id(label_name);
         let escaped_name = escape_mermaid(label_name);
 
@@ -171,6 +174,10 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
 
     // ── Subgraph style lines ─────────────────────────────────────────────────
     for label_name in &sorted_labels {
+        let members = &clusters[*label_name];
+        if members.is_empty() {
+            continue;
+        }
         let safe = sanitize_id(label_name);
         let is_entry = entry_cluster.as_deref() == Some(label_name.as_str());
         let sw = if is_entry { "4px" } else { "2px" };
@@ -182,8 +189,11 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
     }
     writeln!(out).ok();
 
-    // ── Non-clustered reachable non-Nop node definitions ────────────────────
+    // ── Non-clustered reachable non-Nop node definitions (preamble) ─────────
     let clustered: HashSet<NodeId> = clusters.values().flatten().copied().collect();
+    let mut preamble_lines: Vec<String> = Vec::new();
+    let mut preamble_ids: Vec<NodeId> = Vec::new();
+
     let mut any_global = false;
 
     for node in &graph.nodes {
@@ -196,16 +206,57 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
         if clustered.contains(&node.id) {
             continue;
         }
-        any_global = true;
-        let def = mermaid_node_def(node.id, &node.kind, &label_by_entry);
-        writeln!(out, "    {def}").ok();
+        if is_preamble_kind(&node.kind) {
+            preamble_ids.push(node.id);
+            preamble_lines.push(preamble_summary(&node.kind));
+        } else {
+            any_global = true;
+            let def = mermaid_node_def(node.id, &node.kind, &label_by_entry);
+            writeln!(out, "    {def}").ok();
+        }
     }
     if any_global {
         writeln!(out).ok();
     }
 
+    if preamble_ids.len() < 2 {
+        // Single (or zero) preamble node — render individually so its native
+        // Mermaid class (:::enumDef, :::assign, …) is preserved.
+        for &pid in &preamble_ids {
+            let node = &graph.nodes[pid.0 as usize];
+            let def = mermaid_node_def(node.id, &node.kind, &label_by_entry);
+            writeln!(out, "    {def}").ok();
+        }
+        if !preamble_ids.is_empty() {
+            writeln!(out).ok();
+        }
+        // Treat them as normal nodes (don't skip their edges).
+        preamble_ids.clear();
+    } else {
+        let body = preamble_lines
+            .iter()
+            .map(|l| escape_mermaid(l))
+            .collect::<Vec<_>>()
+            .join("<br/>");
+        writeln!(out, "    __preamble__[\"{body}\"]:::assign").ok();
+        writeln!(out).ok();
+    }
+
+    let preamble_id_set: HashSet<NodeId> = preamble_ids.iter().copied().collect();
+
     // ── START → entry edge ───────────────────────────────────────────────────
-    if graph.entry != NODE_END {
+    if !preamble_ids.is_empty() {
+        // START → preamble → entry label
+        writeln!(out, "    __start__ --> __preamble__").ok();
+        let preamble_target = preamble_chain_target(graph, graph.entry);
+        if preamble_target == NODE_END {
+            has_end_edge = true;
+            writeln!(out, "    __preamble__ --> __end__").ok();
+        } else {
+            let dst = nid(preamble_target);
+            writeln!(out, "    __preamble__ --> {dst}").ok();
+        }
+    } else if graph.entry != NODE_END {
         let entry_resolved = follow_nops(graph, graph.entry);
         let dst = nid(entry_resolved);
         writeln!(out, "    __start__ --> {dst}").ok();
@@ -218,6 +269,9 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             continue;
         }
         if matches!(&node.kind, IrNodeKind::Nop { .. }) {
+            continue;
+        }
+        if preamble_id_set.contains(&node.id) {
             continue;
         }
 
@@ -557,6 +611,57 @@ fn write_mermaid_edge(
     }
 }
 
+// ─── Preamble helpers ─────────────────────────────────────────────────────────
+
+/// Returns `true` for node kinds that should be collapsed into the preamble
+/// summary node (Assign, DefineEnum, DefineScriptDecorator, Eval).
+fn is_preamble_kind(kind: &IrNodeKind) -> bool {
+    matches!(
+        kind,
+        IrNodeKind::Assign { .. }
+            | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::Eval { .. }
+    )
+}
+
+/// Returns a short one-line summary for a preamble (non-clustered) IR node.
+fn preamble_summary(kind: &IrNodeKind) -> String {
+    match kind {
+        IrNodeKind::Assign { var, scope, .. } => {
+            format!("{} {var}", decl_kw(scope))
+        }
+        IrNodeKind::DefineEnum { name, .. } => {
+            format!("enum {name}")
+        }
+        IrNodeKind::DefineScriptDecorator { name, .. } => {
+            format!("decorator {name}")
+        }
+        IrNodeKind::Eval { .. } => "⟨eval⟩".to_string(),
+        _ => "⟨init⟩".to_string(),
+    }
+}
+
+/// Walks from `cursor` following preamble-style nodes (Assign, DefineEnum,
+/// DefineScriptDecorator, Nop, Eval) until hitting an EnterScope, END, or
+/// any other non-preamble node.  Returns that target [`NodeId`].
+fn preamble_chain_target(graph: &IrGraph, mut cursor: NodeId) -> NodeId {
+    let mut visited = HashSet::new();
+    loop {
+        if cursor == NODE_END || cursor.0 as usize >= graph.nodes.len() || !visited.insert(cursor) {
+            return cursor;
+        }
+        match &graph.nodes[cursor.0 as usize].kind {
+            IrNodeKind::Assign { next, .. }
+            | IrNodeKind::DefineEnum { next, .. }
+            | IrNodeKind::DefineScriptDecorator { next, .. }
+            | IrNodeKind::Nop { next }
+            | IrNodeKind::Eval { next, .. } => cursor = *next,
+            _ => return cursor,
+        }
+    }
+}
+
 // ─── Mermaid-specific helpers ─────────────────────────────────────────────────
 
 /// Escapes text for use inside a Mermaid double-quoted node label.
@@ -622,8 +727,8 @@ mod tests {
     fn test_mermaid_header() {
         let mmd = compile(Ast::block(vec![])).to_mermaid();
         assert!(
-            mmd.contains("flowchart TD"),
-            "must contain flowchart TD, got: {mmd}"
+            mmd.contains("flowchart LR"),
+            "must contain flowchart LR, got: {mmd}"
         );
         assert!(
             mmd.contains("%%{init:"),
