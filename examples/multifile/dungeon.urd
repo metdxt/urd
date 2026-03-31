@@ -50,7 +50,6 @@ label dungeon_entrance {
     # LSP: string interpolation referencing inv.gold (cross-file global)
     # LSP: go-to-definition on 'inv.gold' should jump to items.urd
     <narrator>: "You clutch your coin purse — {inv.gold} gold pieces. Perhaps enough to bribe your way through."
-
     menu {
         "Bribe the warden (costs 30 gold)" {
             if inv.gold >= 30 {
