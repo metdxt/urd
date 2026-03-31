@@ -244,5 +244,11 @@ label farewell {
 
     <narrator>: "The road goes on."
 
+    jump test
+
     end!()
+}
+
+label test {
+    todo!()
 }

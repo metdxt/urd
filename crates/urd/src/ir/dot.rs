@@ -215,13 +215,24 @@ pub fn render_dot(graph: &IrGraph) -> String {
             }
             let safe = sanitize_id(label_name);
             let is_entry = entry_cluster.as_deref() == Some(label_name.as_str());
-            let penwidth = if is_entry { "3.0" } else { "1.5" };
+            let has_todo = members
+                .iter()
+                .any(|&idx| matches!(graph.graph.node_weight(idx), Some(IrNodeKind::Todo)));
+            let penwidth = if is_entry {
+                "3.0"
+            } else if has_todo {
+                "2.5"
+            } else {
+                "1.5"
+            };
+            let cluster_fill = if has_todo { "#ffe0b2" } else { "#f0fff4" };
+            let cluster_color = if has_todo { "darkorange" } else { "darkgreen" };
 
             writeln!(out, "{indent}subgraph cluster_{safe} {{").ok();
             writeln!(out, "{indent}    label={};", quoted(label_name)).ok();
             writeln!(out, "{indent}    style=\"rounded,filled\";").ok();
-            writeln!(out, "{indent}    fillcolor=\"#f0fff4\";").ok();
-            writeln!(out, "{indent}    color=darkgreen;").ok();
+            writeln!(out, "{indent}    fillcolor={};", quoted(cluster_fill)).ok();
+            writeln!(out, "{indent}    color={cluster_color};").ok();
             writeln!(out, "{indent}    penwidth={penwidth};").ok();
             writeln!(out).ok();
 
@@ -1150,6 +1161,85 @@ mod tests {
         assert!(
             first_block.contains("penwidth=3.0"),
             "entry cluster must have penwidth=3.0, got:\n{first_block}"
+        );
+    }
+
+    #[test]
+    fn test_todo_cluster_gets_orange_styling() {
+        // A label that contains todo!() must have orange border + fill.
+        // A clean label (end!()) must retain the default green styling.
+        //
+        // Both labels are made reachable: a `start` label jumps into
+        // `unfinished`, which in turn jumps to `done` so neither is pruned
+        // by the dead-code reachability pass.
+
+        let todo_call = {
+            let func = Ast::value(RuntimeValue::IdentPath(vec!["todo!".to_string()]));
+            let params = Ast::expr_list(vec![]);
+            Ast::call(func, params)
+        };
+        let end_call = {
+            let func = Ast::value(RuntimeValue::IdentPath(vec!["end!".to_string()]));
+            let params = Ast::expr_list(vec![]);
+            Ast::call(func, params)
+        };
+
+        let dot = compile(Ast::block(vec![
+            // `start` has a menu so both `unfinished` and `done` are reachable.
+            Ast::labeled_block(
+                "start".into(),
+                Ast::block(vec![Ast::menu(vec![
+                    Ast::menu_option(
+                        "a".into(),
+                        Ast::block(vec![Ast::jump_stmt("unfinished".into(), false)]),
+                    ),
+                    Ast::menu_option(
+                        "b".into(),
+                        Ast::block(vec![Ast::jump_stmt("done".into(), false)]),
+                    ),
+                ])]),
+            ),
+            Ast::labeled_block("unfinished".into(), Ast::block(vec![todo_call])),
+            Ast::labeled_block("done".into(), Ast::block(vec![end_call])),
+        ]))
+        .to_dot();
+
+        // ── todo cluster ─────────────────────────────────────────────────────
+        let todo_pos = dot
+            .find("subgraph cluster_unfinished")
+            .expect("cluster_unfinished must be in DOT output");
+        let todo_end = dot[todo_pos..]
+            .find("\n    }")
+            .expect("cluster_unfinished must have a closing brace")
+            + todo_pos;
+        let todo_block = &dot[todo_pos..todo_end];
+
+        assert!(
+            todo_block.contains("darkorange"),
+            "todo cluster must use darkorange border, got:\n{todo_block}"
+        );
+        assert!(
+            todo_block.contains("#ffe0b2"),
+            "todo cluster must use orange tint fill, got:\n{todo_block}"
+        );
+
+        // ── clean cluster ─────────────────────────────────────────────────────
+        let done_pos = dot
+            .find("subgraph cluster_done")
+            .expect("cluster_done must be in DOT output");
+        let done_end = dot[done_pos..]
+            .find("\n    }")
+            .expect("cluster_done must have a closing brace")
+            + done_pos;
+        let done_block = &dot[done_pos..done_end];
+
+        assert!(
+            done_block.contains("darkgreen"),
+            "clean cluster must keep darkgreen border, got:\n{done_block}"
+        );
+        assert!(
+            done_block.contains("#f0fff4"),
+            "clean cluster must keep green fill, got:\n{done_block}"
         );
     }
 

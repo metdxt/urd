@@ -333,10 +333,24 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
         }
         let safe = sanitize_id(label_name);
         let is_entry = entry_cluster.as_deref() == Some(label_name.as_str());
-        let sw = if is_entry { "4px" } else { "2px" };
+        let has_todo = members
+            .iter()
+            .any(|&idx| matches!(graph.graph.node_weight(idx), Some(IrNodeKind::Todo)));
+        let sw = if is_entry {
+            "4px"
+        } else if has_todo {
+            "3px"
+        } else {
+            "2px"
+        };
+        let (fill, stroke) = if has_todo {
+            ("#ffe0b2", "#e65100")
+        } else {
+            ("transparent", "#228B22")
+        };
         writeln!(
             out,
-            "    style cluster_{safe} fill:transparent,stroke:#228B22,stroke-width:{sw}"
+            "    style cluster_{safe} fill:{fill},stroke:{stroke},stroke-width:{sw}"
         )
         .ok();
     }
@@ -799,7 +813,8 @@ fn mermaid_node_def(
 
         // ── Todo ───────────────────────────────────────────────────────────
         IrNodeKind::Todo => {
-            format!("{n}(((\"todo!\"))  ):::endNode")
+            let text = escape_mermaid("todo!");
+            format!("{n}((\"{text}\")):::endNode")
         }
 
         // ── Dialogue ──────────────────────────────────────────────────────
@@ -982,6 +997,7 @@ fn escape_mermaid(s: &str) -> String {
                 .replace('"', "#quot;")
                 .replace('<', "#lt;")
                 .replace('>', "#gt;")
+                .replace('!', "#excl;")
                 .replace('\n', "<br/>")
                 .replace('\r', "")
         })
