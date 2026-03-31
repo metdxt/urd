@@ -307,6 +307,13 @@ fn check_value_compat(
             match expected {
                 TypeAnnotation::Map => { /* always ok */ }
                 TypeAnnotation::Named(path) => {
+                    // A qualified path (e.g. `chars.Character`) refers to a type
+                    // defined in an imported module. Single-file analysis has no
+                    // access to imported symbol tables, so we skip the check
+                    // entirely rather than producing a false-positive mismatch.
+                    if path.len() > 1 {
+                        return;
+                    }
                     let struct_name = path.first().map(String::as_str).unwrap_or("");
                     if let Some(fields) = ctx.structs.get(struct_name) {
                         // Structural type check against the struct definition.
@@ -403,10 +410,25 @@ fn is_compatible(value: &RuntimeValue, annotation: &TypeAnnotation, ctx: &Analys
         TypeAnnotation::Label => matches!(value, RuntimeValue::Label { .. }),
 
         TypeAnnotation::Named(path) => {
+            // A qualified type annotation (e.g. `chars.Faction`) refers to a
+            // symbol in an imported module. We cannot resolve it here, so accept
+            // any value for cross-module Named types rather than false-positiving.
+            if path.len() > 1 {
+                return true;
+            }
             match value {
                 // `null` is always compatible with a Named type (nullable enum).
                 RuntimeValue::Null => true,
-                // A single-segment IdentPath is treated as an enum variant.
+                // A multi-segment IdentPath (e.g. `chars.Faction.Rebel`) is a
+                // qualified enum variant from an imported module — accept it only
+                // when the annotation itself is also cross-module (multi-segment).
+                // A 2-segment value against a 1-segment annotation (e.g. assigning
+                // `Dir.North` where `Dir` is expected) is a local qualified path
+                // and should remain a type error.
+                RuntimeValue::IdentPath(ident_path) if ident_path.len() > 1 && path.len() > 1 => {
+                    true
+                }
+                // A single-segment IdentPath is treated as a local enum variant.
                 RuntimeValue::IdentPath(ident_path) if ident_path.len() == 1 => {
                     // If we can find the enum, verify the variant exists.
                     let enum_name = path.first().map(String::as_str).unwrap_or("");

@@ -111,6 +111,13 @@ impl IrGraph {
         for mut node in other.nodes {
             node.id = NodeId(node.id.0 + offset);
             remap_node_kind(&mut node.kind, offset);
+            // Namespace DefineEnum names so `enum Faction` from a module
+            // imported as `chars` becomes `chars::Faction` in the merged graph.
+            // This lets the VM resolve `chars.Faction.Rebel` (a 3-segment
+            // IdentPath) by looking up enum `chars::Faction`, variant `Rebel`.
+            if let IrNodeKind::DefineEnum { name, .. } = &mut node.kind {
+                *name = namespace(alias, name);
+            }
             self.nodes.push(node);
         }
 

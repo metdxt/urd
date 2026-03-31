@@ -1,0 +1,142 @@
+# items.urd — Game items, inventory globals, and helper labels
+#
+# LSP features exercised in this file:
+#   - Document symbols: struct Item, enums, const items, global state, labels
+#   - Semantic tokens: struct fields, typed consts, globals, labels, strings, numbers
+#   - Find references: Item struct used in all item consts (rename target)
+#   - Hover: hover over field names to see their types
+#   - Diagnostics: see dungeon.urd for intentional type errors referencing Item
+
+# ── Struct Definitions ────────────────────────────────────────────────────────
+
+# LSP: hover over 'Item' in other files to see this definition
+struct Item {
+    name: str
+    description: str
+    value: int
+    weight: int
+}
+
+# Rarity tiers for items
+# LSP: hover over 'Rarity' in dungeon.urd to jump here
+enum Rarity {
+    Common
+    Uncommon
+    Rare
+    Legendary
+}
+
+# ── Constant Item Definitions ─────────────────────────────────────────────────
+
+# LSP: these consts are referenced by name in village.urd and dungeon.urd
+#      Rename 'iron_sword' here and it should update all usages across files
+
+const iron_sword: Item = :{ name: "Iron Sword", description: "A sturdy blade, worn but reliable. It has seen better days.", value: 45, weight: 8 }
+
+const health_potion: Item = :{ name: "Health Potion", description: "A small vial of shimmering crimson liquid. Smells of roses and iron.", value: 20, weight: 1 }
+
+const ancient_map: Item = :{ name: "Ancient Map", description: "Brittle parchment etched with faded ink. A dungeon is marked with an X.", value: 5, weight: 0 }
+
+const elixir_of_courage: Item = :{ name: "Elixir of Courage", description: "A shimmering golden draught. Legends say it makes the drinker fearless — or foolish.", value: 80, weight: 1 }
+
+const enchanted_shield: Item = :{ name: "Enchanted Shield", description: "A round shield etched with protective runes. Hums faintly to the touch.", value: 120, weight: 12 }
+
+const dungeon_key: Item = :{ name: "Dungeon Key", description: "A heavy iron key, cold even in warm hands. It opens something deep below.", value: 0, weight: 1 }
+
+# ── Global Mutable State ──────────────────────────────────────────────────────
+
+# LSP: these globals are read via 'inv.gold' and 'inv.inventory_count' in
+#      village.urd and dungeon.urd — test cross-file hover and go-to-definition
+
+global gold: int = 100
+global inventory_count: int = 0
+global has_dungeon_key: int = 0
+global potions_held: int = 1
+global courage_taken: int = 0
+
+# ── Helper Labels ─────────────────────────────────────────────────────────────
+
+# LSP: hover over 'inv.show_inventory' in village.urd to see this label
+label show_inventory {
+    let narrator = :{ name: "Narrator", name_color: "#aaaaaa" }
+
+    <narrator>: {
+        "═══════════════════════════════"
+        "  INVENTORY"
+        "═══════════════════════════════"
+        "  Gold:    {gold} gp"
+        "  Items:   {inventory_count} carried"
+        "  Potions: {potions_held} remaining"
+        "═══════════════════════════════"
+    }
+
+    if potions_held > 0 {
+        menu {
+            "Drink a health potion (+30 HP)" {
+                let new_potions: int = potions_held - 1
+                global potions_held = new_potions
+                <narrator>: "You uncork the vial and drink. Warmth spreads through your body."
+                return
+            }
+            "Close inventory" {
+                return
+            }
+        }
+    }
+
+    return
+}
+
+label buy_item {
+    let merchant = :{ name: "Merchant", name_color: "#f4c542" }
+    let narrator = :{ name: "Narrator", name_color: "#aaaaaa" }
+
+    if gold < 20 {
+        <merchant>: "Sorry, traveller — you haven't got the coin for anything in my stock."
+        return
+    }
+
+    menu {
+        "Health Potion — 20 gp" {
+            if gold >= 20 {
+                let remaining: int = gold - 20
+                global gold = remaining
+                let count: int = potions_held + 1
+                global potions_held = count
+                let new_inv: int = inventory_count + 1
+                global inventory_count = new_inv
+                <merchant>: "There you go. One {health_potion.name}, fresh as yesterday's batch."
+                <narrator>: "You tuck the potion safely into your pack."
+            }
+            return
+        }
+        "Iron Sword — 45 gp" {
+            if gold >= 45 {
+                let remaining: int = gold - 45
+                global gold = remaining
+                let new_inv: int = inventory_count + 1
+                global inventory_count = new_inv
+                <merchant>: "Fine choice. That blade's served three adventurers already — the ones who came back, anyway."
+            }
+            return
+        }
+        "Elixir of Courage — 80 gp" {
+            if gold >= 80 {
+                let remaining: int = gold - 80
+                global gold = remaining
+                let count: int = potions_held + 1
+                global potions_held = count
+                let new_inv: int = inventory_count + 1
+                global inventory_count = new_inv
+                global courage_taken = 1
+                <merchant>: "Ah, you've got nerve. Or soon will. Don't take it on an empty stomach."
+                <narrator>: "You slip the golden elixir into your satchel beside the map."
+            }
+            return
+        }
+        "Nothing, thanks" {
+            <merchant>: "Safe travels then. Mind the roads at night."
+            return
+        }
+    }
+}

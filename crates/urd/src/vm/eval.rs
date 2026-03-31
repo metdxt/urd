@@ -249,8 +249,13 @@ pub(super) fn eval_runtime_value(
                     .map_err(|_| VmError::UndefinedVariable(format!("{}.{}", path[0], path[1])))
             }
             _ => {
-                // Multi-segment: treat first two as enum name + variant.
-                env.get_enum_variant(&path[0], &path[1])
+                // Three-segment path: `alias.EnumName.Variant`
+                // During IrGraph::merge, enum names are namespaced as
+                // "alias::EnumName", so we must build that key to resolve the
+                // variant (e.g. `chars.Faction.Rebel` → enum "chars::Faction",
+                // variant "Rebel").
+                let namespaced_enum = crate::ir::namespace(&path[0], &path[1]);
+                env.get_enum_variant(&namespaced_enum, &path[2])
             }
         },
         RuntimeValue::Str(ps) => {
@@ -278,8 +283,23 @@ pub(super) fn interpolate_string(ps: &ParsedString, env: &Environment) -> Parsed
                     1 => env.get(segments[0]),
                     2 => env
                         .get_enum_variant(segments[0], segments[1])
-                        .or_else(|_| env.get(segments[0])),
-                    _ => env.get(segments[0]),
+                        // Try module-namespaced key: `inv.gold` → `inv::gold`
+                        .or_else(|_| {
+                            let ns = crate::ir::namespace(segments[0], segments[1]);
+                            env.get(&ns)
+                        })
+                        // Fall back to the bare second segment: merged globals
+                        // from imported modules live in the flat env under their
+                        // original name (e.g. `gold`, not `inv::gold`).
+                        .or_else(|_| env.get(segments[1])),
+                    _ => {
+                        // 3+ segments: try `alias::name` for the first two, then
+                        // bare last segment, then first segment.
+                        let ns = crate::ir::namespace(segments[0], segments[1]);
+                        env.get(&ns)
+                            .or_else(|_| env.get(segments[segments.len() - 1]))
+                            .or_else(|_| env.get(segments[0]))
+                    }
                 };
 
                 match resolved {

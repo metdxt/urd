@@ -195,6 +195,11 @@ pub fn render_parse_errors<W: std::io::Write>(
     for error in errors {
         let span = *error.span();
         let range = span.start..span.end;
+        // Pin the primary caret to a single character at the token's start so
+        // that ariadne's `┬` always points at the beginning of the offending
+        // token rather than somewhere inside a wide (potentially multi-token)
+        // span that chumsky produces after backtracking through `.or()` chains.
+        let caret_range = span.start..span.start + 1;
         let name = source_name.to_owned();
 
         // ── Derive the top-level message and primary label ─────────────────
@@ -230,7 +235,7 @@ pub fn render_parse_errors<W: std::io::Write>(
             (name.clone(), range.clone()),
         )
         .with_message(&top_message)
-        .with_label(Label::new((name.clone(), range.clone())).with_message(&primary_label_msg));
+        .with_label(Label::new((name.clone(), caret_range)).with_message(&primary_label_msg));
 
         // ── Context labels from .labelled() calls ─────────────────────────
         //

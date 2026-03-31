@@ -1,0 +1,362 @@
+# =============================================================================
+# main.urd — Story Entry Point
+# =============================================================================
+# LSP FEATURES EXERCISED IN THIS FILE:
+#
+#   Cross-file go-to-definition : hover over chars.Character, inv.Item, etc.
+#   Cross-file hover            : qualified refs like chars.narrator, inv.gold
+#   Cross-file completion       : after typing "chars." or "inv." the LSP should
+#                                 offer all symbols exported from those modules
+#   Find references             : 'start' label is jumped to — find all refs
+#   Rename                      : try renaming 'prologue' across the project
+#   Document symbols            : all labels/consts below should appear in the
+#                                 outline panel
+#   Semantic tokens             : keywords, labels, strings, struct refs, enums
+# =============================================================================
+
+import "characters.urd" as chars
+import "items.urd"      as inv
+import "village.urd"    as village
+import "dungeon.urd"    as dungeon
+
+# ---------------------------------------------------------------------------
+# LSP: Hover over 'chars.Faction' should show the enum definition
+const player_faction: chars.Faction = chars.Faction.Rebel
+
+# LSP: Hover over 'inv.Item' — cross-file type reference
+const starting_dagger: inv.Item = :{ name: "Rusty Dagger", description: "A chipped blade of uncertain origin.", value: 5, weight: 1 }
+
+# ---------------------------------------------------------------------------
+# Entry jump — control flow begins here
+# LSP: 'start' should appear as a document symbol (label)
+# ---------------------------------------------------------------------------
+jump start
+
+# =============================================================================
+# label: prologue
+# LSP RENAME TEST: rename this label and observe the jump below also updates
+# =============================================================================
+label prologue {
+    # LSP: semantic token — 'chars.narrator' is a cross-file const of struct type
+    <narrator>: {
+        "In the age before the Sundering, three great powers held the world"
+        "in uneasy balance: the Guild, the Empire, and the Rebels."
+    }
+
+    <narrator>: {
+        "You are a wanderer — no allegiance, no past worth speaking of."
+        "But today, on the road to the village of Ashfen, everything changes."
+    }
+
+    # LSP: hover over 'chars.hero' — cross-file const reference
+    <hero>: "I've been walking for three days. I need rest... and answers."
+
+    <narrator>: {
+        "The village of Ashfen sits at the crossroads of two dying roads."
+        "To the north: the Dungeon of Vel'Kara, ancient and hungry."
+        "To the south: the village itself, smoke rising from its chimneys."
+    }
+
+    jump choose_path
+}
+
+# =============================================================================
+# label: start
+# LSP: document symbol, jump target from the top-level 'jump start'
+# =============================================================================
+label start {
+    <narrator>: "The year is 1203 of the Third Age."
+
+    # LSP: string interpolation — semantic tokens for '{' '}' and variable name
+    <narrator>: "You carry {inv.gold} gold pieces and the weight of an uncertain future."
+
+    # LSP: hover over 'inv.gold' inside the string — cross-file global reference
+    <narrator>: "Your satchel holds room for {inv.inventory_count} more items."
+
+    <hero>: "Right then. Let's see what Ashfen has to offer."
+
+    jump prologue
+}
+
+# =============================================================================
+# label: choose_path
+# LSP: document symbol; menu demonstrates keyword + string semantic tokens
+# =============================================================================
+label choose_path {
+    <narrator>: {
+        "You stand at the crossroads. The village road is warm with lantern light."
+        "The dungeon path is cold, silent, and calls to something in your blood."
+    }
+
+    # LSP: hover over 'chars.hero' — cross-file const used as dialogue speaker
+    <hero>: "Two roads. One choice. Story of my life."
+
+    menu {
+        "Head into Ashfen village" {
+            <narrator>: "The smell of bread and hearth-smoke draws you south."
+            jump village_entry
+        }
+        "Descend into Vel'Kara dungeon" {
+            <narrator>: "Something ancient stirs beneath the earth. It knows your name."
+            jump dungeon_entry
+        }
+        "Check your belongings" {
+            jump inventory_check
+        }
+    }
+}
+
+# =============================================================================
+# label: village_entry
+# Bridge label — delegates into the village module's control flow
+# LSP: 'village' import alias hover should show the imported file path
+# LSP: cross-file completion — after 'village.' the LSP should list:
+#      village_square, market, tavern (and any consts/structs in village.urd)
+# =============================================================================
+label village_entry {
+    <narrator>: "[ Entering Ashfen — see village.urd -> village_square ]"
+
+    <hero>: "A proper village. Haven't seen one of these in months."
+
+    jump village_scene
+}
+
+# =============================================================================
+# label: village_scene
+# Inline summary of village events for the main story thread
+# =============================================================================
+label village_scene {
+    # LSP: hover over 'chars.merchant' — defined in characters.urd
+    <merchant>: {
+        "Welcome, stranger! Ashfen hasn't seen a traveller in weeks."
+        "These are dark times — the dungeon grows restless."
+    }
+
+    <hero>: "I heard. What can you tell me about Vel'Kara?"
+
+    <merchant>: {
+        "Only that those who enter don't return. The Guild sent three men"
+        "last autumn. We found their gear on the road. Nothing else."
+    }
+
+    menu {
+        "Ask about the Guild" {
+            jump guild_lore
+        }
+        "Buy supplies and head to the dungeon" {
+            jump buy_and_descend
+        }
+        "Spend the night and reconsider" {
+            jump rest_at_tavern
+        }
+    }
+}
+
+# =============================================================================
+# label: dungeon_entry
+# Bridge label — delegates into the dungeon module's control flow
+# LSP: 'dungeon' alias hover shows dungeon.urd path
+# LSP: cross-file completion — 'dungeon.' should offer:
+#      dungeon_entrance, treasure_room, boss_fight
+# =============================================================================
+label dungeon_entry {
+    <narrator>: "[ Entering Vel'Kara — see dungeon.urd -> dungeon_entrance ]"
+
+    <hero>: "The air tastes of old stone and older blood."
+
+    jump dungeon_scene
+}
+
+# =============================================================================
+# label: dungeon_scene
+# Inline summary of dungeon events for the main story thread
+# =============================================================================
+label dungeon_scene {
+    # LSP: hover over 'chars.villain' — cross-file character reference
+    <villain>: {
+        "So. Another fool stumbles into my hall."
+        "I can smell the road-dust on you, wanderer."
+    }
+
+    <hero>: "I've come for the artefact. Stand aside."
+
+    <villain>: {
+        "The Sundering Stone is MINE. I bled for it."
+        "I starved in this darkness for seventeen years for it."
+        "You will not take one step closer."
+    }
+
+    menu {
+        "Fight the villain" {
+            jump boss_battle
+        }
+        "Try to negotiate" {
+            jump negotiate
+        }
+        "Run back to the village" {
+            <narrator>: "Wisdom, they say, is knowing when to retreat."
+            jump village_entry
+        }
+    }
+}
+
+# =============================================================================
+# label: inventory_check
+# LSP: string interpolation of cross-file globals — semantic token test
+# =============================================================================
+label inventory_check {
+    # LSP: 'inv.gold' and 'inv.inventory_count' — cross-file global refs
+    <narrator>: "You check your coin pouch. You have {inv.gold} gold pieces."
+    <narrator>: "Your pack contains {inv.inventory_count} item(s)."
+
+    # LSP: hover over 'inv.Item' — cross-file struct type
+    # LSP: hover over 'starting_dagger' — local const of type inv.Item
+    <narrator>: "Your {starting_dagger.name} is still sharp enough. Barely."
+
+    jump choose_path
+}
+
+# =============================================================================
+# label: guild_lore
+# Demonstrates enum usage and faction-based branching
+# LSP: hover over 'chars.Faction' — cross-file enum reference
+# =============================================================================
+label guild_lore {
+    <merchant>: {
+        "The Guild of Amber once controlled all trade through Ashfen."
+        "Now they've gone quiet. Rumour says their master turned."
+    }
+
+    # LSP: match on cross-file enum — 'chars.Faction' semantic token
+    match player_faction {
+        chars.Faction.Guild {
+            <hero>: "I... I used to be one of them. Before the purge."
+            <merchant>: "Then you know better than most what's at stake."
+        }
+        chars.Faction.Empire {
+            <hero>: "The Empire never trusted the Guild anyway."
+            <merchant>: "Careful saying that here. Old loyalties die hard."
+        }
+        chars.Faction.Rebel {
+            <hero>: "The Rebels warned everyone this would happen. Nobody listened."
+            <merchant>: "Aye. And now the bill comes due for all of us."
+        }
+    }
+
+    jump choose_path
+}
+
+# =============================================================================
+# label: buy_and_descend
+# LSP: cross-file global mutation visible via inv.gold reference
+# =============================================================================
+label buy_and_descend {
+    <merchant>: {
+        "I've got torches, rope, and dried meat. Take what you need."
+        "Consider it a gift — if you slay whatever lurks down there,"
+        "you'll have earned it tenfold."
+    }
+
+    # LSP: inv.gold is a global defined in items.urd — hover for cross-file info
+    <narrator>: "You stock up on supplies. Remaining gold: {inv.gold}."
+
+    <hero>: "Thank you. I'll try not to die."
+
+    <merchant>: "That's all any of us can do, stranger."
+
+    jump dungeon_entry
+}
+
+# =============================================================================
+# label: rest_at_tavern
+# =============================================================================
+label rest_at_tavern {
+    <narrator>: {
+        "The Ashfen inn is warm, its beds lumpy but dry."
+        "You sleep deeply, dreamlessly. It feels earned."
+    }
+
+    <hero>: "Morning. Right. The dungeon isn't going to clear itself."
+
+    <narrator>: "You wake refreshed. The crossroads awaits."
+
+    jump choose_path
+}
+
+# =============================================================================
+# label: boss_battle
+# =============================================================================
+label boss_battle {
+    <narrator>: "Steel rings on stone. The dungeon shudders."
+
+    <villain>: "You're GOOD. I'll give you that much."
+
+    <hero>: "I've had good teachers. All of them are dead now."
+
+    <villain>: "Then join them!"
+
+    <narrator>: {
+        "The battle is fierce — a clash of desperation against cold purpose."
+        "In the end, the wanderer stands. The villain does not."
+    }
+
+    # LSP: cross-file const reference for item display
+    <narrator>: "Among the rubble: the Sundering Stone, and a chest of {inv.gold} gold."
+
+    jump ending
+}
+
+# =============================================================================
+# label: negotiate
+# =============================================================================
+label negotiate {
+    <hero>: {
+        "You've spent seventeen years alone in the dark."
+        "Is the Stone really worth dying for?"
+    }
+
+    <villain>: "..."
+
+    <villain>: {
+        "You don't know what it cost to find it."
+        "What I sacrificed. Who I became."
+    }
+
+    <hero>: "I know exactly. That's why I'm asking."
+
+    <narrator>: "A long silence fills the vault. Then, slowly, the villain lowers their blade."
+
+    <villain>: "Take it. Take it and go. And tell them... tell them I'm done."
+
+    <narrator>: {
+        "You reach the surface with the Stone, and an unexpected weight in your chest."
+        "Some victories feel like losses."
+    }
+
+    jump ending
+}
+
+# =============================================================================
+# label: ending
+# LSP: document symbol — final label, string interpolation
+# =============================================================================
+label ending {
+    <narrator>: {
+        "The road back to Ashfen is longer than it was this morning."
+        "You carry more than you set out with — in every sense."
+    }
+
+    <hero>: "The Stone is safe. The dungeon is quiet. For now."
+
+    <narrator>: {
+        "Word spreads fast in a village as small as Ashfen."
+        "By nightfall, you are a hero. By morning, you are gone."
+    }
+
+    <narrator>: "The age of the Sundering is not over. It has only just begun."
+
+    <narrator>: "But that — as they say — is a story for another day."
+
+    # LSP: end!() — keyword semantic token
+    end!()
+}

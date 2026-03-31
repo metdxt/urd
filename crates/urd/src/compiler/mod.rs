@@ -109,6 +109,12 @@ struct CompilerState {
     graph: IrGraph,
     /// Maps label names → the NodeId of their pre-allocated Nop placeholder.
     label_placeholders: HashMap<String, NodeId>,
+    /// Entry NodeIds of imported modules (offset-adjusted after merge), in
+    /// import order. Used by `compile_recursive` to chain module prologues
+    /// (DefineEnum, global assignments, etc.) before the main entry so that
+    /// cross-module enum variants and globals are available at runtime before
+    /// the importing module's own code begins executing.
+    import_prologues: Vec<crate::ir::NodeId>,
 }
 
 impl CompilerState {
@@ -116,6 +122,7 @@ impl CompilerState {
         CompilerState {
             graph: IrGraph::new(),
             label_placeholders: HashMap::new(),
+            import_prologues: Vec::new(),
         }
     }
 

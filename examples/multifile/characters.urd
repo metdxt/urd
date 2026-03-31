@@ -1,0 +1,74 @@
+# =============================================================================
+# characters.urd — Reusable character definitions
+# =============================================================================
+#
+# LSP features exercised in this file:
+#   - Document symbols: all structs, enums, and consts appear in the symbol list
+#   - Semantic tokens: struct keyword, field names, enum variants, string literals
+#   - Hover: hover over Character or Faction to see type info
+#   - Go-to-definition (source): definitions that other files will reference
+#
+# This file is imported by village.urd, dungeon.urd, and main.urd.
+# Renaming `Character`, `Faction`, or any const here should propagate to all
+# importing files (LSP: rename refactoring across files).
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Struct: Character
+# LSP: hover over `Character` in any importing file to see this definition
+# LSP: go-to-definition on `chars.Character` navigates here
+# LSP: rename `Character` -> triggers cross-file rename in all usages
+# ---------------------------------------------------------------------------
+struct Character {
+    name: str
+    name_color: str
+}
+
+# ---------------------------------------------------------------------------
+# Enum: Faction
+# LSP: hover over `chars.Faction` to see variants Guild, Empire, Rebel
+# LSP: completion after `chars.Faction.` offers Guild, Empire, Rebel
+# LSP: match expressions in dungeon.urd pattern-match on these variants
+# ---------------------------------------------------------------------------
+enum Faction {
+    Guild
+    Empire
+    Rebel
+}
+
+# ---------------------------------------------------------------------------
+# Narrator — the disembodied voice that guides the player
+# LSP: hover over `chars.narrator` in any other file to see this const
+# LSP: find-references on `narrator` shows usages in village.urd, dungeon.urd, main.urd
+# ---------------------------------------------------------------------------
+const narrator: Character = :{ name: "Narrator", name_color: "#a0a0b0" }
+
+# ---------------------------------------------------------------------------
+# Hero — the player character
+# LSP: hover over `chars.hero` to see this definition
+# LSP: find-references on `hero` shows usages across the project
+# ---------------------------------------------------------------------------
+const hero: Character = :{ name: "Hero", name_color: "#f5c542" }
+
+# ---------------------------------------------------------------------------
+# Merchant — the friendly shopkeeper in the village market
+# LSP: hover over `chars.merchant` to see this definition
+# ---------------------------------------------------------------------------
+const merchant: Character = :{ name: "Aldric the Merchant", name_color: "#42c8f5" }
+
+# ---------------------------------------------------------------------------
+# Villain — the dark sorcerer lurking in the dungeon
+# LSP: hover over `chars.villain` to see this definition
+# LSP: find-references on `villain` shows usages in dungeon.urd and main.urd
+# ---------------------------------------------------------------------------
+const villain: Character = :{ name: "Malachar the Undying", name_color: "#c040c0" }
+
+# ---------------------------------------------------------------------------
+# Innkeeper — the warm host of the village tavern
+# ---------------------------------------------------------------------------
+const innkeeper: Character = :{ name: "Berta Stonehearth", name_color: "#e8a060" }
+
+# ---------------------------------------------------------------------------
+# Guard — the stern sentinel at the dungeon gate
+# ---------------------------------------------------------------------------
+const guard: Character = :{ name: "Captain Voss", name_color: "#8888aa" }

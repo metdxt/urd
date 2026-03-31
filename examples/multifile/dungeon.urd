@@ -1,0 +1,261 @@
+# =============================================================================
+# dungeon.urd — The Ruined Depths
+# =============================================================================
+# LSP features exercised in this file:
+#   - Cross-file go-to-definition: hover over 'chars.Character', 'inv.Item', etc.
+#   - Cross-file hover: 'chars.Faction', 'inv.gold', 'inv.sword' all resolve
+#   - Cross-file completion: typing 'chars.' or 'inv.' should offer their symbols
+#   - Find references: 'chars.Character' is used here AND in village.urd
+#   - Semantic tokens: labels, structs, enums, keywords, strings, numbers
+#   - Diagnostics: intentional type error near the bottom of this file
+#   - match expression on chars.Faction enum
+# =============================================================================
+
+import "characters.urd" as chars
+import "items.urd" as inv
+
+# ---------------------------------------------------------------------------
+# Local character definitions — typed as chars.Character (cross-file type ref)
+# LSP: go-to-definition on 'chars.Character' should jump to characters.urd
+# LSP: hover on 'chars.Character' should show struct definition
+# ---------------------------------------------------------------------------
+
+const shadow_warden: chars.Character = :{ name: "Shadow Warden", name_color: "#8B0000" }
+const ancient_spirit: chars.Character = :{ name: "Ancient Spirit", name_color: "#9370DB" }
+const dungeon_boss: chars.Character = :{ name: "Lord Malachar", name_color: "#4B0082" }
+
+# Local state for dungeon progression
+global entered_treasure_room: int = 0
+global boss_defeated: int = 0
+global ally_faction: chars.Faction = chars.Faction.Rebel
+
+# ---------------------------------------------------------------------------
+# label: dungeon_entrance
+# The first area of the dungeon. Sets the mood and gives the player a choice.
+# LSP: document symbols — this label should appear in the symbol list
+# ---------------------------------------------------------------------------
+
+label dungeon_entrance {
+    # LSP: hover on 'chars.narrator' — cross-file hover should show its definition
+    <narrator>: "The air grows cold as you descend the crumbling stone steps."
+    <narrator>: "Torchlight flickers against walls slick with moisture."
+    <narrator>: "Somewhere below, something stirs."
+
+    <shadow_warden>: "Halt, outsider."
+    <shadow_warden>: {
+        "These ruins are claimed by Lord Malachar."
+        "Turn back now, and I will let you leave with your life."
+    }
+
+    # LSP: string interpolation referencing inv.gold (cross-file global)
+    # LSP: go-to-definition on 'inv.gold' should jump to items.urd
+    <narrator>: "You clutch your coin purse — {inv.gold} gold pieces. Perhaps enough to bribe your way through."
+
+    menu {
+        "Bribe the warden (costs 30 gold)" {
+            if inv.gold >= 30 {
+                let new_gold: int = inv.gold - 30
+                <narrator>: "You press 30 gold coins into the warden's gauntleted hand."
+                <shadow_warden>: "..."
+                <shadow_warden>: "Very well. You have one hour."
+                jump treasure_room
+            } else {
+                <narrator>: "You reach into your purse — but there isn't enough."
+                <shadow_warden>: "Empty pockets? Then you have nothing to offer me."
+                jump fight_warden
+            }
+        }
+        "Challenge the warden to combat" {
+            <narrator>: "You draw your weapon and settle into a fighting stance."
+            <shadow_warden>: "Bold. And foolish."
+            jump fight_warden
+        }
+        "Sneak past while he's distracted" {
+            <narrator>: "You wait for the warden to glance away, then slip into the shadows."
+            <narrator>: "Your heart hammers in your chest as you press against the cold stone wall."
+            <narrator>: "You make it through."
+            jump treasure_room
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# label: fight_warden
+# Combat sequence with the dungeon gatekeeper.
+# ---------------------------------------------------------------------------
+
+label fight_warden {
+    <shadow_warden>: "You will regret this, wanderer."
+    <narrator>: "The Shadow Warden lunges — iron-shod boots crashing against the stone floor."
+
+    # LSP: 'inv.sword' cross-file const reference — hover/go-to-def should resolve
+    <narrator>: "You raise your {inv.sword.name} and parry the first blow."
+
+    menu {
+        "Strike low" {
+            <narrator>: "You sweep low, catching him off-balance."
+            <narrator>: "The warden stumbles — and does not rise."
+            <shadow_warden>: "You are... stronger than you look."
+            jump treasure_room
+        }
+        "Feign retreat, then attack" {
+            <narrator>: "You fall back two steps — and the warden overextends."
+            <narrator>: "One clean strike ends the fight."
+            jump treasure_room
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# label: treasure_room
+# The heart of the dungeon. Tracks state and reveals the boss encounter.
+# LSP: document symbols — 'treasure_room' should appear in the outline
+# ---------------------------------------------------------------------------
+
+label treasure_room {
+    let entered_treasure_room: int = 1
+
+    <ancient_spirit>: "You have come far, mortal."
+    <ancient_spirit>: {
+        "This chamber has not seen living footsteps in three hundred years."
+        "What you seek lies beyond the sealed door."
+        "But Lord Malachar guards it jealously."
+    }
+
+    <narrator>: "Before you stand two ancient pedestals. Each holds a glowing sigil."
+
+    # LSP: 'inv.inventory_count' — cross-file global reference
+    <narrator>: "You have {inv.inventory_count} items in your pack."
+
+    menu {
+        "Ask the spirit about Lord Malachar" {
+            <ancient_spirit>: "He was once a scholar — brilliant, devoted to uncovering this place's secrets."
+            <ancient_spirit>: "The ruins changed him. The old magic took root in his mind."
+            <ancient_spirit>: "Now he is neither living nor dead. Something in between."
+            jump treasure_room_choice
+        }
+        "Examine the sealed door" {
+            <narrator>: "Strange runes cover the door's surface, shifting like living ink."
+            <narrator>: "You sense immense power — and immense age — radiating from the stone."
+            jump treasure_room_choice
+        }
+        "Ignore it all and press forward" {
+            <narrator>: "You've come too far to be stopped by an old door."
+            jump boss_fight
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# label: treasure_room_choice
+# Branching based on faction — demonstrates match on chars.Faction enum
+# LSP: match expression on 'chars.Faction' — hover should show enum definition
+# LSP: go-to-definition on 'chars.Faction.Guild' etc. should jump to characters.urd
+# ---------------------------------------------------------------------------
+
+label treasure_room_choice {
+    <ancient_spirit>: "I can sense your allegiances, traveller. They will shape what comes next."
+
+    # LSP: match on 'ally_faction' whose type is 'chars.Faction'
+    # This exercises semantic tokens for match arms and enum variants
+    match ally_faction {
+        chars.Faction.Guild {
+            <ancient_spirit>: "You carry the mark of the Guild. Pragmatic folk. Useful in a fight."
+            <narrator>: "The spirit gestures — and a hidden cache of gold coins slides from the wall."
+            <narrator>: "You pocket the coins. Every bit helps."
+        }
+        chars.Faction.Empire {
+            <ancient_spirit>: "The Empire's reach extends even here? Unsettling."
+            <ancient_spirit>: "I will not stop you — but know that imperial greed has already cost this place dearly."
+            <narrator>: "The spirit fades, leaving a cold silence in its wake."
+        }
+        chars.Faction.Rebel {
+            <ancient_spirit>: "A Rebel. Good."
+            <ancient_spirit>: "Malachar once served the Empire before these ruins consumed him."
+            <ancient_spirit>: "Strike him down — for all of us."
+            <narrator>: "The spirit bestows a faint blessing. You feel steadier. Stronger."
+        }
+    }
+
+    jump boss_fight
+}
+
+# ---------------------------------------------------------------------------
+# label: boss_fight
+# Climactic confrontation with Lord Malachar.
+# LSP: document symbols — 'boss_fight' should appear in the symbol list
+# ---------------------------------------------------------------------------
+
+label boss_fight {
+    <dungeon_boss>: "So. Another hero comes to try their luck."
+    <dungeon_boss>: {
+        "Do you know how many have stood where you stand?"
+        "Their names are carved into the walls of my chamber."
+        "Yours will join them."
+    }
+
+    <narrator>: "The air shudders. Shadows peel themselves from the walls and take shape."
+
+    menu {
+        "I'm not here to be remembered. I'm here to end this." {
+            <dungeon_boss>: "Then come."
+            <narrator>: "The fight is brutal and long — but you do not yield."
+            <narrator>: "When it is over, Lord Malachar dissolves into drifting ash."
+            <narrator>: "Silence falls over the dungeon for the first time in centuries."
+            let boss_defeated: int = 1
+            jump dungeon_epilogue
+        }
+        "What happened to you? You weren't always like this." {
+            <dungeon_boss>: "..."
+            <dungeon_boss>: "I remember... a library. Candlelight. Pages turning in the dark."
+            <dungeon_boss>: "But that was another life."
+            <narrator>: "Something in his voice wavers — a crack in centuries of stone-cold resolve."
+            menu {
+                "There might still be a way back." {
+                    <dungeon_boss>: "No. There is not."
+                    <dungeon_boss>: "But perhaps... there is still a way forward."
+                    <narrator>: "Lord Malachar closes his eyes. The shadows retreat."
+                    <narrator>: "He dissolves — not in defeat, but in release."
+                    let boss_defeated: int = 1
+                    jump dungeon_epilogue
+                }
+                "Then I have no choice." {
+                    <narrator>: "You raise your weapon."
+                    <narrator>: "The fight begins — and ends quickly."
+                    let boss_defeated: int = 1
+                    jump dungeon_epilogue
+                }
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# label: dungeon_epilogue
+# Resolution of the dungeon arc.
+# ---------------------------------------------------------------------------
+
+label dungeon_epilogue {
+    <narrator>: "The sealed door swings open of its own accord."
+    <narrator>: "Beyond it — a chamber filled with forgotten knowledge. Maps. Journals. Artifacts."
+    <narrator>: "And at the centre: a single ancient tome, its cover inlaid with silver."
+
+    <ancient_spirit>: "Take it. You have earned it."
+    <ancient_spirit>: "The ruins will sleep again now. As they should."
+
+    <narrator>: "You tuck the tome under your arm and begin the long climb back to daylight."
+    <narrator>: "Your gold pouch is lighter — {inv.gold} pieces remain — but your pack is heavier."
+    <narrator>: "And somewhere above, the village waits."
+
+    end!()
+}
+
+# =============================================================================
+# INTENTIONAL TYPE ERROR — for LSP diagnostics testing
+# =============================================================================
+# LSP: the struct literal below should trigger a diagnostic.
+# 'value' field of Item expects 'int', but we are assigning a string "priceless".
+# LSP: diagnostics panel should highlight this as a type mismatch.
+# =============================================================================
+
+const broken_item: inv.Item = :{ name: "Ancient Tome", value: "priceless", weight: 2 }

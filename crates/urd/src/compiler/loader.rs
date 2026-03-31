@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    ir::{IrGraph, NODE_END},
+    ir::{IrGraph, IrNodeKind, NODE_END, NodeId},
     parser::ast::{Ast, AstContent},
 };
 
@@ -32,8 +32,15 @@ pub(super) fn compile_recursive(
     // Pass 1: scan local labels (imports are already merged).
     state.scan_labels(ast);
 
-    // Pass 2: emit IR nodes.
-    let entry = state.compile_node(ast, NODE_END)?;
+    // Pass 2: emit IR nodes for the current module (main entry).
+    let main_entry = state.compile_node(ast, NODE_END)?;
+
+    // Chain imported module prologues before the main entry so that
+    // DefineEnum / global-assignment nodes from imported modules are executed
+    // before any code in the importing module runs. Without this, a reference
+    // like `chars.Faction.Rebel` would fail at runtime because `DefineEnum`
+    // for `chars::Faction` had never been executed.
+    let entry = chain_prologues(&mut state.graph, &state.import_prologues, main_entry);
     state.graph.entry = entry;
 
     Ok(state.graph)
@@ -67,8 +74,11 @@ pub(super) fn collect_imports(
             // the first alias; a second merge under the same alias is fine too,
             // but the most common case is simply "both A and B import C").
             if completed.contains(path.as_str()) {
-                // Re-load and re-merge so the alias mapping is registered even
-                // for the second importer, but don't recurse into it again.
+                // Re-load and re-merge so the alias (label namespace) mapping is
+                // registered even for the second importer, but don't recurse and
+                // don't push to import_prologues — the first compilation already
+                // queued this module's prologue for execution. Re-running it would
+                // redeclare top-level `const` bindings and cause a TypeError.
                 let src = loader
                     .load(path)
                     .map_err(|msg| CompilerError::ModuleLoadError {
@@ -86,6 +96,7 @@ pub(super) fn collect_imports(
                 let entry = inner.compile_node(&module_ast, NODE_END)?;
                 inner.graph.entry = entry;
                 state.graph.merge(inner.graph, alias);
+                // Intentionally NOT pushing to state.import_prologues here.
                 return Ok(());
             }
 
@@ -114,7 +125,29 @@ pub(super) fn collect_imports(
             completed.insert(path.clone());
 
             // Merge into our graph, namespacing all labels as "alias::label".
-            state.graph.merge(module_graph, alias);
+            // Record the (offset-adjusted) module entry so we can chain its
+            // prologue (DefineEnum, global assignments, etc.) to run before the
+            // importing module's own code.
+            //
+            // We skip the prologue entry when the module's entry node is an
+            // EnterScope (meaning the module contains only labels and no
+            // top-level statements). In that case there is nothing to run as a
+            // prologue, and jumping to the entry would execute the first label
+            // body unconditionally.
+            let module_entry = module_graph.entry;
+            let offset = state.graph.merge(module_graph, alias);
+            let adjusted_entry = NodeId(module_entry.0 + offset);
+            let entry_is_label = matches!(
+                state
+                    .graph
+                    .nodes
+                    .get(adjusted_entry.as_index())
+                    .map(|n| &n.kind),
+                Some(IrNodeKind::EnterScope { .. })
+            );
+            if !entry_is_label {
+                state.import_prologues.push(adjusted_entry);
+            }
         }
         // Recurse into other block-like constructs so that nested imports are found.
         AstContent::If {
@@ -142,6 +175,106 @@ pub(super) fn collect_imports(
         _ => {}
     }
     Ok(())
+}
+
+/// Chain a sequence of prologue entry points before `main_entry` so that each
+/// imported module's top-level nodes (DefineEnum, global assignments, etc.) run
+/// first.
+///
+/// For each prologue the function walks its linear chain following `next`
+/// pointers until it reaches a node whose `next` is `NODE_END`, then patches
+/// that tail to continue at the next link in the chain. The first prologue's
+/// entry becomes the new overall entry point.
+///
+/// Non-linear nodes (Branch, Switch, Choice, etc.) terminate the walk early;
+/// they will not appear in a well-formed module prologue.
+fn chain_prologues(graph: &mut IrGraph, prologues: &[NodeId], main_entry: NodeId) -> NodeId {
+    if prologues.is_empty() {
+        return main_entry;
+    }
+
+    // Build the chain right-to-left: the last prologue's tail → main_entry,
+    // then each earlier prologue's tail → the next prologue's entry.
+    let mut next_start = main_entry;
+    for &prologue in prologues.iter().rev() {
+        if prologue == NODE_END {
+            continue;
+        }
+        patch_prologue_tail(graph, prologue, next_start);
+        next_start = prologue;
+    }
+    next_start
+}
+
+/// Walk the linear chain starting at `from`, following `next` pointers, and
+/// redirect the chain so that instead of falling into a label body or hitting
+/// `NODE_END`, execution continues at `new_next`.
+///
+/// Two stopping conditions are handled:
+///
+/// 1. A node whose `next == NODE_END` — patch it directly to `new_next`.
+/// 2. A node whose `next` is an `EnterScope` (a label entry point) or any
+///    other non-linear node — patch *that* node's `next` to `new_next`,
+///    bypassing the label body entirely.
+///
+/// This ensures that only top-level prologue nodes (DefineEnum, global
+/// assignments, etc.) run as part of the imported module's prologue, and
+/// label bodies remain reachable only via explicit `jump` instructions.
+fn patch_prologue_tail(graph: &mut IrGraph, from: NodeId, new_next: NodeId) {
+    let mut current = from;
+    let mut visited = HashSet::new();
+
+    loop {
+        if current == NODE_END || !visited.insert(current) {
+            break;
+        }
+
+        let next = match &graph.nodes[current.as_index()].kind {
+            IrNodeKind::Assign { next, .. }
+            | IrNodeKind::DefineEnum { next, .. }
+            | IrNodeKind::DefineScriptDecorator { next, .. }
+            | IrNodeKind::Nop { next }
+            | IrNodeKind::Eval { next, .. } => *next,
+            // Non-linear or terminal — cannot continue walking.
+            _ => break,
+        };
+
+        // Determine whether to patch `current` and stop:
+        // - `next == NODE_END`: end of the linear prologue, patch here.
+        // - `next` points to an EnterScope (label) or other non-prologue node:
+        //   patch `current` to redirect past the label into `new_next`.
+        let should_patch = if next == NODE_END {
+            true
+        } else {
+            matches!(
+                &graph.nodes[next.as_index()].kind,
+                IrNodeKind::EnterScope { .. }
+                    | IrNodeKind::ExitScope { .. }
+                    | IrNodeKind::Dialogue { .. }
+                    | IrNodeKind::Choice { .. }
+                    | IrNodeKind::Branch { .. }
+                    | IrNodeKind::Switch { .. }
+                    | IrNodeKind::Jump { .. }
+                    | IrNodeKind::End
+            )
+        };
+
+        if should_patch {
+            match &mut graph.nodes[current.as_index()].kind {
+                IrNodeKind::Assign { next, .. }
+                | IrNodeKind::DefineEnum { next, .. }
+                | IrNodeKind::DefineScriptDecorator { next, .. }
+                | IrNodeKind::Nop { next }
+                | IrNodeKind::Eval { next, .. } => {
+                    *next = new_next;
+                }
+                _ => {}
+            }
+            break;
+        }
+
+        current = next;
+    }
 }
 
 /// Parse a raw Urd source string into an [`Ast`]. Returns `Err(message)` on
