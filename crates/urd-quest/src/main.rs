@@ -33,15 +33,15 @@ const DIM: &str = "\x1b[2m";
 /// Map a color name string to an ANSI foreground escape code.
 fn ansi_color(name: &str) -> &'static str {
     match name {
-        "white"         => "\x1b[97m",
-        "cyan"          => "\x1b[96m",
-        "yellow"        => "\x1b[93m",
-        "green"         => "\x1b[92m",
-        "red"           => "\x1b[91m",
-        "blue"          => "\x1b[94m",
-        "magenta"       => "\x1b[95m",
+        "white" => "\x1b[97m",
+        "cyan" => "\x1b[96m",
+        "yellow" => "\x1b[93m",
+        "green" => "\x1b[92m",
+        "red" => "\x1b[91m",
+        "blue" => "\x1b[94m",
+        "magenta" => "\x1b[95m",
         "gray" | "grey" => "\x1b[90m",
-        _               => "\x1b[0m",
+        _ => "\x1b[0m",
     }
 }
 
@@ -49,7 +49,7 @@ fn ansi_color(name: &str) -> &'static str {
 
 /// A speaker resolved to a printable name + ANSI color.
 struct CharacterDisplay {
-    name:  String,
+    name: String,
     color: &'static str,
 }
 
@@ -70,7 +70,7 @@ fn extract_character(val: &RuntimeValue) -> CharacterDisplay {
         CharacterDisplay { name, color }
     } else {
         CharacterDisplay {
-            name:  display_value(val),
+            name: display_value(val),
             color: RESET,
         }
     }
@@ -90,7 +90,10 @@ fn format_speakers(speakers: &[RuntimeValue]) -> Option<CharacterDisplay> {
                 .map(|v| extract_character(v).name)
                 .collect::<Vec<_>>()
                 .join(" & ");
-            Some(CharacterDisplay { name, color: first.color })
+            Some(CharacterDisplay {
+                name,
+                color: first.color,
+            })
         }
     }
 }
@@ -100,15 +103,15 @@ fn format_speakers(speakers: &[RuntimeValue]) -> Option<CharacterDisplay> {
 /// Convert a [`RuntimeValue`] to a human-readable display string.
 fn display_value(val: &RuntimeValue) -> String {
     match val {
-        RuntimeValue::Str(s)             => s.to_string(),
-        RuntimeValue::IdentPath(parts)   => parts.join("."),
-        RuntimeValue::Int(n)             => n.to_string(),
-        RuntimeValue::Bool(b)            => b.to_string(),
-        RuntimeValue::Float(f)           => f.to_string(),
-        RuntimeValue::Null               => "null".to_string(),
+        RuntimeValue::Str(s) => s.to_string(),
+        RuntimeValue::IdentPath(parts) => parts.join("."),
+        RuntimeValue::Int(n) => n.to_string(),
+        RuntimeValue::Bool(b) => b.to_string(),
+        RuntimeValue::Float(f) => f.to_string(),
+        RuntimeValue::Null => "null".to_string(),
         RuntimeValue::Dice(count, sides) => format!("{}d{}", count, sides),
         RuntimeValue::Label { name, .. } => name.clone(),
-        other                            => format!("{:?}", other),
+        other => format!("{:?}", other),
     }
 }
 
@@ -210,17 +213,15 @@ fn handle_choice_tty(options: &[urd::ir::ChoiceEvent]) -> usize {
 
     loop {
         match event::read() {
-            Ok(CtEvent::Key(KeyEvent { code, modifiers, .. })) => {
+            Ok(CtEvent::Key(KeyEvent {
+                code, modifiers, ..
+            })) => {
                 // Ctrl-C / Ctrl-D → exit cleanly
-                if matches!(code, KeyCode::Char('c'))
-                    && modifiers.contains(KeyModifiers::CONTROL)
-                {
+                if matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL) {
                     terminal::disable_raw_mode().ok();
                     std::process::exit(0);
                 }
-                if matches!(code, KeyCode::Char('d'))
-                    && modifiers.contains(KeyModifiers::CONTROL)
-                {
+                if matches!(code, KeyCode::Char('d')) && modifiers.contains(KeyModifiers::CONTROL) {
                     terminal::disable_raw_mode().ok();
                     std::process::exit(0);
                 }
@@ -284,10 +285,7 @@ fn handle_choice_tty(options: &[urd::ir::ChoiceEvent]) -> usize {
 
 /// Number-based choice prompt used when stdin is not a terminal (e.g. piped
 /// input in tests or scripted runs).
-fn handle_choice_pipe(
-    options: &[urd::ir::ChoiceEvent],
-    stdin: &mut impl BufRead,
-) -> usize {
+fn handle_choice_pipe(options: &[urd::ir::ChoiceEvent], stdin: &mut impl BufRead) -> usize {
     let n = options.len();
     println!();
     println!("  What do you do?");
@@ -306,11 +304,7 @@ fn handle_choice_pipe(
     match input.trim().parse::<usize>() {
         Ok(i) if i >= 1 && i <= n => i - 1,
         _ => {
-            eprintln!(
-                "Invalid choice '{}', expected 1\u{2013}{}",
-                input.trim(),
-                n
-            );
+            eprintln!("Invalid choice '{}', expected 1\u{2013}{}", input.trim(), n);
             std::process::exit(1);
         }
     }
@@ -333,7 +327,11 @@ fn run_analysis(ast: &urd::parser::ast::Ast, src: &str, filename: &str) {
     let errors = analysis::analyze(ast);
     if !errors.is_empty() {
         analysis::render_errors_stderr(&errors, src, filename);
-        eprintln!("[analysis] {} issue(s) found in '{}'", errors.len(), filename);
+        eprintln!(
+            "[analysis] {} issue(s) found in '{}'",
+            errors.len(),
+            filename
+        );
     }
 }
 
@@ -351,10 +349,10 @@ fn build_vm(path: &Path) -> Result<Vm, String> {
     // ── Lex ───────────────────────────────────────────────────────────────
     let lexer = lex_src(&src).spanned().map(|(tok, span)| match tok {
         Ok(tok) => (tok, span.into()),
-        Err(e)  => (Token::Error(e), span.into()),
+        Err(e) => (Token::Error(e), span.into()),
     });
-    let stream = Stream::from_iter(lexer)
-        .map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
+    let stream =
+        Stream::from_iter(lexer).map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
 
     // ── Parse ─────────────────────────────────────────────────────────────
     let (maybe_ast, parse_errs) = script().parse(stream).into_output_errors();
@@ -367,8 +365,7 @@ fn build_vm(path: &Path) -> Result<Vm, String> {
         ));
     }
 
-    let ast = maybe_ast
-        .ok_or_else(|| format!("failed to parse '{display_name}'"))?;
+    let ast = maybe_ast.ok_or_else(|| format!("failed to parse '{display_name}'"))?;
 
     run_analysis(&ast, &src, &display_name);
 
@@ -424,7 +421,9 @@ fn main() {
                 eprintln!("\n\x1b[91mRuntime error:\x1b[0m {:?}\n", e);
                 std::process::exit(1);
             }
-            Some(Ok(Event::Dialogue { speakers, lines, .. })) => {
+            Some(Ok(Event::Dialogue {
+                speakers, lines, ..
+            })) => {
                 handle_dialogue(&speakers, &lines, &mut stdin_lock, is_tty);
                 choice = None;
             }
