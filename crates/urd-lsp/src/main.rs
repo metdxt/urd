@@ -182,10 +182,18 @@ impl Backend {
         }
 
         // Re-index imports so cross-file features stay up to date.
+        // This must happen before we gather the imported type context below.
         if let Some(doc) = self.documents.get(&uri) {
             if let Some(ast) = &doc.ast {
                 self.workspace.update(&uri, ast);
             }
+        }
+
+        // Re-run analysis with cross-module struct/enum context so that
+        // type-checking can see definitions from imported files.
+        let (imported_structs, imported_enums) = self.workspace.imported_type_context(&uri);
+        if let Some(mut doc) = self.documents.get_mut(&uri) {
+            doc.reanalyze_with_imports(imported_structs, imported_enums);
         }
 
         self.publish_diagnostics(uri).await;
@@ -385,7 +393,7 @@ impl LanguageServer for Backend {
         let mut symbols = collect_symbols(ast);
         symbols.extend(self.workspace.imported_symbols(&uri));
 
-        let candidates = completion_items(ast, &symbols, byte_offset);
+        let candidates = completion_items(ast, &symbols, byte_offset, &src);
 
         let items: Vec<CompletionItem> = candidates
             .into_iter()

@@ -69,6 +69,29 @@ impl AnalysisContext {
         collect_labels(root, &mut ctx.labels);
         ctx
     }
+
+    /// Build an analysis context from `root`, augmented with struct and enum
+    /// definitions from imported modules.
+    ///
+    /// `imported_structs`: maps `"alias.StructName"` → field list (e.g. `"chars.Character"`)
+    /// `imported_enums`:   maps `"alias.EnumName"` → variant list (e.g. `"chars.Faction"`)
+    ///
+    /// Both qualified (`"chars.Character"`) and unqualified (`"Character"`) keys
+    /// are inserted so the type checker can resolve either form.
+    pub fn build_with_imports(
+        root: &Ast,
+        imported_structs: HashMap<String, Vec<StructField>>,
+        imported_enums: HashMap<String, Vec<String>>,
+    ) -> Self {
+        let mut ctx = Self::build(root);
+        for (name, fields) in imported_structs {
+            ctx.structs.insert(name, fields);
+        }
+        for (name, variants) in imported_enums {
+            ctx.enums.insert(name, variants);
+        }
+        ctx
+    }
 }
 
 // ---------------------------------------------------------------------------

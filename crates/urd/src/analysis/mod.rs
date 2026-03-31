@@ -405,3 +405,29 @@ pub fn analyze(ast: &Ast) -> Vec<AnalysisError> {
     errors.extend(dead_end::check(ast));
     errors
 }
+
+/// Like [`analyze`] but also checks cross-module type references using
+/// struct and enum definitions from imported modules.
+///
+/// `imported_structs` maps `"alias.StructName"` → field list
+/// (e.g. `"chars.Character"` → `[StructField { name: "hp", .. }, ...]`).
+///
+/// `imported_enums` maps `"alias.EnumName"` → variant list
+/// (e.g. `"chars.Faction"` → `["hero", "villain"]`).
+///
+/// Both qualified (`"chars.Character"`) and unqualified (`"Character"`) keys
+/// should be present in the maps so that the type checker can resolve either
+/// spelling.  See [`context::AnalysisContext::build_with_imports`] for details.
+pub fn analyze_with_imports(
+    ast: &Ast,
+    imported_structs: std::collections::HashMap<String, Vec<crate::parser::ast::StructField>>,
+    imported_enums: std::collections::HashMap<String, Vec<String>>,
+) -> Vec<AnalysisError> {
+    let ctx = AnalysisContext::build_with_imports(ast, imported_structs, imported_enums);
+    let mut errors: Vec<AnalysisError> = Vec::new();
+    errors.extend(exhaustiveness::check(ast, &ctx));
+    errors.extend(types::check(ast, &ctx));
+    errors.extend(labels::check(ast, &ctx));
+    errors.extend(dead_end::check(ast));
+    errors
+}

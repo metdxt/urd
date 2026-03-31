@@ -41,6 +41,25 @@ impl Document {
         self.reparse();
     }
 
+    /// Re-run analysis with cross-module context.
+    ///
+    /// Call this after [`update`](Self::update) (which calls [`reparse`](Self::reparse)
+    /// internally) once the workspace index has been refreshed, passing the
+    /// imported struct and enum definitions for this document.
+    ///
+    /// If the document currently has no AST (i.e. the last parse failed) this
+    /// is a no-op — there is nothing to re-analyse.
+    pub fn reanalyze_with_imports(
+        &mut self,
+        imported_structs: std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
+        imported_enums: std::collections::HashMap<String, Vec<String>>,
+    ) {
+        if let Some(ast) = &self.ast {
+            self.analysis_errors =
+                urd::analysis::analyze_with_imports(ast, imported_structs, imported_enums);
+        }
+    }
+
     /// Re-parse the current rope content.
     fn reparse(&mut self) {
         let src = self.rope.to_string();

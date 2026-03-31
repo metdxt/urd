@@ -21,7 +21,10 @@ fn check_node(node: &Ast, ctx: &AnalysisContext, errors: &mut Vec<AnalysisError>
     match node.content() {
         // ── Direct jump ──────────────────────────────────────────────
         AstContent::Jump { label, .. } => {
-            if !ctx.labels.contains(label) {
+            // Qualified labels (e.g. `inv.show_inventory`) are cross-module
+            // references validated at compile time — skip them here since the
+            // single-file analyser has no access to the imported label set.
+            if !label.contains('.') && !ctx.labels.contains(label) {
                 errors.push(AnalysisError::UndefinedLabel {
                     label: label.clone(),
                     span: node.span(),
@@ -31,7 +34,8 @@ fn check_node(node: &Ast, ctx: &AnalysisContext, errors: &mut Vec<AnalysisError>
 
         // ── let name = jump target and return ────────────────────────
         AstContent::LetCall { target, .. } => {
-            if !ctx.labels.contains(target) {
+            // Same cross-module exemption as for Jump above.
+            if !target.contains('.') && !ctx.labels.contains(target) {
                 errors.push(AnalysisError::UndefinedLabel {
                     label: target.clone(),
                     span: node.span(),

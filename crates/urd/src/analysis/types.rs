@@ -307,27 +307,35 @@ fn check_value_compat(
             match expected {
                 TypeAnnotation::Map => { /* always ok */ }
                 TypeAnnotation::Named(path) => {
-                    // A qualified path (e.g. `chars.Character`) refers to a type
-                    // defined in an imported module. Single-file analysis has no
-                    // access to imported symbol tables, so we skip the check
-                    // entirely rather than producing a false-positive mismatch.
-                    if path.len() > 1 {
-                        return;
-                    }
-                    let struct_name = path.first().map(String::as_str).unwrap_or("");
-                    if let Some(fields) = ctx.structs.get(struct_name) {
+                    // Build the lookup key: for a qualified path like
+                    // `chars.Character` join segments with `.` so we can find
+                    // it in the context when imported struct/enum maps have
+                    // been injected via `AnalysisContext::build_with_imports`.
+                    let struct_name: String = path.join(".");
+
+                    if let Some(fields) = ctx.structs.get(&struct_name) {
                         // Structural type check against the struct definition.
                         let field_errors = check_struct_compat(pairs, fields);
                         if !field_errors.is_empty() {
                             errors.push(AnalysisError::StructMismatch {
                                 variable: variable.to_owned(),
-                                struct_name: struct_name.to_owned(),
+                                struct_name: struct_name.clone(),
                                 field_errors,
                                 span,
                             });
                         }
-                    } else if !ctx.enums.contains_key(struct_name) {
-                        // Neither a known enum nor a known struct — report mismatch.
+                    } else if ctx.enums.contains_key(&struct_name) {
+                        // It IS a known enum name — fall through silently.
+                        // The runtime will surface the real error; we don't
+                        // double-report.
+                    } else if path.len() > 1 {
+                        // Qualified path (e.g. `chars.Character`) that was NOT
+                        // found in the injected imported context. Skip rather
+                        // than producing a false-positive — the workspace index
+                        // may simply not have been threaded in for this run.
+                    } else {
+                        // Unqualified name that is neither a known struct nor a
+                        // known enum — report a mismatch.
                         errors.push(AnalysisError::TypeMismatch {
                             variable: variable.to_owned(),
                             expected: expected.clone(),
@@ -335,8 +343,6 @@ fn check_value_compat(
                             span,
                         });
                     }
-                    // If it IS a known enum name, fall through silently — the
-                    // runtime will surface the real error; we don't double-report.
                 }
                 _ => {
                     errors.push(AnalysisError::TypeMismatch {

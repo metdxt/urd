@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use chumsky::span::SimpleSpan;
+use chumsky::span::{SimpleSpan, Span as _};
 use dashmap::DashMap;
 use tower_lsp::lsp_types::{Location, Url};
 
@@ -53,6 +53,7 @@ impl ImportedModule {
             .iter()
             .map(|s| Symbol {
                 name: format!("{}.{}", self.alias, s.name),
+                span: chumsky::span::SimpleSpan::new((), 0..0),
                 ..s.clone()
             })
             .collect()
@@ -250,6 +251,86 @@ impl WorkspaceIndex {
     ) -> Option<dashmap::mapref::one::Ref<'_, Url, Vec<ImportedModule>>> {
         self.imports.get(uri)
     }
+
+    /// Return imported struct and enum definitions for use in cross-file analysis.
+    ///
+    /// Returns two maps:
+    /// - `imported_structs`: `"alias.StructName"` → field list
+    /// - `imported_enums`: `"alias.EnumName"` → variant list
+    ///
+    /// Both qualified (`"chars.Character"`) and unqualified (`"Character"`) forms
+    /// are included so the type checker can resolve either spelling.
+    pub fn imported_type_context(
+        &self,
+        uri: &Url,
+    ) -> (
+        std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
+        std::collections::HashMap<String, Vec<String>>,
+    ) {
+        let mut structs = std::collections::HashMap::new();
+        let mut enums = std::collections::HashMap::new();
+
+        let modules = match self.imports.get(uri) {
+            Some(m) => m,
+            None => return (structs, enums),
+        };
+
+        for module in modules.iter() {
+            let alias = &module.alias;
+            if let Some(ast) = &module.ast {
+                collect_type_defs_from_ast(ast, alias, &mut structs, &mut enums);
+            }
+        }
+
+        (structs, enums)
+    }
+}
+
+// ── Type-definition collection (cross-file analysis) ─────────────────────────
+
+/// Recursively walk `ast` and collect every `StructDecl` and `EnumDecl` into
+/// the provided maps.
+///
+/// Each name is inserted under two keys:
+/// - a qualified key `"alias.Name"` — for references written as `chars.Character`
+/// - an unqualified key `"Name"` — for bare references
+///
+/// Existing entries are never overwritten (first-write-wins), so caller order
+/// determines precedence when multiple modules define a same-named type.
+fn collect_type_defs_from_ast(
+    ast: &Ast,
+    alias: &str,
+    structs: &mut std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
+    enums: &mut std::collections::HashMap<String, Vec<String>>,
+) {
+    use urd::parser::ast::AstContent;
+    match ast.content() {
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                collect_type_defs_from_ast(stmt, alias, structs, enums);
+            }
+        }
+        AstContent::StructDecl { name, fields } => {
+            // Store under both qualified ("chars.Character") and unqualified ("Character") keys.
+            let qualified = format!("{alias}.{name}");
+            structs.entry(qualified).or_insert_with(|| fields.clone());
+            structs
+                .entry(name.clone())
+                .or_insert_with(|| fields.clone());
+        }
+        AstContent::EnumDecl { name, variants } => {
+            // `variants` is already a `Vec<String>` — just clone it directly.
+            let qualified = format!("{alias}.{name}");
+            enums.entry(qualified).or_insert_with(|| variants.clone());
+            enums
+                .entry(name.clone())
+                .or_insert_with(|| variants.clone());
+        }
+        AstContent::LabeledBlock { block, .. } => {
+            collect_type_defs_from_ast(block, alias, structs, enums);
+        }
+        _ => {}
+    }
 }
 
 // ── Import collection (AST walk) ─────────────────────────────────────────────
@@ -445,6 +526,46 @@ mod tests {
     }
 
     // ── find_definition ───────────────────────────────────────────────────
+
+    #[test]
+    fn find_definition_label_in_imported_module() {
+        let dir = tmp_dir();
+
+        // items.urd defines a label `show_inventory` (with some globals before it,
+        // mirroring the real items.urd structure).
+        write_tmp(
+            &dir,
+            "items.urd",
+            "global gold: int = 100\nlabel show_inventory {\n  end!()\n}\n",
+        );
+
+        // village.urd imports items.urd as inv and jumps to inv.show_inventory.
+        let village_uri = write_tmp(
+            &dir,
+            "village.urd",
+            "import \"items.urd\" as inv\nlabel village_farewell {\n  jump inv.show_inventory\n}\n",
+        );
+
+        let village_src = std::fs::read_to_string(village_uri.to_file_path().unwrap()).unwrap();
+        let village_ast = parse_source(&village_src).unwrap();
+
+        let index = WorkspaceIndex::new();
+        index.update(&village_uri, &village_ast);
+
+        let result = index.find_definition(&village_uri, "inv.show_inventory");
+        assert!(
+            result.is_some(),
+            "expected to resolve 'inv.show_inventory' to items.urd, got None"
+        );
+
+        let (target_uri, _span, _src) = result.unwrap();
+        assert!(
+            target_uri.to_file_path().unwrap().ends_with("items.urd"),
+            "expected target URI to point at items.urd, got: {target_uri}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn find_definition_qualified_resolves_to_correct_file() {

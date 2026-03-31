@@ -616,7 +616,7 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
         // the container's hover.
         let is_container = matches!(sym.kind, SymbolKind::Label | SymbolKind::Decorator);
         if !is_container {
-            return Some(hover_for_symbol(sym, ast));
+            return Some(hover_for_symbol(sym, ast, symbols));
         }
 
         // For containers, try the AST walk first for a more specific hit.
@@ -635,7 +635,7 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
         }
 
         // Nothing more specific — show the container symbol itself.
-        return Some(hover_for_symbol(sym, ast));
+        return Some(hover_for_symbol(sym, ast, symbols));
     }
 
     // Fall back: try to find an AST node at offset and describe it.
@@ -644,7 +644,7 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
 }
 
 /// Build hover markdown for a known [`Symbol`].
-fn hover_for_symbol(sym: &Symbol, _ast: &Ast) -> String {
+fn hover_for_symbol(sym: &Symbol, _ast: &Ast, symbols: &[Symbol]) -> String {
     match sym.kind {
         SymbolKind::Label => {
             format!("**label** `{}`", sym.name)
@@ -656,7 +656,7 @@ fn hover_for_symbol(sym: &Symbol, _ast: &Ast) -> String {
                 SymbolKind::Global => "global",
                 _ => unreachable!(),
             };
-            if let Some(ta) = &sym.type_annotation {
+            let base = if let Some(ta) = &sym.type_annotation {
                 format!(
                     "**{keyword}** `{}`: `{}`",
                     sym.name,
@@ -664,7 +664,24 @@ fn hover_for_symbol(sym: &Symbol, _ast: &Ast) -> String {
                 )
             } else {
                 format!("**{keyword}** `{}`", sym.name)
+            };
+            // If the type annotation is a Named type, look it up in the symbol
+            // list and append the struct/enum definition as additional context.
+            if let Some(TypeAnnotation::Named(_)) = &sym.type_annotation {
+                let type_name = sym
+                    .type_annotation
+                    .as_ref()
+                    .map(format_type_annotation)
+                    .unwrap_or_default();
+                if let Some(type_sym) = symbols.iter().find(|s| {
+                    s.name == type_name && matches!(s.kind, SymbolKind::Struct | SymbolKind::Enum)
+                }) {
+                    if let Some(detail) = &type_sym.detail {
+                        return format!("{base}\n\n```\n{detail}\n```");
+                    }
+                }
             }
+            base
         }
         SymbolKind::Enum => {
             // Try to include the variants.
@@ -718,7 +735,7 @@ fn hover_from_ast(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
             // Look up the identifier in the symbol table to show its
             // definition / type info instead of a bare "identifier" hover.
             if let Some(sym) = symbols.iter().find(|s| s.name == name) {
-                return Some(hover_for_symbol(sym, ast));
+                return Some(hover_for_symbol(sym, ast, symbols));
             }
             Some(format!("**identifier** `{name}`"))
         }
@@ -861,7 +878,7 @@ fn interpolation_hover_at(
     }
 
     if let Some(sym) = symbols.iter().find(|s| s.name == path) {
-        return Some(hover_for_symbol(sym, ast));
+        return Some(hover_for_symbol(sym, ast, symbols));
     }
     Some(format!("**identifier** `{path}`"))
 }
@@ -997,22 +1014,58 @@ const KEYWORDS: &[&str] = &[
 pub fn completion_items(
     _ast: &Ast,
     symbols: &[Symbol],
-    _byte_offset: usize,
+    byte_offset: usize,
+    src: &str,
 ) -> Vec<(String, SymbolKind)> {
     let mut items: Vec<(String, SymbolKind)> = Vec::new();
 
-    // All symbols are potential completions (labels for jumps, vars, enums…).
-    for sym in symbols {
-        // Avoid duplicates (enum variants may share names).
-        if !items.iter().any(|(n, k)| n == &sym.name && *k == sym.kind) {
-            items.push((sym.name.clone(), sym.kind));
+    // Detect dot-triggered completion: check if the byte immediately before
+    // the cursor is '.', and if so, find the prefix (the alias name).
+    let dot_prefix: Option<String> = if byte_offset > 0 {
+        let before = &src[..byte_offset];
+        if before.ends_with('.') {
+            // Find the word before the dot.
+            let without_dot = &before[..before.len() - 1];
+            let start = without_dot
+                .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let prefix = &without_dot[start..];
+            if !prefix.is_empty() {
+                Some(prefix.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
-    // Add keywords as Label kind (closest semantic match; the caller can
-    // remap to `CompletionItemKind::Keyword`).
-    for kw in KEYWORDS {
-        items.push(((*kw).to_string(), SymbolKind::Variable));
+    if let Some(prefix) = &dot_prefix {
+        // Dot-triggered: only return symbols from that module, with the prefix stripped.
+        let qualified_prefix = format!("{prefix}.");
+        for sym in symbols {
+            if let Some(local_name) = sym.name.strip_prefix(&qualified_prefix) {
+                if !items.iter().any(|(n, k)| n == local_name && *k == sym.kind) {
+                    items.push((local_name.to_string(), sym.kind));
+                }
+            }
+        }
+    } else {
+        // Normal completion: all symbols.
+        for sym in symbols {
+            // Avoid duplicates (enum variants may share names).
+            if !items.iter().any(|(n, k)| n == &sym.name && *k == sym.kind) {
+                items.push((sym.name.clone(), sym.kind));
+            }
+        }
+        // Add keywords as Label kind (closest semantic match; the caller can
+        // remap to `CompletionItemKind::Keyword`).
+        for kw in KEYWORDS {
+            items.push(((*kw).to_string(), SymbolKind::Variable));
+        }
     }
 
     items
@@ -1951,7 +2004,7 @@ mod tests {
     fn completion_includes_symbols_and_keywords() {
         let ast = parse("let x = 1\nlabel a {\n  end!()\n}\n");
         let syms = collect_symbols(&ast);
-        let items = completion_items(&ast, &syms, 0);
+        let items = completion_items(&ast, &syms, 0, "");
         let names: Vec<&str> = items.iter().map(|(n, _)| n.as_str()).collect();
         assert!(
             names.contains(&"x"),
