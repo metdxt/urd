@@ -51,22 +51,26 @@ enum Termination {
 
 /// Run the dead-end pass over `ast` and return any diagnostics found.
 ///
-/// Only `Block` and `LabeledBlock` roots are meaningful; all other root shapes
-/// are silently skipped (they are sub-expressions that cannot be "dead ends" on
-/// their own).
+/// A root [`AstContent::Block`] is a **definitions container** (structs, enums,
+/// consts, imports, and labeled blocks).  It carries no flow of its own, so the
+/// block itself is never a dead end.  We still recurse into it so that any
+/// nested [`AstContent::LabeledBlock`] children are checked individually.
+///
+/// A root [`AstContent::LabeledBlock`] *does* carry flow and is checked
+/// normally.  All other root shapes are silently skipped.
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors: Vec<AnalysisError> = Vec::new();
 
     match ast.content() {
         AstContent::Block(_) => {
+            // The top-level block is purely a definitions container; `top_level::check`
+            // already enforces that no flow statements appear here.  Dead-end
+            // detection therefore does NOT apply to the block itself — there is
+            // nothing to "fall off" from.  We still recurse so that LabeledBlock
+            // children (which DO carry flow) are checked individually.
             let loc = NodeDescription::top_level();
-            let t = termination_of(ast, &mut errors, ast.span(), &loc);
-            if t != Termination::Terminates {
-                errors.push(AnalysisError::DeadEnd {
-                    span: ast.span(),
-                    description: loc,
-                });
-            }
+            termination_of(ast, &mut errors, ast.span(), &loc);
+            // Intentionally do NOT push a DeadEnd for the top-level block.
         }
         AstContent::LabeledBlock { label, .. } => {
             let loc = NodeDescription::label(label);
@@ -832,16 +836,41 @@ mod tests {
     }
 
     #[test]
-    fn check_empty_block_reports_dead_end() {
+    fn check_empty_block_no_error() {
+        // A top-level block is a definitions container, not a flow block.
+        // An empty one (or one with only definitions) must never be flagged.
         let ast = Ast::block(vec![]);
         let errors = check(&ast);
-        assert_eq!(errors.len(), 1);
-        match &errors[0] {
-            AnalysisError::DeadEnd { description, .. } => {
-                assert_eq!(description.0, "top-level block");
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert!(
+            errors.is_empty(),
+            "expected no errors for empty top-level block, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn check_definitions_only_block_no_error() {
+        // Structs, enums, and consts have no flow — the top-level block must
+        // never be reported as a dead end regardless of how many definitions it
+        // contains.
+        let ast = Ast::block(vec![
+            Ast::struct_decl("Character".to_owned(), vec![]),
+            Ast::enum_decl(
+                "Faction".to_owned(),
+                vec!["Guild".to_owned(), "Empire".to_owned()],
+            ),
+            Ast::decl(
+                crate::parser::ast::DeclKind::Constant,
+                Ast::value(RuntimeValue::IdentPath(vec!["narrator".to_owned()])),
+                Ast::value(RuntimeValue::Str(
+                    crate::lexer::strings::ParsedString::new_plain("Narrator"),
+                )),
+            ),
+        ]);
+        let errors = check(&ast);
+        assert!(
+            errors.is_empty(),
+            "expected no errors for definitions-only block, got: {errors:?}"
+        );
     }
 
     #[test]

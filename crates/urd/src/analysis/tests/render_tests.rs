@@ -74,13 +74,20 @@ fn parsed_ast_nodes_have_nonzero_spans() {
 #[test]
 fn render_zero_span_errors_falls_back_to_plain_text() {
     // Build errors the old-fashioned way (zero spans — no parser involved).
+    // Flow must live inside a LabeledBlock; a bare root Block is a definitions
+    // container and is never flagged as a dead end.
     use crate::parser::ast::Ast;
-    let ast = Ast::block(vec![Ast::value(crate::runtime::value::RuntimeValue::Null)]);
+    use crate::runtime::value::RuntimeValue;
+    let label = Ast::labeled_block(
+        "scene".to_owned(),
+        Ast::block(vec![Ast::value(RuntimeValue::Null)]),
+    );
+    let ast = Ast::block(vec![label]);
     let errors = analyze(&ast);
-    // A block of just `null` is open → DeadEnd with zero span.
+    // The labeled block is open → DeadEnd with zero span.
     assert!(
         !errors.is_empty(),
-        "expected at least one error from an open block"
+        "expected at least one error from an open labeled block"
     );
 
     let output = render_to_string(&errors, "");

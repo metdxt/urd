@@ -68,10 +68,11 @@ fn assert_single_dead_end(errors: &[AnalysisError], fragment: &str) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn empty_block_is_dead_end() {
+fn empty_block_is_not_dead_end() {
+    // A root Block is a definitions container — never a dead end, even when empty.
     let ast = Ast::block(vec![]);
     let errors = dead_end::check(&ast);
-    assert_single_dead_end(&errors, "top-level");
+    assert_no_errors(&errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -103,9 +104,14 @@ fn block_ending_with_jump_terminates() {
 #[test]
 fn jump_and_return_does_not_terminate() {
     // expects_return: true means it is a call-and-return, NOT a one-way jump.
-    let ast = Ast::block(vec![jump_and_return("sub_scene")]);
+    // Flow lives inside a LabeledBlock, not directly in the root Block.
+    let label = Ast::labeled_block(
+        "scene".to_owned(),
+        Ast::block(vec![jump_and_return("sub_scene")]),
+    );
+    let ast = Ast::block(vec![label]);
     let errors = dead_end::check(&ast);
-    assert_single_dead_end(&errors, "top-level");
+    assert_single_dead_end(&errors, "scene");
 }
 
 // ---------------------------------------------------------------------------
@@ -126,11 +132,13 @@ fn todo_call_terminates() {
 
 #[test]
 fn generic_call_does_not_terminate() {
+    // Flow lives inside a LabeledBlock, not directly in the root Block.
     let func = Ast::value(RuntimeValue::IdentPath(vec!["say_hello".to_owned()]));
     let call = Ast::call(func, Ast::expr_list(vec![]));
-    let ast = Ast::block(vec![call]);
+    let label = Ast::labeled_block("scene".to_owned(), Ast::block(vec![call]));
+    let ast = Ast::block(vec![label]);
     let errors = dead_end::check(&ast);
-    assert_single_dead_end(&errors, "top-level");
+    assert_single_dead_end(&errors, "scene");
 }
 
 // ---------------------------------------------------------------------------
@@ -139,12 +147,17 @@ fn generic_call_does_not_terminate() {
 
 #[test]
 fn let_call_alone_does_not_terminate() {
-    let ast = Ast::block(vec![Ast::let_call(
-        "result".to_owned(),
-        "compute".to_owned(),
-    )]);
+    // Flow lives inside a LabeledBlock, not directly in the root Block.
+    let label = Ast::labeled_block(
+        "scene".to_owned(),
+        Ast::block(vec![Ast::let_call(
+            "result".to_owned(),
+            "compute".to_owned(),
+        )]),
+    );
+    let ast = Ast::block(vec![label]);
     let errors = dead_end::check(&ast);
-    assert_single_dead_end(&errors, "top-level");
+    assert_single_dead_end(&errors, "scene");
 }
 
 #[test]
@@ -175,12 +188,17 @@ fn if_with_both_branches_terminating_terminates() {
 
 #[test]
 fn if_without_else_is_dead_end() {
+    // The if without else makes the enclosing LabeledBlock MayTerminate → dead end.
+    // Flow lives inside a LabeledBlock, not directly in the root Block.
     let cond = Ast::value(RuntimeValue::Bool(true));
     let then_b = Ast::block(vec![return_node()]);
-    let ast = Ast::block(vec![Ast::if_stmt(cond, then_b, None)]);
-    // The if without else makes the whole block MayTerminate → dead end.
+    let label = Ast::labeled_block(
+        "scene".to_owned(),
+        Ast::block(vec![Ast::if_stmt(cond, then_b, None)]),
+    );
+    let ast = Ast::block(vec![label]);
     let errors = dead_end::check(&ast);
-    assert_single_dead_end(&errors, "top-level");
+    assert_single_dead_end(&errors, "scene");
 }
 
 #[test]
@@ -199,20 +217,26 @@ fn if_without_else_followed_by_return_terminates() {
 
 #[test]
 fn if_with_only_then_terminating_is_dead_end() {
+    // Flow lives inside a LabeledBlock, not directly in the root Block.
+    // The open else branch gets its own error, plus the enclosing label.
     let cond = Ast::value(RuntimeValue::Bool(true));
     let then_b = Ast::block(vec![return_node()]);
     let else_b = Ast::block(vec![dialogue()]); // open
-    let ast = Ast::block(vec![Ast::if_stmt(cond, then_b, Some(else_b))]);
+    let label = Ast::labeled_block(
+        "scene".to_owned(),
+        Ast::block(vec![Ast::if_stmt(cond, then_b, Some(else_b))]),
+    );
+    let ast = Ast::block(vec![label]);
     let errors = dead_end::check(&ast);
-    // The open else branch gets its own error, plus the top-level block.
+    // The open else branch gets its own error, plus the labeled block itself.
     assert_eq!(errors.len(), 2, "expected 2 errors, got: {errors:?}");
     assert!(
         has_dead_end_at(&errors, "else branch"),
         "expected else-branch error, got: {errors:?}"
     );
     assert!(
-        has_dead_end_at(&errors, "top-level"),
-        "expected top-level error, got: {errors:?}"
+        has_dead_end_at(&errors, "scene"),
+        "expected dead-end error for 'scene', got: {errors:?}"
     );
 }
 
@@ -337,13 +361,15 @@ fn match_all_arms_terminate_is_ok() {
 
 #[test]
 fn match_with_open_arm_makes_block_open() {
-    // The match itself does not push an error; the enclosing block check handles it.
+    // The match itself does not push an error; the enclosing LabeledBlock handles it.
+    // Flow lives inside a LabeledBlock, not directly in the root Block.
     let scrutinee = Ast::value(RuntimeValue::IdentPath(vec!["x".to_owned()]));
     let arm_a = MatchArm::new(MatchPattern::Wildcard, Ast::block(vec![dialogue()])); // open
     let match_node = Ast::match_stmt(scrutinee, vec![arm_a]);
-    let ast = Ast::block(vec![match_node]);
+    let label = Ast::labeled_block("scene".to_owned(), Ast::block(vec![match_node]));
+    let ast = Ast::block(vec![label]);
     let errors = dead_end::check(&ast);
-    assert_single_dead_end(&errors, "top-level");
+    assert_single_dead_end(&errors, "scene");
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +377,9 @@ fn match_with_open_arm_makes_block_open() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn block_with_only_declarations_is_dead_end() {
+fn block_with_only_declarations_is_not_dead_end() {
+    // A root Block is a definitions container — declarations carry no flow,
+    // so the block must never be flagged as a dead end.
     use crate::parser::ast::DeclKind;
     let decl = Ast::decl(
         DeclKind::Variable,
@@ -360,7 +388,7 @@ fn block_with_only_declarations_is_dead_end() {
     );
     let ast = Ast::block(vec![decl]);
     let errors = dead_end::check(&ast);
-    assert_single_dead_end(&errors, "top-level");
+    assert_no_errors(&errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +425,8 @@ fn terminator_early_in_block_stops_analysis() {
 
 #[test]
 fn deeply_nested_block_without_terminator_surfaces_error() {
-    // top → if → then_block → if → then_block (no terminator, no else)
+    // top → label → if → then_block → if → then_block (no terminator, no else)
+    // Flow lives inside a LabeledBlock, not directly in the root Block.
     let deepest = Ast::block(vec![dialogue()]);
     let inner_if = Ast::if_stmt(Ast::value(RuntimeValue::Bool(true)), deepest, None);
     let outer_if = Ast::if_stmt(
@@ -405,8 +434,13 @@ fn deeply_nested_block_without_terminator_surfaces_error() {
         Ast::block(vec![inner_if]),
         None,
     );
-    let ast = Ast::block(vec![outer_if]);
-    // The whole block ends up MayTerminate → dead end at top level.
+    let label = Ast::labeled_block("scene".to_owned(), Ast::block(vec![outer_if]));
+    let ast = Ast::block(vec![label]);
+    // The labeled block ends up MayTerminate → dead end for "scene".
     let errors = dead_end::check(&ast);
     assert!(!errors.is_empty(), "expected at least 1 error");
+    assert!(
+        has_dead_end_at(&errors, "scene"),
+        "expected dead-end error mentioning 'scene', got: {errors:?}"
+    );
 }
