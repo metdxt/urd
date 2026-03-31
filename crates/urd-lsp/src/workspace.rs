@@ -31,7 +31,7 @@ pub struct ImportedModule {
     /// The local alias written in source (`import "foo.urd" as alias` → `"alias"`).
     pub alias: String,
     /// The raw import path string as written in source (e.g. `"helpers.urd"`).
-    pub path: String,
+    pub _path: String,
     /// Resolved `file://` URI of the imported file (`None` if the file could
     /// not be found or if the importer itself has no file URI).
     pub uri: Option<Url>,
@@ -133,21 +133,21 @@ impl WorkspaceIndex {
                 if module.alias != alias {
                     continue;
                 }
-                if let Some(ast) = &module.ast {
-                    if let Some(span) = crate::semantic::find_definition(ast, local_name) {
-                        let target_uri = module.uri.clone().unwrap_or_else(|| uri.clone());
-                        return Some((target_uri, span, module.source.clone()));
-                    }
+                if let Some(ast) = &module.ast
+                    && let Some(span) = crate::semantic::find_definition(ast, local_name)
+                {
+                    let target_uri = module.uri.clone().unwrap_or_else(|| uri.clone());
+                    return Some((target_uri, span, module.source.clone()));
                 }
             }
         } else {
             // ── Unqualified lookup: search every imported module ──────────
             for module in modules.iter() {
-                if let Some(ast) = &module.ast {
-                    if let Some(span) = crate::semantic::find_definition(ast, name) {
-                        let target_uri = module.uri.clone().unwrap_or_else(|| uri.clone());
-                        return Some((target_uri, span, module.source.clone()));
-                    }
+                if let Some(ast) = &module.ast
+                    && let Some(span) = crate::semantic::find_definition(ast, name)
+                {
+                    let target_uri = module.uri.clone().unwrap_or_else(|| uri.clone());
+                    return Some((target_uri, span, module.source.clone()));
                 }
             }
         }
@@ -175,10 +175,10 @@ impl WorkspaceIndex {
         let mut locations = Vec::new();
 
         for module in modules.iter() {
-            if let Some(alias) = target_alias {
-                if module.alias != alias {
-                    continue;
-                }
+            if let Some(alias) = target_alias
+                && module.alias != alias
+            {
+                continue;
             }
 
             let ast = match &module.ast {
@@ -215,10 +215,10 @@ impl WorkspaceIndex {
         };
 
         for module in modules.iter() {
-            if let Some(alias) = alias_opt {
-                if module.alias != alias {
-                    continue;
-                }
+            if let Some(alias) = alias_opt
+                && module.alias != alias
+            {
+                continue;
             }
             if let Some(ast) = &module.ast {
                 let symbols = collect_symbols(ast);
@@ -245,7 +245,7 @@ impl WorkspaceIndex {
 
     /// Return the list of directly imported modules for `uri`, if the index
     /// has an entry for it.
-    pub fn modules_for(
+    pub fn _modules_for(
         &self,
         uri: &Url,
     ) -> Option<dashmap::mapref::one::Ref<'_, Url, Vec<ImportedModule>>> {
@@ -407,7 +407,7 @@ fn load_module(path: &str, alias: &str, base_dir: &Option<PathBuf>) -> ImportedM
             // rest of the index stays consistent.
             return ImportedModule {
                 alias: alias.to_owned(),
-                path: path.to_owned(),
+                _path: path.to_owned(),
                 uri,
                 source: String::new(),
                 symbols: Vec::new(),
@@ -417,11 +417,11 @@ fn load_module(path: &str, alias: &str, base_dir: &Option<PathBuf>) -> ImportedM
     };
 
     let ast = parse_source(&source).ok();
-    let symbols = ast.as_ref().map(|a| collect_symbols(a)).unwrap_or_default();
+    let symbols = ast.as_ref().map(collect_symbols).unwrap_or_default();
 
     ImportedModule {
         alias: alias.to_owned(),
-        path: path.to_owned(),
+        _path: path.to_owned(),
         uri,
         source,
         symbols,
@@ -452,6 +452,7 @@ fn path_to_uri(path: &PathBuf) -> Option<Url> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -459,7 +460,7 @@ mod tests {
     // ── Helpers ───────────────────────────────────────────────────────────
 
     /// Write `content` to a temporary file inside `dir` and return its URI.
-    fn write_tmp(dir: &PathBuf, filename: &str, content: &str) -> Url {
+    fn write_tmp(dir: &std::path::Path, filename: &str, content: &str) -> Url {
         let path = dir.join(filename);
         let mut f = std::fs::File::create(&path).unwrap();
         write!(f, "{content}").unwrap();

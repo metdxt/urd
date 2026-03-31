@@ -190,6 +190,7 @@ impl AnalysisError {
     /// Format a span as a human-readable location string.
     ///
     /// Returns `"(unknown location)"` for zero spans and `"byte S..E"` otherwise.
+    #[allow(dead_code)]
     fn format_span_loc(span: &SimpleSpan) -> String {
         if Self::is_zero_span(span) {
             "(unknown location)".to_owned()

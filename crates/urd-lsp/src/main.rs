@@ -183,10 +183,10 @@ impl Backend {
 
         // Re-index imports so cross-file features stay up to date.
         // This must happen before we gather the imported type context below.
-        if let Some(doc) = self.documents.get(&uri) {
-            if let Some(ast) = &doc.ast {
-                self.workspace.update(&uri, ast);
-            }
+        if let Some(doc) = self.documents.get(&uri)
+            && let Some(ast) = &doc.ast
+        {
+            self.workspace.update(&uri, ast);
         }
 
         // Re-run analysis with cross-module struct/enum context so that
@@ -353,18 +353,17 @@ impl LanguageServer for Backend {
 
         // Fall back: if the word under the cursor looks like a qualified
         // reference (alias.name), try the workspace index.
-        if let Some(word) = word_at_offset(&src, byte_offset) {
-            if word.contains('.') {
-                if let Some(markdown) = self.workspace.hover_info(&uri, word) {
-                    return Ok(Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: markdown,
-                        }),
-                        range: None,
-                    }));
-                }
-            }
+        if let Some(word) = word_at_offset(&src, byte_offset)
+            && word.contains('.')
+            && let Some(markdown) = self.workspace.hover_info(&uri, word)
+        {
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: markdown,
+                }),
+                range: None,
+            }));
         }
 
         Ok(None)
@@ -807,6 +806,7 @@ async fn main() {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

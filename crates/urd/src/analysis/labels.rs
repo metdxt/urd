@@ -50,6 +50,7 @@ fn check_node(node: &Ast, ctx: &AnalysisContext, errors: &mut Vec<AnalysisError>
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::analysis::context::AnalysisContext;

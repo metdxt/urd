@@ -675,10 +675,9 @@ fn hover_for_symbol(sym: &Symbol, _ast: &Ast, symbols: &[Symbol]) -> String {
                     .unwrap_or_default();
                 if let Some(type_sym) = symbols.iter().find(|s| {
                     s.name == type_name && matches!(s.kind, SymbolKind::Struct | SymbolKind::Enum)
-                }) {
-                    if let Some(detail) = &type_sym.detail {
-                        return format!("{base}\n\n```\n{detail}\n```");
-                    }
+                }) && let Some(detail) = &type_sym.detail
+                {
+                    return format!("{base}\n\n```\n{detail}\n```");
                 }
             }
             base
@@ -805,7 +804,7 @@ fn is_keyword_or_syntax(src: &str, byte_offset: usize) -> bool {
     let word = &src[start..end];
 
     // Check against known keywords (including `end!` / `todo!`).
-    KEYWORDS.iter().any(|kw| *kw == word)
+    KEYWORDS.contains(&word)
         || word == "elif"
         || word == "else"
         || word == "event"
@@ -1023,9 +1022,8 @@ pub fn completion_items(
     // the cursor is '.', and if so, find the prefix (the alias name).
     let dot_prefix: Option<String> = if byte_offset > 0 {
         let before = &src[..byte_offset];
-        if before.ends_with('.') {
+        if let Some(without_dot) = before.strip_suffix('.') {
             // Find the word before the dot.
-            let without_dot = &before[..before.len() - 1];
             let start = without_dot
                 .rfind(|c: char| !c.is_alphanumeric() && c != '_')
                 .map(|i| i + 1)
@@ -1047,10 +1045,10 @@ pub fn completion_items(
         // Dot-triggered: only return symbols from that module, with the prefix stripped.
         let qualified_prefix = format!("{prefix}.");
         for sym in symbols {
-            if let Some(local_name) = sym.name.strip_prefix(&qualified_prefix) {
-                if !items.iter().any(|(n, k)| n == local_name && *k == sym.kind) {
-                    items.push((local_name.to_string(), sym.kind));
-                }
+            if let Some(local_name) = sym.name.strip_prefix(&qualified_prefix)
+                && !items.iter().any(|(n, k)| n == local_name && *k == sym.kind)
+            {
+                items.push((local_name.to_string(), sym.kind));
             }
         }
     } else {
@@ -1126,10 +1124,10 @@ fn find_references_recursive(ast: &Ast, name: &str, out: &mut Vec<SimpleSpan>) {
                 out.push(ast.span());
             }
             // Named type annotations reference struct / enum names.
-            if let Some(TypeAnnotation::Named(path)) = type_annotation {
-                if path.iter().any(|p| p == name) {
-                    out.push(ast.span());
-                }
+            if let Some(TypeAnnotation::Named(path)) = type_annotation
+                && path.iter().any(|p| p == name)
+            {
+                out.push(ast.span());
             }
             find_references_recursive(decl_name, name, out);
             find_references_recursive(decl_defs, name, out);
@@ -1356,13 +1354,13 @@ fn collect_struct_field_spans(
 ) {
     match ast.content() {
         // The struct definition itself — locate the field name text.
-        AstContent::StructDecl { name, fields } => {
-            if name == struct_name && fields.iter().any(|f| f.name == field_name) {
-                if let Some(sp) = find_name_in_span(src, ast.span(), field_name) {
-                    if !out.iter().any(|s| s.start == sp.start) {
-                        out.push(sp);
-                    }
-                }
+        AstContent::StructDecl { name, fields }
+            if name == struct_name && fields.iter().any(|f| f.name == field_name) =>
+        {
+            if let Some(sp) = find_name_in_span(src, ast.span(), field_name)
+                && !out.iter().any(|s| s.start == sp.start)
+            {
+                out.push(sp);
             }
         }
         // Typed declaration — if it carries the struct type, look for
@@ -1372,10 +1370,10 @@ fn collect_struct_field_spans(
             decl_defs,
             ..
         } => {
-            if let Some(TypeAnnotation::Named(path)) = type_annotation {
-                if path.first().map(String::as_str) == Some(struct_name) {
-                    collect_field_in_map_keys(decl_defs, field_name, out);
-                }
+            if let Some(TypeAnnotation::Named(path)) = type_annotation
+                && path.first().map(String::as_str) == Some(struct_name)
+            {
+                collect_field_in_map_keys(decl_defs, field_name, out);
             }
             collect_struct_field_spans(decl_defs, src, struct_name, field_name, out);
         }
@@ -1457,10 +1455,10 @@ fn collect_struct_field_spans(
 fn collect_field_in_map_keys(ast: &Ast, field_name: &str, out: &mut Vec<SimpleSpan>) {
     if let AstContent::Map(pairs) = ast.content() {
         for (key, _) in pairs {
-            if let AstContent::Value(RuntimeValue::IdentPath(parts)) = key.content() {
-                if parts.last().map(String::as_str) == Some(field_name) {
-                    out.push(key.span());
-                }
+            if let AstContent::Value(RuntimeValue::IdentPath(parts)) = key.content()
+                && parts.last().map(String::as_str) == Some(field_name)
+            {
+                out.push(key.span());
             }
         }
     }
@@ -1790,7 +1788,7 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
     use urd::compiler::loader::parse_source;
@@ -1950,7 +1948,7 @@ mod tests {
         let src = "label greet {\n  end!()\n}\n";
         let ast = parse(src);
         let syms = collect_symbols(&ast);
-        let label_sym = syms.iter().find(|s| s.kind == SymbolKind::Label).unwrap();
+        let _label_sym = syms.iter().find(|s| s.kind == SymbolKind::Label).unwrap();
         // Point at the label *name* ("greet"), not the "label" keyword.
         let mid = src.find("greet").unwrap() + 1;
         let info = hover_info(&ast, &syms, src, mid);
