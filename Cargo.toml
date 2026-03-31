@@ -44,6 +44,7 @@ dashmap = "6"
 ropey = "1.6"
 
 # ── CLI (optional) ────────────────────────────────────────────────────────────
+clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 
 [profile.dev]

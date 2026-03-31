@@ -1,14 +1,17 @@
 #![allow(missing_docs)]
 
-//! # quest — interactive Urd script runner
+//! # quest — interactive Urd script runner & graph exporter
 //!
-//! Loads a `.urd` file from the path given as the first CLI argument (or
-//! `examples/quest/cave.urd` relative to the current directory as a fallback),
-//! compiles it, and runs the resulting VM in an interactive terminal loop.
+//! ## Subcommands
+//!
+//! - **`run`** (default) — loads a `.urd` file and runs it interactively.
+//! - **`export`** — compiles a `.urd` file and exports its IR graph as
+//!   Graphviz DOT, Mermaid flowchart, or Mermaid sequence diagram.
 
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
+use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::{
     cursor,
     event::{self, Event as CtEvent, KeyCode, KeyEvent, KeyModifiers},
@@ -18,14 +21,63 @@ use crossterm::{
 
 use urd::analysis;
 use urd::compiler::Compiler;
-use urd::ir::Event;
+use urd::ir::{Event, IrGraph};
 use urd::parser::block::script;
 use urd::parser::errors::render_parse_errors_stderr;
 use urd::runtime::value::RuntimeValue;
 use urd::vm::loader::FsLoader;
 use urd::vm::{DecoratorRegistry, Vm};
 
-// ─── ANSI color helpers ───────────────────────────────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  CLI
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Interactive terminal runner and tooling for Urd dialogue scripts.
+#[derive(Parser, Debug)]
+#[command(name = "quest", version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Run an Urd script interactively in the terminal (default).
+    Run {
+        /// Path to the `.urd` script file.
+        #[arg(default_value = "examples/quest/cave.urd")]
+        script: PathBuf,
+    },
+
+    /// Export the compiled IR graph in a visual format.
+    Export {
+        /// Path to the `.urd` script file.
+        script: PathBuf,
+
+        /// Output format.
+        #[arg(short, long, default_value = "mermaid")]
+        format: ExportFormat,
+
+        /// Write output to a file instead of stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+}
+
+/// Supported graph export formats.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ExportFormat {
+    /// Graphviz DOT
+    Dot,
+    /// Mermaid flowchart
+    Mermaid,
+    /// Mermaid sequence diagram
+    Sequence,
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  ANSI color helpers
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const RESET: &str = "\x1b[0m";
 const DIM: &str = "\x1b[2m";
@@ -45,7 +97,9 @@ fn ansi_color(name: &str) -> &'static str {
     }
 }
 
-// ─── Character display ────────────────────────────────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Character display
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// A speaker resolved to a printable name + ANSI color.
 struct CharacterDisplay {
@@ -98,7 +152,9 @@ fn format_speakers(speakers: &[RuntimeValue]) -> Option<CharacterDisplay> {
     }
 }
 
-// ─── Value rendering ──────────────────────────────────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Value rendering
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Convert a [`RuntimeValue`] to a human-readable display string.
 fn display_value(val: &RuntimeValue) -> String {
@@ -115,7 +171,9 @@ fn display_value(val: &RuntimeValue) -> String {
     }
 }
 
-// ─── Terminal utilities ───────────────────────────────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Terminal utilities
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Print a separator line.
 fn print_separator() {
@@ -150,7 +208,9 @@ fn wait_for_enter(stdin: &mut impl BufRead, is_tty: bool) {
     }
 }
 
-// ─── Core I/O loops ───────────────────────────────────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Core I/O loops
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Display a `Dialogue` event and wait for Enter (only when running on a TTY).
 fn handle_dialogue(
@@ -172,7 +232,9 @@ fn handle_dialogue(
     wait_for_enter(stdin, is_tty);
 }
 
-// ─── Interactive choice menu (TTY) ────────────────────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Interactive choice menu (TTY)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Render all options with `selected` highlighted using a bold-yellow arrow.
 /// Each line is cleared before printing to prevent stale text from bleeding
@@ -281,7 +343,9 @@ fn handle_choice_tty(options: &[urd::ir::ChoiceEvent]) -> usize {
     selected
 }
 
-// ─── Plain-text choice fallback (non-TTY / pipe) ─────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Plain-text choice fallback (non-TTY / pipe)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Number-based choice prompt used when stdin is not a terminal (e.g. piped
 /// input in tests or scripted runs).
@@ -310,16 +374,9 @@ fn handle_choice_pipe(options: &[urd::ir::ChoiceEvent], stdin: &mut impl BufRead
     }
 }
 
-// ─── Setup ────────────────────────────────────────────────────────────────────
-
-/// Resolve the script path: first CLI arg, or the built-in demo.
-fn resolve_script_path() -> PathBuf {
-    let mut args = std::env::args();
-    args.next(); // skip argv[0]
-    args.next()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("examples/quest/cave.urd"))
-}
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Compilation pipeline
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Run all static-analysis passes over `ast` and print rich ariadne diagnostics
 /// to stderr.  Analysis is non-fatal: issues are reported but execution continues.
@@ -335,8 +392,10 @@ fn run_analysis(ast: &urd::parser::ast::Ast, src: &str, filename: &str) {
     }
 }
 
-/// Load, parse, compile the script at `path` and return a ready [`Vm`].
-fn build_vm(path: &Path) -> Result<Vm, String> {
+/// Load, lex, parse, analyse and compile the script at `path` into an [`IrGraph`].
+///
+/// This is the shared front-end used by both `run` and `export`.
+fn build_graph(path: &Path) -> Result<IrGraph, String> {
     use chumsky::input::Stream;
     use chumsky::prelude::*;
     use urd::lexer::{Token, lex_src};
@@ -375,27 +434,37 @@ fn build_vm(path: &Path) -> Result<Vm, String> {
         .to_path_buf();
     let loader = FsLoader::new(parent);
 
-    let graph = Compiler::compile_with_loader(&ast, &loader)
-        .map_err(|e| format!("Compile error in '{}':\n{:?}", path.display(), e))?;
+    Compiler::compile_with_loader(&ast, &loader)
+        .map_err(|e| format!("Compile error in '{}':\n{:?}", path.display(), e))
+}
 
+/// Wrap a compiled [`IrGraph`] into a ready-to-run [`Vm`].
+fn build_vm(graph: IrGraph) -> Result<Vm, String> {
     let registry = DecoratorRegistry::new();
     Vm::new(graph, registry).map_err(|e| format!("VM initialisation error:\n{:?}", e))
 }
 
-// ─── Entry point ──────────────────────────────────────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Subcommand: run
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn main() {
-    env_logger::init();
-
+fn cmd_run(script_path: &Path) {
     let is_tty = io::stdin().is_terminal();
-    let script_path = resolve_script_path();
 
     print_separator();
     println!("  \x1b[1mUrd Quest Runner\x1b[0m");
     println!("  Loading: {}", script_path.display());
     print_separator();
 
-    let mut vm = match build_vm(&script_path) {
+    let graph = match build_graph(script_path) {
+        Ok(g) => g,
+        Err(msg) => {
+            eprintln!("\n\x1b[91mError:\x1b[0m {}\n", msg);
+            std::process::exit(1);
+        }
+    };
+
+    let mut vm = match build_vm(graph) {
         Ok(vm) => vm,
         Err(msg) => {
             eprintln!("\n\x1b[91mError:\x1b[0m {}\n", msg);
@@ -435,6 +504,77 @@ fn main() {
                 };
                 choice = Some(idx);
             }
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Subcommand: export
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+fn cmd_export(script_path: &Path, format: ExportFormat, output: Option<&Path>) {
+    let graph = match build_graph(script_path) {
+        Ok(g) => g,
+        Err(msg) => {
+            eprintln!("\x1b[91mError:\x1b[0m {}", msg);
+            std::process::exit(1);
+        }
+    };
+
+    let rendered = match format {
+        ExportFormat::Dot => graph.to_dot(),
+        ExportFormat::Mermaid => graph.to_mermaid(),
+        ExportFormat::Sequence => graph.to_sequence_mermaid(),
+    };
+
+    match output {
+        Some(path) => {
+            if let Err(e) = std::fs::write(path, &rendered) {
+                eprintln!(
+                    "\x1b[91mError:\x1b[0m could not write '{}': {}",
+                    path.display(),
+                    e
+                );
+                std::process::exit(1);
+            }
+
+            let fmt_label = match format {
+                ExportFormat::Dot => "DOT",
+                ExportFormat::Mermaid => "Mermaid flowchart",
+                ExportFormat::Sequence => "Mermaid sequence diagram",
+            };
+            eprintln!("Exported {} graph to '{}'", fmt_label, path.display());
+        }
+        None => {
+            print!("{rendered}");
+            flush_stdout();
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Entry point
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+fn main() {
+    env_logger::init();
+
+    let cli = Cli::parse();
+
+    match cli.command {
+        None => {
+            // No subcommand — default to running the demo script.
+            cmd_run(Path::new("examples/quest/cave.urd"));
+        }
+        Some(Command::Run { script }) => {
+            cmd_run(&script);
+        }
+        Some(Command::Export {
+            script,
+            format,
+            output,
+        }) => {
+            cmd_export(&script, format, output.as_deref());
         }
     }
 }
