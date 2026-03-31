@@ -108,13 +108,43 @@ pub fn compute_clusters(
     graph: &IrGraph,
     reachable: &HashSet<NodeIndex>,
 ) -> HashMap<String, HashSet<NodeIndex>> {
-    let all_entries: HashSet<NodeIndex> = graph.labels.values().copied().collect();
+    // Build the authoritative (name, entry_NodeIndex) pairs.
+    //
+    // When `cluster_names` is populated (multi-file compilation) it holds
+    // exactly one canonical name per unique NodeIndex — no aliases — so every
+    // cluster BFS starts from a distinct entry.  This prevents the duplicate
+    // empty clusters that arise when `labels` contains both `"hub"` and
+    // `"main::hub"` pointing at the same node (the first BFS claims all
+    // members; the second finds none).
+    //
+    // Single-file graphs leave `cluster_names` empty; we fall back to
+    // iterating `labels` as before.
+    let label_entries: Vec<(String, NodeIndex)> = if graph.cluster_names.is_empty() {
+        graph.labels.iter().map(|(k, &v)| (k.clone(), v)).collect()
+    } else {
+        graph
+            .cluster_names
+            .iter()
+            .map(|(&idx, name)| (name.clone(), idx))
+            .collect()
+    };
+
+    // All label entry NodeIndexes — used as cluster-boundary guards in the BFS.
+    let all_entries: HashSet<NodeIndex> = label_entries.iter().map(|(_, idx)| *idx).collect();
     let mut clusters: HashMap<String, HashSet<NodeIndex>> = HashMap::new();
 
-    for (label_name, &entry_id) in &graph.labels {
+    for (cluster_display_name, entry_id) in &label_entries {
+        // The ExitScope node stores the *bare* label name (as written in source).
+        // When the display name is namespaced ("tavern::leave_tavern"), strip
+        // the prefix so the ExitScope guard below matches correctly.
+        let bare_label: &str = cluster_display_name
+            .rfind("::")
+            .map(|i| &cluster_display_name[i + 2..])
+            .unwrap_or(cluster_display_name);
+
         let mut members: HashSet<NodeIndex> = HashSet::new();
         let mut queue: VecDeque<NodeIndex> = VecDeque::new();
-        queue.push_back(entry_id);
+        queue.push_back(*entry_id);
 
         while let Some(node_idx) = queue.pop_front() {
             if !reachable.contains(&node_idx) {
@@ -124,7 +154,7 @@ pub fn compute_clusters(
                 continue;
             }
             // Do not enter a different label's cluster.
-            if all_entries.contains(&node_idx) && node_idx != entry_id {
+            if all_entries.contains(&node_idx) && node_idx != *entry_id {
                 continue;
             }
 
@@ -158,7 +188,7 @@ pub fn compute_clusters(
                 }
 
                 // Our own ExitScope: include the node but do not recurse beyond.
-                IrNodeKind::ExitScope { label } if label == label_name => {}
+                IrNodeKind::ExitScope { label } if label.as_str() == bare_label => {}
 
                 // All other nodes (Assign, Eval, EnterScope, ExitScope for a
                 // different label, DefineEnum, DefineScriptDecorator, Nop,
@@ -176,7 +206,7 @@ pub fn compute_clusters(
             }
         }
 
-        clusters.insert(label_name.clone(), members);
+        clusters.insert(cluster_display_name.clone(), members);
     }
 
     clusters

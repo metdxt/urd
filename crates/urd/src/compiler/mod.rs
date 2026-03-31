@@ -111,12 +111,6 @@ pub(super) struct CompilerState {
     pub(super) graph: IrGraph,
     /// Maps label names → the [`NodeIndex`] of their pre-allocated Nop placeholder.
     pub(super) label_placeholders: HashMap<String, NodeIndex>,
-    /// Entry [`NodeIndex`]es of imported modules (offset-adjusted after merge), in
-    /// import order. Used by `compile_recursive` to chain module prologues
-    /// (DefineEnum, global assignments, etc.) before the main entry so that
-    /// cross-module enum variants and globals are available at runtime before
-    /// the importing module's own code begins executing.
-    pub(super) import_prologues: Vec<NodeIndex>,
 }
 
 impl CompilerState {
@@ -124,7 +118,6 @@ impl CompilerState {
         CompilerState {
             graph: IrGraph::new(),
             label_placeholders: HashMap::new(),
-            import_prologues: Vec::new(),
         }
     }
 
@@ -1289,13 +1282,23 @@ mod tests {
         );
     }
 
-    /// Circular imports produce CompilerError::CircularImport.
+    /// Circular imports (a.urd ↔ b.urd) now compile successfully.
+    ///
+    /// Because top-level is definitions-only, neither module needs the other
+    /// to be fully compiled before its own labels can be pre-allocated.
+    /// The 4-phase flat pipeline handles this by pre-allocating all label Nop
+    /// stubs before any IR is emitted.
     #[test]
-    fn test_circular_import_returns_error() {
-        // a.urd imports b.urd, b.urd imports a.urd  → circular
+    fn test_circular_import_compiles_successfully() {
         let mut loader = MemLoader::new();
-        loader.add("a.urd", "import \"b.urd\" as b");
-        loader.add("b.urd", "import \"a.urd\" as a");
+        loader.add(
+            "a.urd",
+            "import \"b.urd\" as b\nlabel a_label {\n  jump b.b_label\n}\n",
+        );
+        loader.add(
+            "b.urd",
+            "import \"a.urd\" as a\nlabel b_label {\n  jump a.a_label\n}\n",
+        );
 
         let main_ast = Ast::block(vec![Ast::import_module(
             "a.urd".to_string(),
@@ -1304,9 +1307,51 @@ mod tests {
 
         let result = Compiler::compile_with_loader(&main_ast, &loader);
         assert!(
-            matches!(result, Err(CompilerError::CircularImport(ref p)) if p == "a.urd"),
-            "expected CircularImport(\"a.urd\"), got {:?}",
+            result.is_ok(),
+            "circular import should compile successfully, got: {:?}",
             result
+        );
+
+        let graph = result.unwrap();
+        assert!(
+            graph.labels.contains_key("a::a_label"),
+            "a::a_label must be in the label map; got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            graph.labels.contains_key("b::b_label"),
+            "b::b_label (from a's whole-module import of b as 'b') must be in the label map; got: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// A mutual symbol import also compiles cleanly.
+    #[test]
+    fn test_circular_symbol_import_compiles_successfully() {
+        let mut loader = MemLoader::new();
+        loader.add(
+            "items.urd",
+            "import (greet) from \"greetings.urd\"\nlabel show_items {\n  jump greet\n}\n",
+        );
+        loader.add(
+            "greetings.urd",
+            "import (show_items) from \"items.urd\"\nlabel greet {\n  jump show_items\n}\n",
+        );
+
+        let main_src =
+            "import (show_items) from \"items.urd\"\nlabel start {\n  jump show_items\n}\n";
+        let main_ast = crate::compiler::loader::parse_source(main_src).expect("parse");
+        let result = Compiler::compile_with_loader(&main_ast, &loader);
+        assert!(
+            result.is_ok(),
+            "circular symbol import should compile successfully, got: {:?}",
+            result
+        );
+        let graph = result.unwrap();
+        assert!(
+            graph.labels.contains_key("show_items"),
+            "show_items must be directly accessible; labels: {:?}",
+            graph.labels.keys().collect::<Vec<_>>()
         );
     }
 

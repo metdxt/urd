@@ -79,13 +79,18 @@ pub fn render_dot(graph: &IrGraph) -> String {
 
     // Sort cluster names by entry NodeIndex (ascending = compilation order).
     // This encourages Graphviz to place the first-written label at the top.
+    // When cluster_names is populated the canonical entry NodeIndex lives there;
+    // otherwise fall back to the labels map (single-file graphs).
     let mut sorted_labels: Vec<&String> = clusters.keys().collect();
     sorted_labels.sort_by_key(|name| {
-        graph
-            .labels
-            .get(*name)
-            .map(|id| id.index())
-            .unwrap_or(usize::MAX)
+        // Prefer cluster_names (canonical, one entry per node); fall back to labels.
+        let idx = graph
+            .cluster_names
+            .iter()
+            .find(|(_, n)| n.as_str() == name.as_str())
+            .map(|(&idx, _)| idx)
+            .or_else(|| graph.labels.get(*name).copied());
+        idx.map(|id| id.index()).unwrap_or(usize::MAX)
     });
 
     // The entry cluster is the one whose entry NodeIndex is reached first from
@@ -131,46 +136,196 @@ pub fn render_dot(graph: &IrGraph) -> String {
 
     // ── Cluster subgraphs (node definitions only, no edges) ──────────────────
     //
-    // Nodes *defined* inside a subgraph cluster belong to it visually.
+    // When the graph was compiled from multiple files, labels are grouped into
+    // outer file-boundary subgraphs (one per source path).  Each file boundary
+    // wraps the label clusters that belong to it with a dashed, coloured border
+    // so the viewer can immediately see which file owns which scene.
+    //
+    // Single-file graphs leave label_sources empty; the outer grouping is
+    // skipped and clusters are emitted flat, exactly as before.
+    //
+    // Nodes are *defined* inside their subgraph so Graphviz places them there.
     // Edges are emitted after all subgraphs (idiomatic DOT).
-    for label_name in &sorted_labels {
-        let members = &clusters[*label_name];
-        if members.is_empty() {
-            continue;
+
+    // Collect the distinct source-file paths in a stable order.
+    let file_order: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        let mut order = Vec::new();
+        for label_name in &sorted_labels {
+            let clusters_entry = &clusters[*label_name];
+            if clusters_entry.is_empty() {
+                continue;
+            }
+            // Resolve this cluster's canonical NodeIndex.
+            let entry_idx = graph
+                .cluster_names
+                .iter()
+                .find(|(_, n)| n.as_str() == label_name.as_str())
+                .map(|(&i, _)| i)
+                .or_else(|| graph.labels.get(*label_name).copied());
+            let source = entry_idx
+                .and_then(|i| graph.label_sources.get(&i))
+                .cloned()
+                .unwrap_or_default();
+            if seen.insert(source.clone()) {
+                order.push(source);
+            }
         }
-        let safe = sanitize_id(label_name);
-        let is_entry = entry_cluster.as_deref() == Some(label_name.as_str());
-        let penwidth = if is_entry { "3.0" } else { "1.5" };
+        order
+    };
 
-        writeln!(out, "    subgraph cluster_{safe} {{").ok();
-        writeln!(out, "        label={};", quoted(label_name)).ok();
-        writeln!(out, "        style=\"rounded,filled\";").ok();
-        writeln!(out, "        fillcolor=\"#f0fff4\";").ok();
-        writeln!(out, "        color=darkgreen;").ok();
-        writeln!(out, "        penwidth={penwidth};").ok();
-        writeln!(out).ok();
+    // Assign a distinct fill colour per file.  The root ("") is always green;
+    // each imported file gets a shade from a small fixed palette.
+    let import_fills = ["#e8f4ff", "#fff8e8", "#f8e8ff", "#ffe8e8", "#e8f8ff"];
+    let import_borders = ["#2255aa", "#aa7700", "#882288", "#cc3322", "#117788"];
+    // Position-weighted hash: multiply each byte by its 1-based index so files
+    // whose bytes sum to the same value still hash differently
+    // (e.g. "main.urd" and "tavern.urd" would collide with a plain sum).
+    let file_hash = |path: &str| -> usize {
+        path.bytes().enumerate().fold(0usize, |acc, (i, b)| {
+            acc.wrapping_add((b as usize).wrapping_mul(i + 1))
+        })
+    };
+    let file_fill = |path: &str| -> &'static str {
+        if path.is_empty() {
+            "#f0fff4"
+        } else {
+            import_fills[file_hash(path) % import_fills.len()]
+        }
+    };
+    let file_border = |path: &str| -> &'static str {
+        if path.is_empty() {
+            "darkgreen"
+        } else {
+            import_borders[file_hash(path) % import_borders.len()]
+        }
+    };
 
-        let mut sorted_members: Vec<NodeIndex> = members.iter().copied().collect();
-        sorted_members.sort_by_key(|n| n.index());
+    let emit_clusters = |out: &mut String,
+                         labels_for_file: &[&String],
+                         indent: &str,
+                         graph: &IrGraph,
+                         clusters: &HashMap<String, HashSet<NodeIndex>>,
+                         entry_cluster: &Option<String>,
+                         label_by_entry: &HashMap<NodeIndex, String>| {
+        for label_name in labels_for_file {
+            let members = &clusters[*label_name];
+            if members.is_empty() {
+                continue;
+            }
+            let safe = sanitize_id(label_name);
+            let is_entry = entry_cluster.as_deref() == Some(label_name.as_str());
+            let penwidth = if is_entry { "3.0" } else { "1.5" };
 
-        for node_idx in sorted_members {
-            let kind = match graph.graph.node_weight(node_idx) {
-                Some(k) => k,
-                None => continue,
+            writeln!(out, "{indent}subgraph cluster_{safe} {{").ok();
+            writeln!(out, "{indent}    label={};", quoted(label_name)).ok();
+            writeln!(out, "{indent}    style=\"rounded,filled\";").ok();
+            writeln!(out, "{indent}    fillcolor=\"#f0fff4\";").ok();
+            writeln!(out, "{indent}    color=darkgreen;").ok();
+            writeln!(out, "{indent}    penwidth={penwidth};").ok();
+            writeln!(out).ok();
+
+            let mut sorted_members: Vec<NodeIndex> = members.iter().copied().collect();
+            sorted_members.sort_by_key(|n| n.index());
+
+            for node_idx in sorted_members {
+                let kind = match graph.graph.node_weight(node_idx) {
+                    Some(k) => k,
+                    None => continue,
+                };
+                let (shape, fill, label) = node_attrs(node_idx, kind, graph, label_by_entry);
+                writeln!(
+                    out,
+                    "{indent}    {} [label={}, shape={shape}, style=filled, fillcolor={}];",
+                    nid(node_idx),
+                    quoted(&label),
+                    quoted(fill),
+                )
+                .ok();
+            }
+
+            writeln!(out, "{indent}}}").ok();
+            writeln!(out).ok();
+        }
+    };
+
+    // Resolve which labels belong to each source file.
+    let labels_by_file: HashMap<String, Vec<&String>> = {
+        let mut map: HashMap<String, Vec<&String>> = HashMap::new();
+        for label_name in &sorted_labels {
+            if clusters[*label_name].is_empty() {
+                continue;
+            }
+            let entry_idx = graph
+                .cluster_names
+                .iter()
+                .find(|(_, n)| n.as_str() == label_name.as_str())
+                .map(|(&i, _)| i)
+                .or_else(|| graph.labels.get(*label_name).copied());
+            let source = entry_idx
+                .and_then(|i| graph.label_sources.get(&i))
+                .cloned()
+                .unwrap_or_default();
+            map.entry(source).or_default().push(label_name);
+        }
+        map
+    };
+
+    let multi_file = file_order.len() > 1;
+
+    for source_path in &file_order {
+        let labels_for_file = match labels_by_file.get(source_path) {
+            Some(v) if !v.is_empty() => v.as_slice(),
+            _ => continue,
+        };
+
+        if multi_file {
+            // Outer file-boundary subgraph.
+            let file_safe = sanitize_id(if source_path.is_empty() {
+                "root"
+            } else {
+                source_path
+            });
+            let file_label = if source_path.is_empty() {
+                "(root)".to_string()
+            } else {
+                source_path.clone()
             };
-            let (shape, fill, label) = node_attrs(node_idx, kind, graph, &label_by_entry);
-            writeln!(
-                out,
-                "        {} [label={}, shape={shape}, style=filled, fillcolor={}];",
-                nid(node_idx),
-                quoted(&label),
-                quoted(fill),
-            )
-            .ok();
-        }
+            let fill = file_fill(source_path);
+            let border = file_border(source_path);
+            writeln!(out, "    subgraph cluster_file_{file_safe} {{").ok();
+            writeln!(out, "        label={};", quoted(&file_label)).ok();
+            writeln!(out, "        style=\"dashed,filled\";").ok();
+            writeln!(out, "        fillcolor={};", quoted(fill)).ok();
+            writeln!(out, "        color={border};").ok();
+            writeln!(out, "        penwidth=2.0;").ok();
+            writeln!(out, "        fontsize=13;").ok();
+            writeln!(out, "        fontname=\"monospace bold\";").ok();
+            writeln!(out).ok();
 
-        writeln!(out, "    }}").ok();
-        writeln!(out).ok();
+            emit_clusters(
+                &mut out,
+                labels_for_file,
+                "        ",
+                graph,
+                &clusters,
+                &entry_cluster,
+                &label_by_entry,
+            );
+
+            writeln!(out, "    }}").ok();
+            writeln!(out).ok();
+        } else {
+            emit_clusters(
+                &mut out,
+                labels_for_file,
+                "    ",
+                graph,
+                &clusters,
+                &entry_cluster,
+                &label_by_entry,
+            );
+        }
     }
 
     // ── Non-clustered reachable non-Nop node definitions (preamble) ─────────
@@ -1367,6 +1522,8 @@ mod tests {
             graph: g,
             entry: Some(n0),
             labels: HashMap::new(),
+            cluster_names: HashMap::new(),
+            label_sources: HashMap::new(),
         };
 
         assert_eq!(

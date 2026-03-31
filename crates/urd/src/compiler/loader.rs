@@ -1,303 +1,528 @@
-//! Multi-file compilation: import resolution, recursive compilation, and source parsing.
+//! Multi-file compilation: 4-phase flat pipeline, import resolution, and source
+//! parsing.
+//!
+//! ## Why 4 phases?
+//!
+//! The old recursive pipeline compiled each dependency depth-first, fully
+//! finishing it before returning to its importer.  That made circular imports
+//! impossible: neither side could finish first.
+//!
+//! The new **flat pipeline** separates *knowing a label exists* from *emitting
+//! its IR*, which breaks the ordering dependency entirely:
+//!
+//! | Phase | What it does |
+//! |-------|-------------|
+//! | **1 · Load** | BFS over the import graph. Cycles are *stopped, not errored*. Every module is loaded exactly once. |
+//! | **2 · Pre-allocate** | For every label in every module, push one `Nop` placeholder into a single shared `IrGraph`. Each label now has a stable `NodeIndex` before any IR is emitted. |
+//! | **3 · Cross-link** | Build `graph.labels` from all `import` statements — whole-module aliases (`alias::label`) and direct symbol aliases — using the pre-allocated `NodeIndex` values. |
+//! | **4 · Emit** | Compile each module's IR into the shared graph. All label `NodeIndex`es were reserved in phase 2, so every cross-module jump resolves immediately regardless of emit order. Prologues are chained so deeper dependencies execute first. |
+//!
+//! Mutual imports (`a.urd` ↔ `b.urd`) now compile cleanly.  The only
+//! restriction that remains is a *value-level* cycle: a `const` whose
+//! initialiser depends on a `const` in another module that depends back on it.
+//! That is a semantic error which produces wrong runtime values; it is not
+//! detected at compile time.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use petgraph::stable_graph::NodeIndex;
-use petgraph::visit::EdgeRef;
+use chumsky::span::SimpleSpan;
+use petgraph::stable_graph::{EdgeIndex, NodeIndex};
+use petgraph::visit::EdgeRef as _;
 
 use crate::{
-    ir::{IrEdge, IrGraph, IrNodeKind},
+    ir::{IrEdge, IrGraph, IrNodeKind, namespace},
     parser::ast::{Ast, AstContent},
 };
 
 use super::{CompilerError, CompilerState};
 
-// ─── Multi-file compilation helpers ──────────────────────────────────────────
+// ─── Public entry point ───────────────────────────────────────────────────────
 
-/// Compile `ast` recursively, resolving `import` statements via `loader`.
+/// Compile `ast` into an [`IrGraph`], resolving `import` statements via
+/// `loader`.
 ///
-/// A fresh [`CompilerState`] is created for each module. Pass 0 merges all
-/// imported modules before the label-scan and emit passes so that cross-module
-/// labels are visible throughout.
+/// `_in_progress` and `_completed` are retained for API compatibility but are
+/// no longer used — the 4-phase flat pipeline handles circular imports without
+/// a call-stack depth guard.
 pub(super) fn compile_recursive(
     ast: &Ast,
     loader: &dyn crate::vm::loader::FileLoader,
-    in_progress: &mut HashSet<String>,
-    completed: &mut HashSet<String>,
+    _in_progress: &mut HashSet<String>,
+    _completed: &mut HashSet<String>,
 ) -> Result<IrGraph, CompilerError> {
-    let mut state = CompilerState::new();
-
-    // Pass 0: collect all imports and pre-merge them into the graph BEFORE
-    // the label scan pass. This ensures cross-module labels are in the graph's
-    // labels map before pass 2 tries to resolve jumps to them.
-    collect_imports(ast, &mut state, loader, in_progress, completed)?;
-
-    // Pass 1: scan local labels (imports are already merged).
-    state.scan_labels(ast);
-
-    // Pass 2: emit IR nodes for the current module (main entry).
-    // Uses top-level partitioning so that @entry-decorated labels are
-    // recognised and preamble definitions chain into the entry label.
-    let main_entry = state.compile_top_level(ast)?;
-
-    // Chain imported module prologues before the main entry so that
-    // DefineEnum / global-assignment nodes from imported modules are executed
-    // before any code in the importing module runs. Without this, a reference
-    // like `chars.Faction.Rebel` would fail at runtime because `DefineEnum`
-    // for `chars::Faction` had never been executed.
-    let entry = chain_prologues(&mut state.graph, &state.import_prologues, main_entry);
-    state.graph.entry = entry;
-
-    Ok(state.graph)
+    compile_flat(ast, None, loader)
 }
 
-/// Pass 0: walk the AST looking for `Import` nodes. For each one, load, parse,
-/// and compile the imported module, then merge it into `state.graph`.
-pub(super) fn collect_imports(
+/// Like [`compile_recursive`] but also records `root_path` as the canonical
+/// filename of `ast`.  When any imported module attempts to re-import the root
+/// by that filename the BFS deduplicates it against the already-loaded root
+/// instead of re-compiling it — preventing duplicate preamble execution and
+/// double-declared constants.
+///
+/// Use this variant when the root script was loaded from a known file path
+/// (e.g. from the CLI or a language server that has the URI).
+pub fn compile_recursive_with_root_path(
     ast: &Ast,
-    state: &mut CompilerState,
+    root_path: &str,
     loader: &dyn crate::vm::loader::FileLoader,
-    in_progress: &mut HashSet<String>,
-    completed: &mut HashSet<String>,
-) -> Result<(), CompilerError> {
+) -> Result<IrGraph, CompilerError> {
+    compile_flat(ast, Some(root_path), loader)
+}
+
+// ─── Top-level orchestration ──────────────────────────────────────────────────
+
+fn compile_flat(
+    root_ast: &Ast,
+    root_path: Option<&str>,
+    loader: &dyn crate::vm::loader::FileLoader,
+) -> Result<IrGraph, CompilerError> {
+    // Phase 1 — discover and load every reachable module.
+    let all = load_all_modules(root_ast, root_path, loader)?;
+
+    // Phase 2 — allocate one Nop stub per label per module in one shared graph.
+    let mut shared_graph = IrGraph::new();
+    let mut local_labels = pre_allocate_labels(&all, &mut shared_graph);
+
+    // If the root has a known on-disk filename, register its label map under
+    // that filename too.  Without this, phase 3's `build_global_labels` cannot
+    // satisfy a back-import like `import "main.urd" as main` from a module
+    // that was loaded as a dependency — it would look for
+    // `local_labels.get("main.urd")` and find nothing, so `main.hub` etc.
+    // would never be added to `graph.labels`.
+    if let Some(rp) = root_path {
+        if let Some(root_map) = local_labels.get("").cloned() {
+            local_labels.entry(rp.to_string()).or_insert(root_map);
+        }
+    }
+
+    // Phase 3 — build the cross-module label map from every import statement.
+    let global_labels = build_global_labels(&all, &local_labels);
+    shared_graph.labels = global_labels;
+
+    // Phase 4 — emit IR for every module into the shared graph.
+    emit_all(&all, local_labels, shared_graph)
+}
+
+// ─── Phase 1 · Load ───────────────────────────────────────────────────────────
+
+/// Everything discovered by the BFS load pass.
+struct AllModules {
+    /// BFS discovery order.  The root module (`path = ""`) is always first.
+    order: Vec<String>,
+    /// Parsed AST for each module. Key `""` = root.
+    asts: HashMap<String, Ast>,
+    /// All `import` statements made by each module, keyed by the importer path.
+    import_refs: HashMap<String, Vec<ImportRef>>,
+}
+
+/// One `import` statement as seen from the importing module.
+struct ImportRef {
+    /// Path string exactly as written in the source.
+    imported_path: String,
+    style: ImportStyle,
+}
+
+enum ImportStyle {
+    /// `import "path" as alias` — every label becomes `alias::label`.
+    WholeModule { alias: String },
+    /// `import (sym …) from "path"` — each entry is `(original_name, alias)`.
+    Symbols { symbols: Vec<(String, String)> },
+}
+
+/// BFS-load every reachable module.
+///
+/// When a module path is encountered that has already been seen (even in a
+/// cycle) it is silently skipped — no [`CompilerError::CircularImport`] is
+/// raised.  Each module appears in [`AllModules::order`] exactly once.
+///
+/// `root_path` is the on-disk filename of the root AST (e.g. `"main.urd"`).
+/// When provided it is added to `seen` before the BFS begins, so any imported
+/// module that tries to re-import the root by that filename is deduplicated
+/// against the already-loaded root entry (`""`) instead of being loaded again
+/// as a separate module.  Without this, a pattern like
+///
+/// ```text
+/// main.urd  →  tavern.urd  →  import "main.urd" as main
+/// ```
+///
+/// would produce two separate entries for the same source, causing the root's
+/// preamble (const / global declarations) to execute twice and trigger a
+/// "cannot reassign constant" runtime error.
+fn load_all_modules(
+    root_ast: &Ast,
+    root_path: Option<&str>,
+    loader: &dyn crate::vm::loader::FileLoader,
+) -> Result<AllModules, CompilerError> {
+    let mut order: Vec<String> = Vec::new();
+    let mut asts: HashMap<String, Ast> = HashMap::new();
+    let mut import_refs: HashMap<String, Vec<ImportRef>> = HashMap::new();
+
+    let mut queue: VecDeque<(String, Ast)> = VecDeque::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // Seed with the root (given directly, so its path is the empty string).
+    seen.insert(String::new());
+    // If the caller knows the root's on-disk filename, register it as an
+    // alias in `seen` so that back-imports of e.g. `"main.urd"` are recognised
+    // as the already-loaded root and skipped by the BFS instead of being
+    // loaded again as a separate module.
+    if let Some(rp) = root_path {
+        seen.insert(rp.to_string());
+    }
+    order.push(String::new());
+    asts.insert(String::new(), root_ast.clone());
+    queue.push_back((String::new(), root_ast.clone()));
+
+    while let Some((current_path, current_ast)) = queue.pop_front() {
+        let mut refs: Vec<ImportRef> = Vec::new();
+        collect_import_refs_from_ast(&current_ast, &mut refs);
+
+        for iref in &refs {
+            // Cycle / diamond: already queued or processed — skip silently.
+            if seen.insert(iref.imported_path.clone()) {
+                let src = loader.load(&iref.imported_path).map_err(|msg| {
+                    CompilerError::ModuleLoadError {
+                        path: iref.imported_path.clone(),
+                        message: msg,
+                    }
+                })?;
+                let module_ast =
+                    parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
+                        path: iref.imported_path.clone(),
+                        message: msg,
+                    })?;
+                order.push(iref.imported_path.clone());
+                asts.insert(iref.imported_path.clone(), module_ast.clone());
+                queue.push_back((iref.imported_path.clone(), module_ast));
+            }
+        }
+
+        import_refs.insert(current_path, refs);
+    }
+
+    Ok(AllModules {
+        order,
+        asts,
+        import_refs,
+    })
+}
+
+/// Walk `ast` recursively and collect every `Import` node into `out`.
+fn collect_import_refs_from_ast(ast: &Ast, out: &mut Vec<ImportRef>) {
     match ast.content() {
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                collect_imports(stmt, state, loader, in_progress, completed)?;
+                collect_import_refs_from_ast(stmt, out);
             }
         }
         AstContent::Import { path, symbols } => {
-            // Determine whether this is a whole-module import (`import "p" as alias`,
-            // where the single symbol entry has `original: None`) or a symbol import
-            // (`import sym from "p"` / `import (a, b) from "p"`).
-            let is_whole_module = symbols.first().map_or(false, |s| s.original.is_none());
+            // A single ImportSymbol with `original == None` signals a whole-
+            // module import (`import "p" as alias`).
+            let is_whole = symbols.first().map_or(false, |s| s.original.is_none());
 
-            if is_whole_module {
-                // ── Whole-module import ───────────────────────────────────────
-                // The alias is the namespace prefix: every label in the module
-                // becomes "alias::label_name" in the merged graph.
-                let alias = symbols[0].alias.as_str();
-
-                // True cycle: this module is already on the current call stack.
-                if in_progress.contains(path.as_str()) {
-                    return Err(CompilerError::CircularImport(path.clone()));
-                }
-                // Diamond / repeated import: already compiled successfully.
-                // Re-merge under the new alias without re-running the prologue.
-                if completed.contains(path.as_str()) {
-                    // Re-load and re-merge so the alias (label namespace) mapping
-                    // is registered even for the second importer, but don't push
-                    // to import_prologues — the first compilation already queued
-                    // this module's prologue. Re-running it would redeclare
-                    // top-level `const` bindings and cause a TypeError.
-                    let src = loader
-                        .load(path)
-                        .map_err(|msg| CompilerError::ModuleLoadError {
-                            path: path.clone(),
-                            message: msg,
-                        })?;
-                    let module_ast =
-                        parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
-                            path: path.clone(),
-                            message: msg,
-                        })?;
-                    let mut inner = CompilerState::new();
-                    inner.scan_labels(&module_ast);
-                    let entry = inner.compile_top_level(&module_ast)?;
-                    inner.graph.entry = entry;
-                    state.graph.merge(inner.graph, alias);
-                    // Intentionally NOT pushing to state.import_prologues here.
-                    return Ok(());
-                }
-
-                // Mark as in-progress before descending.
-                in_progress.insert(path.clone());
-
-                // Load and parse the source text.
-                let src = loader
-                    .load(path)
-                    .map_err(|msg| CompilerError::ModuleLoadError {
-                        path: path.clone(),
-                        message: msg,
-                    })?;
-                let module_ast =
-                    parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
-                        path: path.clone(),
-                        message: msg,
-                    })?;
-
-                // Compile the module recursively (handles transitive imports).
-                let module_graph = compile_recursive(&module_ast, loader, in_progress, completed)?;
-
-                in_progress.remove(path.as_str());
-                completed.insert(path.clone());
-
-                // Merge into our graph, namespacing all labels as "alias::label".
-                // `merge` returns an old→new NodeIndex map. We use it to translate
-                // the module's entry point into a NodeIndex valid in the merged graph.
-                // We skip the prologue entry when the module's entry node is an
-                // EnterScope (meaning the module contains only labels and no
-                // top-level statements). In that case there is nothing to run as
-                // a prologue, and jumping to the entry would execute the first
-                // label body unconditionally.
-                let module_entry = module_graph.entry;
-                let index_map: HashMap<NodeIndex, NodeIndex> =
-                    state.graph.merge(module_graph, alias);
-                if let Some(old_entry) = module_entry {
-                    if let Some(&entry_idx) = index_map.get(&old_entry) {
-                        let entry_is_label = matches!(
-                            state.graph.graph.node_weight(entry_idx),
-                            Some(IrNodeKind::EnterScope { .. })
-                        );
-                        if !entry_is_label {
-                            state.import_prologues.push(entry_idx);
-                        }
-                    }
+            let style = if is_whole {
+                ImportStyle::WholeModule {
+                    alias: symbols[0].alias.clone(),
                 }
             } else {
-                // ── Symbol import ─────────────────────────────────────────────
-                // Forms:
-                //   import sym as alias from "path"
-                //   import (sym1 as a1, sym2) from "path"
-                //
-                // Strategy:
-                //   1. Compile the module (once, recursively).
-                //   2. Merge its graph into ours with an empty namespace so its
-                //      labels are stored as "::label_name" internally (users
-                //      never address those directly).
-                //   3. For each requested symbol, look up "::original_name" in
-                //      the merged graph's labels map and insert the user alias.
+                // Symbol import — collect (original_name, alias) pairs.
+                let pairs = symbols
+                    .iter()
+                    .filter_map(|s| s.original.as_ref().map(|o| (o.clone(), s.alias.clone())))
+                    .collect();
+                ImportStyle::Symbols { symbols: pairs }
+            };
 
-                // True cycle guard.
-                if in_progress.contains(path.as_str()) {
-                    return Err(CompilerError::CircularImport(path.clone()));
-                }
-
-                // Helper: after merging with empty namespace, labels from `other`
-                // live as "::label_name" in `state.graph.labels`. For each
-                // requested symbol, look up "::original_name" and register the
-                // user-specified alias directly in graph.labels.
-                let apply_aliases = |graph: &mut IrGraph,
-                                     symbols: &[crate::parser::ast::ImportSymbol],
-                                     path: &str| {
-                    for sym in symbols {
-                        if let Some(orig) = &sym.original {
-                            let namespaced = format!("::{orig}");
-                            if let Some(&merged_id) = graph.labels.get(&namespaced) {
-                                graph.labels.insert(sym.alias.clone(), merged_id);
-                            } else {
-                                log::warn!(
-                                    "symbol import: label '{}' not found in module '{}'",
-                                    orig,
-                                    path
-                                );
-                            }
-                        }
-                    }
-                };
-
-                if completed.contains(path.as_str()) {
-                    // Already compiled — re-compile without recursion to obtain
-                    // the label map, merge nodes, then apply aliases.
-                    // Do NOT push to import_prologues (prologue already queued).
-                    let src = loader
-                        .load(path)
-                        .map_err(|msg| CompilerError::ModuleLoadError {
-                            path: path.clone(),
-                            message: msg,
-                        })?;
-                    let module_ast =
-                        parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
-                            path: path.clone(),
-                            message: msg,
-                        })?;
-                    let mut inner = CompilerState::new();
-                    inner.scan_labels(&module_ast);
-                    let entry = inner.compile_top_level(&module_ast)?;
-                    inner.graph.entry = entry;
-                    // Merge with empty namespace; labels land as "::label_name".
-                    state.graph.merge(inner.graph, "");
-                    apply_aliases(&mut state.graph, symbols, path);
-                    return Ok(());
-                }
-
-                // First encounter: full recursive compile.
-                in_progress.insert(path.clone());
-                let src = loader
-                    .load(path)
-                    .map_err(|msg| CompilerError::ModuleLoadError {
-                        path: path.clone(),
-                        message: msg,
-                    })?;
-                let module_ast =
-                    parse_source(&src).map_err(|msg| CompilerError::ModuleLoadError {
-                        path: path.clone(),
-                        message: msg,
-                    })?;
-                let module_graph = compile_recursive(&module_ast, loader, in_progress, completed)?;
-
-                in_progress.remove(path.as_str());
-                completed.insert(path.clone());
-
-                // Merge with empty namespace; labels land as "::label_name".
-                let module_entry = module_graph.entry;
-                let index_map: HashMap<NodeIndex, NodeIndex> = state.graph.merge(module_graph, "");
-
-                // Chain prologue if the module has top-level executable nodes.
-                if let Some(old_entry) = module_entry {
-                    if let Some(&entry_idx) = index_map.get(&old_entry) {
-                        let entry_is_label = matches!(
-                            state.graph.graph.node_weight(entry_idx),
-                            Some(IrNodeKind::EnterScope { .. })
-                        );
-                        if !entry_is_label {
-                            state.import_prologues.push(entry_idx);
-                        }
-                    }
-                }
-
-                apply_aliases(&mut state.graph, symbols, path);
-            }
+            out.push(ImportRef {
+                imported_path: path.clone(),
+                style,
+            });
         }
-        // Recurse into other block-like constructs so that nested imports are found.
         AstContent::If {
             then_block,
             else_block,
             ..
         } => {
-            collect_imports(then_block, state, loader, in_progress, completed)?;
+            collect_import_refs_from_ast(then_block, out);
             if let Some(eb) = else_block {
-                collect_imports(eb, state, loader, in_progress, completed)?;
+                collect_import_refs_from_ast(eb, out);
             }
         }
         AstContent::Menu { options } => {
             for opt in options {
                 if let AstContent::MenuOption { content, .. } = opt.content() {
-                    collect_imports(content, state, loader, in_progress, completed)?;
+                    collect_import_refs_from_ast(content, out);
                 }
             }
         }
         AstContent::Match { arms, .. } => {
             for arm in arms {
-                collect_imports(&arm.body, state, loader, in_progress, completed)?;
+                collect_import_refs_from_ast(&arm.body, out);
             }
         }
         _ => {}
     }
-    Ok(())
 }
 
-/// Chain a sequence of prologue entry points before `main_entry` so that each
-/// imported module's top-level nodes (DefineEnum, global assignments, etc.) run
-/// first.
+// ─── Phase 2 · Pre-allocate ───────────────────────────────────────────────────
+
+/// For every label in every module push one [`IrNodeKind::Nop`] placeholder
+/// into `graph` and record its [`NodeIndex`].
 ///
-/// For each prologue the function walks its linear chain following
-/// [`IrEdge::Next`] edges until it reaches the tail, then redirects that tail
-/// to continue at the next link in the chain. The first prologue's entry
-/// becomes the new overall entry point.
+/// Returns `module_path → (bare_label_name → NodeIndex)`.  The `NodeIndex`
+/// values are valid in `graph` and serve two roles later:
 ///
-/// Non-linear nodes (Branch, Switch, Choice, etc.) terminate the walk early;
-/// they will not appear in a well-formed module prologue.
+/// - As `label_placeholders` during each module's emit phase so that
+///   `compile_node` can locate and patch Nop → `EnterScope`.
+/// - As the canonical identity of each label when building the global label map.
+fn pre_allocate_labels(
+    all: &AllModules,
+    graph: &mut IrGraph,
+) -> HashMap<String, HashMap<String, NodeIndex>> {
+    let mut result: HashMap<String, HashMap<String, NodeIndex>> = HashMap::new();
+
+    for path in &all.order {
+        if let Some(ast) = all.asts.get(path) {
+            let mut labels: HashMap<String, NodeIndex> = HashMap::new();
+            scan_label_nops(ast, graph, &mut labels);
+            result.insert(path.clone(), labels);
+        }
+    }
+
+    result
+}
+
+/// Walk `ast` and push one [`IrNodeKind::Nop`] into `graph` for each
+/// [`AstContent::LabeledBlock`] that has not yet been recorded in `labels`.
+fn scan_label_nops(ast: &Ast, graph: &mut IrGraph, labels: &mut HashMap<String, NodeIndex>) {
+    match ast.content() {
+        AstContent::LabeledBlock { label, block } => {
+            // `or_insert_with` ensures each label name gets exactly one Nop.
+            labels
+                .entry(label.clone())
+                .or_insert_with(|| graph.push(IrNodeKind::Nop));
+            scan_label_nops(block, graph, labels);
+        }
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                scan_label_nops(stmt, graph, labels);
+            }
+        }
+        AstContent::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            scan_label_nops(then_block, graph, labels);
+            if let Some(eb) = else_block {
+                scan_label_nops(eb, graph, labels);
+            }
+        }
+        AstContent::Menu { options } => {
+            for opt in options {
+                if let AstContent::MenuOption { content, .. } = opt.content() {
+                    scan_label_nops(content, graph, labels);
+                }
+            }
+        }
+        AstContent::Match { arms, .. } => {
+            for arm in arms {
+                scan_label_nops(&arm.body, graph, labels);
+            }
+        }
+        // DecoratorDef bodies are stored as raw Ast for lazy apply-time
+        // evaluation; their labels are private and never externally reachable.
+        _ => {}
+    }
+}
+
+// ─── Phase 3 · Cross-link ─────────────────────────────────────────────────────
+
+/// Build `graph.labels` from every `import` statement in every module.
+///
+/// - `import "foo.urd" as f`  → registers `"f::label"` for each label in foo.
+/// - `import (sym) from "foo.urd"` → registers `"sym"` directly.
+///
+/// All [`NodeIndex`] values come from `local_labels` (the Nop stubs from
+/// phase 2) so they are immediately valid in the shared graph.
+fn build_global_labels(
+    all: &AllModules,
+    local_labels: &HashMap<String, HashMap<String, NodeIndex>>,
+) -> HashMap<String, NodeIndex> {
+    let mut global: HashMap<String, NodeIndex> = HashMap::new();
+
+    for refs in all.import_refs.values() {
+        for iref in refs {
+            let Some(imported_locals) = local_labels.get(&iref.imported_path) else {
+                continue;
+            };
+
+            match &iref.style {
+                ImportStyle::WholeModule { alias } => {
+                    for (label_name, &idx) in imported_locals {
+                        global.insert(namespace(alias, label_name), idx);
+                    }
+                }
+                ImportStyle::Symbols { symbols } => {
+                    for (orig, alias) in symbols {
+                        if let Some(&idx) = imported_locals.get(orig.as_str()) {
+                            global.insert(alias.clone(), idx);
+                        } else {
+                            log::warn!(
+                                "symbol import: label '{}' not found in '{}'",
+                                orig,
+                                iref.imported_path
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    global
+}
+
+// ─── Phase 4 · Emit ───────────────────────────────────────────────────────────
+
+/// Emit IR for every module into `shared_graph` and return the finished graph.
+///
+/// A single [`CompilerState`] is reused for all modules.  Before each
+/// `compile_top_level` call its `label_placeholders` field is replaced with
+/// the current module's pre-allocated Nop map.  The shared `graph.labels` (set
+/// in phase 3) is never cleared, so every module can resolve cross-module jumps
+/// throughout the emit phase.
+///
+/// **Prologue ordering** — top-level DefineEnum / global-assignment nodes from
+/// imported modules must run before the root module's code uses them.  Preamble
+/// entries are collected in BFS discovery order (shallowest first), then
+/// reversed before calling [`chain_prologues`], so deeper dependencies execute
+/// earlier at runtime.
+fn emit_all(
+    all: &AllModules,
+    local_labels: HashMap<String, HashMap<String, NodeIndex>>,
+    shared_graph: IrGraph,
+) -> Result<IrGraph, CompilerError> {
+    let mut state = CompilerState::new();
+    // Install the pre-populated shared graph (Nop stubs + global label map).
+    state.graph = shared_graph;
+
+    let mut preamble_entries: Vec<NodeIndex> = Vec::new();
+
+    // Emit all imported modules in BFS order (skip the root, emitted last).
+    for path in all.order.iter().skip(1) {
+        let Some(ast) = all.asts.get(path) else {
+            continue;
+        };
+
+        state.label_placeholders = local_labels.get(path).cloned().unwrap_or_default();
+        let entry = state.compile_top_level(ast)?;
+
+        // Track modules that have a preamble (non-label executable nodes).
+        if let Some(idx) = entry {
+            let is_scope_entry = matches!(
+                state.graph.graph.node_weight(idx),
+                Some(IrNodeKind::EnterScope { .. })
+            );
+            if !is_scope_entry {
+                preamble_entries.push(idx);
+            }
+        }
+    }
+
+    // Emit the root module last.
+    let root_ast = all
+        .asts
+        .get("")
+        .expect("root AST must be present in AllModules");
+    state.label_placeholders = local_labels.get("").cloned().unwrap_or_default();
+    let root_entry = state.compile_top_level(root_ast)?;
+
+    // Reverse so chain_prologues wires them in deepest-dependency-first order:
+    // preamble_entries was collected shallowest-first (BFS); chain_prologues
+    // iterates its slice in reverse, so after reversing here the final
+    // execution order becomes deepest-first, then root.
+    preamble_entries.reverse();
+
+    let entry = chain_prologues(&mut state.graph, &preamble_entries, root_entry);
+    state.graph.entry = entry;
+
+    // ── Populate cluster_names and label_sources ──────────────────────────
+    // These two maps let renderers (a) deduplicate clusters — one per unique
+    // NodeIndex rather than one per alias — and (b) draw file-boundary
+    // subgraphs that group labels by source module.
+    //
+    // label_sources: NodeIndex → source path ("" = root module).
+    for (path, mod_labels) in &local_labels {
+        for &idx in mod_labels.values() {
+            // local_labels may have the root stored under both "" and its
+            // filename (e.g. "main.urd"); always record the canonical "" key.
+            let canonical_path = if path == all.order.first().map(String::as_str).unwrap_or("") {
+                String::new()
+            } else {
+                path.clone()
+            };
+            state
+                .graph
+                .label_sources
+                .entry(idx)
+                .or_insert(canonical_path);
+        }
+    }
+
+    // cluster_names: exactly one canonical display name per NodeIndex.
+    //   • Root-module labels use their bare name  ("hub").
+    //   • Imported-module labels use "alias::name" from the first
+    //     whole-module import that covers them, or the symbol alias
+    //     for symbol imports.
+    //
+    // Seed from root first so root labels always win with bare names.
+    if let Some(root_labels) = local_labels.get("") {
+        for (name, &idx) in root_labels {
+            state.graph.cluster_names.insert(idx, name.clone());
+        }
+    }
+    // Walk every import ref; assign a namespaced alias to any label not yet
+    // claimed by the root pass above.
+    for refs in all.import_refs.values() {
+        for iref in refs {
+            let Some(mod_labels) = local_labels.get(&iref.imported_path) else {
+                continue;
+            };
+            match &iref.style {
+                ImportStyle::WholeModule { alias } => {
+                    for (name, &idx) in mod_labels {
+                        state
+                            .graph
+                            .cluster_names
+                            .entry(idx)
+                            .or_insert_with(|| namespace(alias, name));
+                    }
+                }
+                ImportStyle::Symbols { symbols } => {
+                    for (orig, sym_alias) in symbols {
+                        if let Some(&idx) = mod_labels.get(orig.as_str()) {
+                            state
+                                .graph
+                                .cluster_names
+                                .entry(idx)
+                                .or_insert_with(|| sym_alias.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(state.graph)
+}
+
+// ─── Prologue chaining ────────────────────────────────────────────────────────
+
+/// Chain a sequence of preamble entry points so that `prologues[0]` runs first,
+/// `prologues[1]` second, …, then `main_entry`.
+///
+/// Pass prologues in deepest-dependency-first order.
 fn chain_prologues(
     graph: &mut IrGraph,
     prologues: &[NodeIndex],
@@ -307,8 +532,7 @@ fn chain_prologues(
         return main_entry;
     }
 
-    // Build the chain right-to-left: the last prologue's tail → main_entry,
-    // then each earlier prologue's tail → the next prologue's entry.
+    // Build the chain right-to-left so each prologue's tail points at the next.
     let mut next_start = main_entry;
     for &prologue in prologues.iter().rev() {
         if let Some(new_next) = next_start {
@@ -319,65 +543,55 @@ fn chain_prologues(
     next_start
 }
 
-/// Walk the linear chain starting at `from`, following [`IrEdge::Next`] edges,
-/// and redirect the chain so that instead of falling into a label body or
-/// terminating, execution continues at `new_next`.
+/// Walk the linear preamble chain beginning at `from` (following
+/// [`IrEdge::Next`] edges) and redirect its tail to `new_next`.
 ///
-/// Two stopping conditions are handled:
+/// Two stopping conditions:
+/// 1. A node with **no outgoing `Next` edge** — add one to `new_next`.
+/// 2. A node whose `Next` target is a "stop" kind (label entry, dialogue,
+///    branch, etc.) — redirect to `new_next`, bypassing the downstream node.
 ///
-/// 1. A node with **no outgoing `Next` edge** — add a `Next` edge to `new_next`.
-/// 2. A node whose `Next` edge points at an `EnterScope` (a label entry point)
-///    or any other non-linear node — remove that edge and redirect to `new_next`,
-///    bypassing the label body entirely.
-///
-/// This ensures that only top-level prologue nodes (DefineEnum, global
-/// assignments, etc.) run as part of the imported module's prologue, and
-/// label bodies remain reachable only via explicit `jump` instructions.
+/// Non-preamble-compatible node kinds (branches, choices, …) also stop the
+/// walk; they should not appear in a well-formed module prologue.
 fn patch_prologue_tail(graph: &mut IrGraph, from: NodeIndex, new_next: NodeIndex) {
     let mut current = from;
-    let mut visited = HashSet::new();
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
 
     loop {
         if !visited.insert(current) {
-            // Cycle detected — give up.
-            break;
+            break; // cycle guard
         }
 
-        // Only walk nodes that are valid linear prologue nodes.
-        let is_walkable = matches!(
+        let is_preamble_node = matches!(
             graph.graph.node_weight(current),
             Some(
                 IrNodeKind::Assign { .. }
+                    | IrNodeKind::Eval { .. }
                     | IrNodeKind::DefineEnum { .. }
                     | IrNodeKind::DefineScriptDecorator { .. }
                     | IrNodeKind::Nop
-                    | IrNodeKind::Eval { .. }
             )
         );
-        if !is_walkable {
+        if !is_preamble_node {
             break;
         }
 
-        // Find the outgoing Next edge from `current`, if any.
-        // Collect into an owned value to avoid holding a borrow on `graph`.
-        let next_edge_info: Option<(petgraph::stable_graph::EdgeIndex, NodeIndex)> = graph
+        // Find the single outgoing Next edge (if any).
+        let next_edge: Option<(EdgeIndex, NodeIndex)> = graph
             .graph
             .edges(current)
             .find(|e| matches!(e.weight(), IrEdge::Next))
             .map(|e| (e.id(), e.target()));
 
-        match next_edge_info {
+        match next_edge {
             None => {
-                // No outgoing Next edge — this is the tail. Extend the chain.
+                // Tail of the chain — extend it.
                 graph.add_edge(current, new_next, IrEdge::Next);
                 break;
             }
-            Some((edge_id, next_target)) => {
-                // Check whether the successor is a "stop" node that should not
-                // be included in the prologue walk (labels, non-linear nodes,
-                // or terminals).
-                let should_patch = matches!(
-                    graph.graph.node_weight(next_target),
+            Some((eid, target)) => {
+                let is_stop = matches!(
+                    graph.graph.node_weight(target),
                     Some(
                         IrNodeKind::EnterScope { .. }
                             | IrNodeKind::ExitScope { .. }
@@ -386,58 +600,81 @@ fn patch_prologue_tail(graph: &mut IrGraph, from: NodeIndex, new_next: NodeIndex
                             | IrNodeKind::Branch { .. }
                             | IrNodeKind::Switch { .. }
                             | IrNodeKind::Jump
+                            | IrNodeKind::LetCall { .. }
+                            | IrNodeKind::Return { .. }
                             | IrNodeKind::End
+                            | IrNodeKind::Todo
                     )
                 );
-
-                if should_patch {
-                    // Redirect: remove old Next edge and add one to new_next.
-                    graph.graph.remove_edge(edge_id);
+                if is_stop {
+                    // Redirect around the stop node.
+                    graph.graph.remove_edge(eid);
                     graph.add_edge(current, new_next, IrEdge::Next);
                     break;
                 }
-
-                // Next target is itself a prologue-compatible node — keep walking.
-                current = next_target;
+                // Keep walking.
+                current = target;
             }
         }
     }
 }
 
-/// Parse a raw Urd source string into an [`Ast`]. Returns `Err(message)` on
-/// parse failure, collecting all parse errors into a single semicolon-separated
-/// string.
-pub fn parse_source(src: &str) -> Result<Ast, String> {
-    parse_source_spanned(src).map_err(|errs| {
-        errs.iter()
-            .map(|(msg, _)| msg.as_str())
-            .collect::<Vec<_>>()
-            .join("; ")
-    })
-}
+// ─── Source parsing ───────────────────────────────────────────────────────────
 
-/// Like [`parse_source`] but returns each parse error together with its
-/// byte-offset span so callers (e.g. the LSP) can place diagnostics at
-/// the correct source location.
-pub fn parse_source_spanned(src: &str) -> Result<Ast, Vec<(String, chumsky::span::SimpleSpan)>> {
-    use chumsky::input::Stream;
-    use chumsky::prelude::*;
-    use chumsky::span::SimpleSpan;
+/// Parse a raw Urd source string into an [`Ast`].
+///
+/// Returns `Err(message)` on parse failure, with all errors joined by `"; "`.
+pub fn parse_source(src: &str) -> Result<Ast, String> {
+    use chumsky::{input::Stream, prelude::*};
 
     use crate::lexer::{Token, lex_src};
     use crate::parser::block::script;
 
     let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
-        Ok(tok) => (tok, span.into()),
+        Ok(t) => (t, span.into()),
         Err(e) => (Token::Error(e), span.into()),
     });
-
     let stream =
         Stream::from_iter(lexer).map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
 
-    script().parse(stream).into_result().map_err(|errs| {
-        errs.iter()
-            .map(|e| (e.to_string(), *e.span()))
+    let (ast, errors) = script().parse(stream).into_output_errors();
+
+    if !errors.is_empty() {
+        return Err(errors
+            .iter()
+            .map(|e| e.to_string())
             .collect::<Vec<_>>()
+            .join("; "));
+    }
+
+    ast.ok_or_else(|| "parser produced no output".to_string())
+}
+
+/// Parse a raw Urd source string, returning errors with their byte-offset
+/// [`SimpleSpan`]s (used by the LSP for precise diagnostic ranges).
+pub fn parse_source_spanned(src: &str) -> Result<Ast, Vec<(String, SimpleSpan)>> {
+    use chumsky::{input::Stream, prelude::*};
+
+    use crate::lexer::{Token, lex_src};
+    use crate::parser::block::script;
+
+    let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
+        Ok(t) => (t, span.into()),
+        Err(e) => (Token::Error(e), span.into()),
+    });
+    let stream =
+        Stream::from_iter(lexer).map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
+
+    let (ast, errors) = script().parse(stream).into_output_errors();
+
+    if !errors.is_empty() {
+        return Err(errors.iter().map(|e| (e.to_string(), *e.span())).collect());
+    }
+
+    ast.ok_or_else(|| {
+        vec![(
+            "parser produced no output".to_string(),
+            SimpleSpan::new((), 0..0),
+        )]
     })
 }

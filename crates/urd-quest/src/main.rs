@@ -20,7 +20,7 @@ use crossterm::{
 };
 
 use urd::analysis;
-use urd::compiler::Compiler;
+
 use urd::ir::{Event, IrGraph};
 use urd::parser::block::script;
 use urd::parser::errors::render_parse_errors_stderr;
@@ -537,7 +537,11 @@ fn build_graph(path: &Path) -> Result<IrGraph, String> {
 
     run_analysis(&ast, &src, &display_name, &loader);
 
-    Compiler::compile_with_loader(&ast, &loader)
+    // Pass the root filename (e.g. "main.urd") so the flat pipeline can
+    // deduplicate any back-import of the root against the already-loaded
+    // root entry, preventing its preamble from executing twice.
+    let root_filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    urd::compiler::loader::compile_recursive_with_root_path(&ast, root_filename, &loader)
         .map_err(|e| format!("Compile error in '{}':\n{:?}", path.display(), e))
 }
 

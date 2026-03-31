@@ -83,7 +83,30 @@ pub struct IrGraph {
     pub entry: Option<NodeIndex>,
     /// Maps every `label ident { … }` label name to the [`NodeIndex`] of the
     /// corresponding [`IrNodeKind::EnterScope`] node.
+    ///
+    /// May contain multiple keys for the same [`NodeIndex`] when a label is
+    /// reachable under both a bare name (`hub`) and a namespaced alias
+    /// (`main::hub`).  Use [`IrGraph::cluster_names`] when you need exactly
+    /// one canonical name per node (e.g. for rendering cluster subgraphs).
     pub labels: HashMap<String, NodeIndex>,
+    /// Canonical display name for each unique label entry [`NodeIndex`].
+    ///
+    /// Unlike [`IrGraph::labels`] (which holds all resolvable aliases), this
+    /// map has **exactly one entry per unique label node** — no duplicates.
+    ///
+    /// - Root-module labels use their bare name (`"hub"`).
+    /// - Imported-module labels use their namespaced alias (`"tavern::enter_tavern"`).
+    ///
+    /// Populated by the multi-file compiler (`compile_flat`); empty for
+    /// single-file compilation (fall back to iterating `labels` in that case).
+    pub cluster_names: HashMap<NodeIndex, String>,
+    /// Source file path for each label entry [`NodeIndex`].
+    ///
+    /// `""` means the root (entry) module.  For imported modules the value is
+    /// the path string as written in the `import` statement (e.g. `"tavern.urd"`).
+    ///
+    /// Populated by the multi-file compiler; empty for single-file compilation.
+    pub label_sources: HashMap<NodeIndex, String>,
 }
 
 impl IrGraph {
@@ -93,6 +116,8 @@ impl IrGraph {
             graph: StableDiGraph::new(),
             entry: None,
             labels: HashMap::new(),
+            cluster_names: HashMap::new(),
+            label_sources: HashMap::new(),
         }
     }
 

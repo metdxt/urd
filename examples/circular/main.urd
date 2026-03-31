@@ -1,0 +1,248 @@
+# =============================================================================
+# main.urd — The Village of Greyhollow
+# =============================================================================
+#
+# Circular-import example: this file imports tavern.urd so it can jump into
+# the tavern scenes.  tavern.urd imports this file so it can jump back here
+# when the player leaves.
+#
+#   main.urd  ──import "tavern.urd" as tavern──▶  tavern.urd
+#   tavern.urd ──import "main.urd"  as main  ──▶  main.urd
+#
+# The 4-phase flat compiler handles this without error because top-level urd
+# is definitions-only: every label's NodeIndex stub is pre-allocated in phase 2
+# before any IR is emitted in phase 4, so both jump targets exist by the time
+# either module's `jump` instructions are resolved.
+#
+# To run:
+#   cargo run --bin quest -- run examples/circular/main.urd
+#
+# To visualise the full cross-module control-flow graph:
+#   cargo run --bin quest -- export -f mermaid examples/circular/main.urd
+# =============================================================================
+
+import "tavern.urd" as tavern
+
+# ── Characters ────────────────────────────────────────────────────────────────
+
+struct Character {
+    name: str
+    name_color: str
+}
+
+const narrator: Character = :{ name: "Narrator", name_color: "#a0a0b0" }
+const hero:     Character = :{ name: "Hero",      name_color: "#f5c542" }
+const guard:    Character = :{ name: "Guard",     name_color: "#8888aa" }
+const merchant: Character = :{ name: "Merchant",  name_color: "#42c8f5" }
+
+# ── World state ───────────────────────────────────────────────────────────────
+
+global visited_tavern:   int = 0
+global spoke_to_guard:   int = 0
+global bought_supplies:  int = 0
+
+# =============================================================================
+# label: start
+# Execution begins here (@entry).  A brief opening narration leads into the
+# village hub, which the player returns to after visiting each location.
+# =============================================================================
+@entry
+label start {
+    <narrator>: {
+        "The village of Greyhollow sits at the end of a road that most"
+        "maps don't bother drawing."
+    }
+
+    <narrator>: {
+        "It is the kind of place that people arrive at by accident"
+        "and leave by necessity."
+    }
+
+    <hero>: "Well. Here I am."
+
+    jump hub
+}
+
+# =============================================================================
+# label: hub
+# The village square — the player returns here after every scene.
+# tavern.urd's `leave_tavern` label jumps back to this label, which is
+# why tavern.urd needs to import this file.
+# =============================================================================
+label hub {
+    if visited_tavern > 0 {
+        <narrator>: {
+            "You are back in the village square."
+            "The Tarnished Flagon's sign creaks in the wind behind you."
+        }
+    } else {
+        <narrator>: {
+            "The village square is a muddy triangle of cobblestones."
+            "Three things: a tavern with a broken sign, a merchant's cart,"
+            "and a guard who is pretending not to watch you."
+        }
+    }
+
+    menu {
+        "Go into the tavern" {
+            visited_tavern = visited_tavern + 1
+            # ── circular jump ─────────────────────────────────────────────
+            # tavern.urd is imported above as "tavern", and tavern.urd
+            # imports this file back as "main" so it can jump to main.hub.
+            # Both jumps resolve cleanly because all NodeIndex stubs were
+            # pre-allocated before either module emitted any IR.
+            jump tavern.enter_tavern
+        }
+        "Talk to the merchant" {
+            jump speak_to_merchant
+        }
+        "Talk to the guard" {
+            jump speak_to_guard
+        }
+        "Leave Greyhollow" {
+            jump depart
+        }
+    }
+}
+
+# =============================================================================
+# label: speak_to_merchant
+# =============================================================================
+label speak_to_merchant {
+    if bought_supplies > 0 {
+        <merchant>: "Back again? I'm not a charity, friend."
+
+        <hero>: "Just looking."
+
+        <merchant>: "Looking's free. Barely."
+    } else {
+        <merchant>: {
+            "Rope, flint, dried meat, and one slightly dented lantern."
+            "I'm not proud of the stock. The roads have been bad."
+        }
+
+        <hero>: "I'll take the flint and the meat."
+
+        <merchant>: "Smart. The lantern's cursed anyway — I think."
+
+        <narrator>: "You hand over a few coins and tuck the supplies away."
+
+        bought_supplies = 1
+    }
+
+    jump hub
+}
+
+# =============================================================================
+# label: speak_to_guard
+# =============================================================================
+label speak_to_guard {
+    if spoke_to_guard > 0 {
+        <guard>: "Still here?"
+
+        <hero>: "Still here."
+
+        <guard>: "Hm."
+
+        jump hub
+    } else {
+        spoke_to_guard = 1
+
+        <guard>: "You're not from here."
+
+        <hero>: "No."
+
+        <guard>: "Heading north?"
+
+        <hero>: "Maybe."
+
+        <guard>: {
+            "Don't. Road washed out past the mill three weeks ago and"
+            "nobody's fixed it.  Go east to the ridge path if you must go."
+        }
+
+        <hero>: "Riders came through last night headed north."
+
+        <guard>: "..."
+
+        <guard>: "What riders."
+
+        <narrator>: {
+            "It isn't a question."
+            "The guard's hand moves — very slightly — toward his sword hilt."
+        }
+
+        menu {
+            "Dark cloaks, no markings — you saw them too?" {
+                <guard>: {
+                    "I didn't see anything."
+                    "And neither did you."
+                    "Drink your drink, buy your rope, and move on."
+                }
+
+                <narrator>: "He turns away. The conversation is over."
+
+                jump hub
+            }
+            "Never mind — I must have been mistaken" {
+                <guard>: "Yes. You must have been."
+
+                <narrator>: "He relaxes. Slightly."
+
+                jump hub
+            }
+        }
+    }
+}
+
+# =============================================================================
+# label: depart
+# =============================================================================
+label depart {
+    if bought_supplies < 1 {
+        <narrator>: {
+            "You pause at the edge of the village."
+            "The road north is muddy and indistinct."
+        }
+
+        <hero>: "I should probably pick up supplies before I go."
+
+        menu {
+            "Go back and buy something" {
+                jump hub
+            }
+            "Leave anyway — I'll manage" {
+                jump farewell
+            }
+        }
+    } else {
+        jump farewell
+    }
+}
+
+# =============================================================================
+# label: farewell
+# =============================================================================
+label farewell {
+    <narrator>: {
+        "You leave Greyhollow the way you came in — on foot, without ceremony."
+        "The village shrinks behind you."
+    }
+
+    if spoke_to_guard > 0 {
+        <narrator>: {
+            "You think about the guard's hand moving toward his sword."
+            "About dark cloaks and a road that most maps don't bother drawing."
+        }
+    }
+
+    if visited_tavern > 0 {
+        <narrator>: "The taste of that bitter drink is still in your mouth."
+    }
+
+    <hero>: "Right then."
+
+    <narrator>: "The road goes on."
+
+    end!()
+}

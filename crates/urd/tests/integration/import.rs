@@ -265,22 +265,42 @@ fn test_missing_module_produces_load_error() {
     );
 }
 
-// ─── Test 7: Circular import → CircularImport error ──────────────────────────
+// ─── Test 7: Circular import → compiles successfully ─────────────────────────
 
 /// If `a.urd` imports `b.urd` and `b.urd` imports `a.urd` back, compilation
-/// must fail with `CompilerError::CircularImport`.
+/// must now succeed.  The 4-phase flat pipeline pre-allocates all label Nop
+/// stubs before emitting any IR, so neither module needs the other to be fully
+/// compiled first.
 #[test]
-fn test_circular_import_is_detected() {
+fn test_circular_import_compiles_successfully() {
     let mut loader = MemLoader::new();
-    loader.add("a.urd", r#"import "b.urd" as b"#);
-    loader.add("b.urd", r#"import "a.urd" as a"#);
+    loader.add(
+        "a.urd",
+        "import \"b.urd\" as b\nlabel a_label {\n  jump b.b_label\n}\n",
+    );
+    loader.add(
+        "b.urd",
+        "import \"a.urd\" as a\nlabel b_label {\n  jump a.a_label\n}\n",
+    );
 
     let ast = parse_src(r#"import "a.urd" as a"#);
     let result = Compiler::compile_with_loader(&ast, &loader);
 
     assert!(
-        matches!(result, Err(CompilerError::CircularImport(ref p)) if p == "a.urd"),
-        "expected CircularImport(\"a.urd\"), got: {result:?}"
+        result.is_ok(),
+        "circular import should compile successfully, got: {result:?}"
+    );
+
+    let graph = result.unwrap();
+    assert!(
+        graph.labels.contains_key("a::a_label"),
+        "a::a_label must be accessible; labels: {:?}",
+        graph.labels.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        graph.labels.contains_key("b::b_label"),
+        "b::b_label must be accessible; labels: {:?}",
+        graph.labels.keys().collect::<Vec<_>>()
     );
 }
 

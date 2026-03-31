@@ -61,13 +61,17 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
     let entry_cluster = analysis::entry_cluster_name(graph);
 
     // Sort cluster names by entry NodeIndex (ascending = compilation order).
+    // When cluster_names is populated (multi-file) the canonical NodeIndex
+    // lives there; fall back to the labels map for single-file graphs.
     let mut sorted_labels: Vec<&String> = clusters.keys().collect();
     sorted_labels.sort_by_key(|name| {
-        graph
-            .labels
-            .get(*name)
-            .map(|id| id.index())
-            .unwrap_or(usize::MAX)
+        let idx = graph
+            .cluster_names
+            .iter()
+            .find(|(_, n)| n.as_str() == name.as_str())
+            .map(|(&i, _)| i)
+            .or_else(|| graph.labels.get(*name).copied());
+        idx.map(|id| id.index()).unwrap_or(usize::MAX)
     });
 
     // Reverse map: label entry NodeIndex → label name.
@@ -151,35 +155,162 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
     writeln!(out).ok();
 
     // ── Subgraph clusters (node definitions only) ────────────────────────────
-    for label_name in &sorted_labels {
-        let members = &clusters[*label_name];
-        if members.is_empty() {
-            continue;
-        }
-        let safe = sanitize_id(label_name);
-        let escaped_name = escape_mermaid(label_name);
+    //
+    // When the graph was compiled from multiple files, label clusters are
+    // wrapped in outer file-boundary subgraphs — one per source path.
+    // Single-file graphs leave label_sources empty; clusters are emitted flat.
 
-        writeln!(out, "    subgraph cluster_{safe}[\"{escaped_name}\"]").ok();
-        writeln!(out, "        direction TB").ok();
-
-        let mut sorted_members: Vec<NodeIndex> = members.iter().copied().collect();
-        sorted_members.sort_by_key(|n| n.index());
-
-        for node_idx in sorted_members {
-            let kind = match graph.graph.node_weight(node_idx) {
-                Some(k) => k,
-                None => continue,
-            };
-            // Skip Nop nodes — they're collapsed.
-            if matches!(kind, IrNodeKind::Nop) {
+    // Collect distinct source-file paths in sorted-label order.
+    let file_order: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        let mut order = Vec::new();
+        for label_name in &sorted_labels {
+            if clusters[*label_name].is_empty() {
                 continue;
             }
-            let def = mermaid_node_def(node_idx, kind, graph, &label_by_entry);
-            writeln!(out, "        {def}").ok();
+            let entry_idx = graph
+                .cluster_names
+                .iter()
+                .find(|(_, n)| n.as_str() == label_name.as_str())
+                .map(|(&i, _)| i)
+                .or_else(|| graph.labels.get(*label_name).copied());
+            let source = entry_idx
+                .and_then(|i| graph.label_sources.get(&i))
+                .cloned()
+                .unwrap_or_default();
+            if seen.insert(source.clone()) {
+                order.push(source);
+            }
         }
+        order
+    };
 
-        writeln!(out, "    end").ok();
-        writeln!(out).ok();
+    // Resolve labels → source file for grouping.
+    let labels_by_file: HashMap<String, Vec<&String>> = {
+        let mut map: HashMap<String, Vec<&String>> = HashMap::new();
+        for label_name in &sorted_labels {
+            if clusters[*label_name].is_empty() {
+                continue;
+            }
+            let entry_idx = graph
+                .cluster_names
+                .iter()
+                .find(|(_, n)| n.as_str() == label_name.as_str())
+                .map(|(&i, _)| i)
+                .or_else(|| graph.labels.get(*label_name).copied());
+            let source = entry_idx
+                .and_then(|i| graph.label_sources.get(&i))
+                .cloned()
+                .unwrap_or_default();
+            map.entry(source).or_default().push(label_name);
+        }
+        map
+    };
+
+    // Per-file border colours (root always green; imports cycle through a palette).
+    let import_strokes = ["#2255aa", "#aa7700", "#882288", "#cc3322", "#117788"];
+    let file_stroke = |path: &str| -> &'static str {
+        if path.is_empty() {
+            "#228B22"
+        } else {
+            // Position-weighted hash: multiply each byte by its 1-based index
+            // so files whose bytes sum to the same value still hash differently
+            // (e.g. "main.urd" and "tavern.urd" would collide with a plain sum).
+            let h = path.bytes().enumerate().fold(0usize, |acc, (i, b)| {
+                acc.wrapping_add((b as usize).wrapping_mul(i + 1))
+            });
+            import_strokes[h % import_strokes.len()]
+        }
+    };
+
+    let multi_file = file_order.len() > 1;
+
+    // Closure that emits the inner label subgraphs for one file's label list.
+    let emit_label_subgraphs =
+        |out: &mut String,
+         labels_for_file: &[&String],
+         indent: &str,
+         graph: &IrGraph,
+         clusters: &HashMap<String, HashSet<NodeIndex>>,
+         label_by_entry: &HashMap<NodeIndex, String>| {
+            for label_name in labels_for_file {
+                let members = &clusters[*label_name];
+                if members.is_empty() {
+                    continue;
+                }
+                let safe = sanitize_id(label_name);
+                let escaped_name = escape_mermaid(label_name);
+
+                writeln!(out, "{indent}subgraph cluster_{safe}[\"{escaped_name}\"]").ok();
+                writeln!(out, "{indent}    direction TB").ok();
+
+                let mut sorted_members: Vec<NodeIndex> = members.iter().copied().collect();
+                sorted_members.sort_by_key(|n| n.index());
+
+                for node_idx in sorted_members {
+                    let kind = match graph.graph.node_weight(node_idx) {
+                        Some(k) => k,
+                        None => continue,
+                    };
+                    if matches!(kind, IrNodeKind::Nop) {
+                        continue;
+                    }
+                    let def = mermaid_node_def(node_idx, kind, graph, label_by_entry);
+                    writeln!(out, "{indent}    {def}").ok();
+                }
+
+                writeln!(out, "{indent}end").ok();
+                writeln!(out).ok();
+            }
+        };
+
+    for source_path in &file_order {
+        let labels_for_file = match labels_by_file.get(source_path) {
+            Some(v) if !v.is_empty() => v.as_slice(),
+            _ => continue,
+        };
+
+        if multi_file {
+            // Outer file-boundary subgraph.
+            let file_safe = sanitize_id(if source_path.is_empty() {
+                "root"
+            } else {
+                source_path
+            });
+            let file_label = if source_path.is_empty() {
+                "(root)".to_string()
+            } else {
+                source_path.clone()
+            };
+            writeln!(
+                out,
+                "    subgraph cluster_file_{file_safe}[\"{file_label}\"]"
+            )
+            .ok();
+            writeln!(out, "        direction TB").ok();
+            writeln!(out).ok();
+
+            emit_label_subgraphs(
+                &mut out,
+                labels_for_file,
+                "        ",
+                graph,
+                &clusters,
+                &label_by_entry,
+            );
+
+            writeln!(out, "    end").ok();
+            writeln!(out).ok();
+        } else {
+            emit_label_subgraphs(
+                &mut out,
+                labels_for_file,
+                "    ",
+                graph,
+                &clusters,
+                &label_by_entry,
+            );
+        }
     }
 
     // ── Subgraph style lines ─────────────────────────────────────────────────
@@ -196,6 +327,22 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             "    style cluster_{safe} fill:transparent,stroke:#228B22,stroke-width:{sw}"
         )
         .ok();
+    }
+    // Style lines for outer file-boundary subgraphs.
+    if multi_file {
+        for source_path in &file_order {
+            let file_safe = sanitize_id(if source_path.is_empty() {
+                "root"
+            } else {
+                source_path
+            });
+            let stroke = file_stroke(source_path);
+            writeln!(
+                out,
+                "    style cluster_file_{file_safe} fill:transparent,stroke:{stroke},stroke-width:3px,stroke-dasharray:6 3"
+            )
+            .ok();
+        }
     }
     writeln!(out).ok();
 

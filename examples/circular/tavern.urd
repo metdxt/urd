@@ -1,0 +1,178 @@
+# =============================================================================
+# tavern.urd — The Tarnished Flagon
+# =============================================================================
+#
+# Circular-import example: this file imports main.urd so it can jump back
+# to the village hub when the player leaves.  main.urd imports this file
+# so it can jump into the tavern scenes.  Neither file needs to be "done"
+# before the other — the 4-phase flat compiler handles it cleanly.
+#
+#   main.urd  ──import "tavern.urd" as tavern──▶  tavern.urd
+#   tavern.urd ──import "main.urd"  as main  ──▶  main.urd
+#
+# Jump route exercised by this example:
+#
+#   main.hub ──jump tavern.enter_tavern──▶ enter_tavern
+#                                              │
+#                                         (menu choice)
+#                                         │           │
+#                                   order_drink   ask_rumours
+#                                         │           │
+#                                         └─────┬─────┘
+#                                               ▼
+#                                         leave_tavern ──jump main.hub──▶
+# =============================================================================
+
+# Whole-module import so we can write `jump main.hub`.
+import "main.urd" as main
+# Pull narrator, hero, and Character directly so we can write <narrator>: and
+# <hero>: without a module prefix, and without re-declaring them (re-declaring
+# a const that main.urd already registered would error at runtime).
+import (narrator, hero, Character) from "main.urd"
+
+# ── Characters ────────────────────────────────────────────────────────────────
+# narrator, hero, and Character are imported from main.urd above.
+# barkeep and patron are unique to this scene.
+
+const barkeep: Character = :{ name: "Old Morryn",    name_color: "#c8934a" }
+const patron:  Character = :{ name: "Gruff Patron",  name_color: "#7a9a7a" }
+
+# ── State ─────────────────────────────────────────────────────────────────────
+
+global heard_rumour: int = 0
+global bought_drink: int = 0
+
+# =============================================================================
+# label: enter_tavern
+# Entry point — jumped to from main.hub.
+# =============================================================================
+label enter_tavern {
+    <narrator>: {
+        "The Tarnished Flagon is warm and low-ceilinged, smelling of"
+        "tallow candles, old wood, and something fermented and forgotten."
+    }
+
+    <barkeep>: "Door. You're letting the cold in."
+
+    <hero>: "Sorry."
+
+    <barkeep>: "Sit down then. What'll it be?"
+
+    menu {
+        "Order a drink" {
+            jump order_drink
+        }
+        "Ask if anyone's heard anything unusual" {
+            jump ask_rumours
+        }
+        "Just warm up by the fire and leave" {
+            <narrator>: "You stand by the hearth for a moment. The warmth is almost enough."
+            jump leave_tavern
+        }
+    }
+}
+
+# =============================================================================
+# label: order_drink
+# =============================================================================
+label order_drink {
+    bought_drink = 1
+
+    <barkeep>: "Copper piece. Don't argue."
+
+    <hero>: "I wasn't going to."
+
+    <barkeep>: "Most do."
+
+    <narrator>: {
+        "The drink is warm, slightly bitter, and tastes of barley and regret."
+        "It's the best thing you've had in three days."
+    }
+
+    if heard_rumour > 0 {
+        <barkeep>: {
+            "You look like someone with a destination."
+            "Word of advice — the old mill road washes out after dark."
+            "Go around."
+        }
+
+        <hero>: "Noted. Thanks."
+
+        jump leave_tavern
+    } else {
+        menu {
+            "Ask about the road ahead" {
+                jump ask_rumours
+            }
+            "Finish the drink and go" {
+                jump leave_tavern
+            }
+        }
+    }
+}
+
+# =============================================================================
+# label: ask_rumours
+# =============================================================================
+label ask_rumours {
+    heard_rumour = 1
+
+    <patron>: "You talking to me?"
+
+    <hero>: "If you know something worth hearing."
+
+    <patron>: {
+        "Riders came through last night. Dark cloaks, no markings."
+        "Didn't stop for food, didn't stop for water."
+        "Just rode straight through like the road was on fire."
+    }
+
+    <hero>: "Which direction?"
+
+    <patron>: "North. Where else."
+
+    <narrator>: {
+        "The patron turns back to his drink."
+        "The fire crackles.  Somewhere outside, the wind picks up."
+    }
+
+    <barkeep>: "Don't read too much into it. Riders pass through."
+
+    <hero>: "Sure they do."
+
+    if bought_drink > 0 {
+        <narrator>: "You finish your drink slowly, thinking about dark cloaks and empty roads."
+        jump leave_tavern
+    } else {
+        menu {
+            "Buy a drink — you need one" {
+                jump order_drink
+            }
+            "Leave — you've heard enough" {
+                jump leave_tavern
+            }
+        }
+    }
+}
+
+# =============================================================================
+# label: leave_tavern
+# Jumps back into main.urd — this is the circular edge.
+# =============================================================================
+label leave_tavern {
+    <narrator>: "You pull your coat on and push back out into the cold."
+
+    if heard_rumour > 0 {
+        <hero>: "Riders. North. Right."
+        <narrator>: "The information sits in your chest like a stone."
+    }
+
+    <narrator>: "The village square is quiet. Your breath fogs the air."
+
+    # ── circular jump ─────────────────────────────────────────────────────────
+    # main.urd is imported above, so main.hub resolves to main's `hub` label
+    # even though main.urd also imports this file.  The flat 4-phase compiler
+    # pre-allocated NodeIndex stubs for every label in both modules before
+    # emitting any IR, so this jump resolves cleanly at compile time.
+    jump main.hub
+}

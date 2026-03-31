@@ -1848,6 +1848,8 @@ mod tests {
             graph: g,
             entry: Some(todo_id),
             labels: HashMap::new(),
+            cluster_names: HashMap::new(),
+            label_sources: HashMap::new(),
         };
         let registry = DecoratorRegistry::new();
         let mut vm = Vm::new(graph, registry).unwrap();
@@ -1869,6 +1871,8 @@ mod tests {
             graph: g,
             entry: Some(end_id),
             labels: HashMap::new(),
+            cluster_names: HashMap::new(),
+            label_sources: HashMap::new(),
         };
         let registry = DecoratorRegistry::new();
         let mut vm = Vm::new(graph, registry).unwrap();
