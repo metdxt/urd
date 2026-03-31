@@ -143,4 +143,56 @@ mod tests {
         assert!(labels.contains(&"x"));
         assert!(labels.contains(&"y"));
     }
+
+    #[test]
+    fn directly_imported_label_is_not_undefined() {
+        // Simulates: `import (show_inventory) from "items.urd"`
+        // The label `show_inventory` is NOT defined in this file — it lives in
+        // the imported module — but it has been injected into the context via
+        // `build_with_imports` as an imported label.  The check must not emit
+        // `UndefinedLabel` for `jump show_inventory`.
+        let ast = parse("label village_farewell {\n  jump show_inventory\n}\n");
+
+        let mut imported_labels = std::collections::HashSet::new();
+        imported_labels.insert("show_inventory".to_owned());
+
+        let ctx = AnalysisContext::build_with_imports(
+            &ast,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            imported_labels,
+        );
+
+        let errors = check(&ast, &ctx);
+        assert!(
+            errors.is_empty(),
+            "expected no errors for directly-imported label, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn unimported_label_still_reports_error_after_build_with_imports() {
+        // Ensure that `build_with_imports` doesn't accidentally suppress errors
+        // for labels that were NOT imported.
+        let ast = parse("label start {\n  jump ghost\n}\n");
+
+        let mut imported_labels = std::collections::HashSet::new();
+        imported_labels.insert("other_label".to_owned()); // something else, not "ghost"
+
+        let ctx = AnalysisContext::build_with_imports(
+            &ast,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            imported_labels,
+        );
+
+        let errors = check(&ast, &ctx);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                AnalysisError::UndefinedLabel { label, .. } if label == "ghost"
+            )),
+            "expected UndefinedLabel for 'ghost', got: {errors:?}"
+        );
+    }
 }

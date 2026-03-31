@@ -70,11 +70,14 @@ impl AnalysisContext {
         ctx
     }
 
-    /// Build an analysis context from `root`, augmented with struct and enum
-    /// definitions from imported modules.
+    /// Build an analysis context from `root`, augmented with struct, enum, and
+    /// label definitions from imported modules.
     ///
     /// `imported_structs`: maps `"alias.StructName"` → field list (e.g. `"chars.Character"`)
     /// `imported_enums`:   maps `"alias.EnumName"` → variant list (e.g. `"chars.Faction"`)
+    /// `imported_labels`:  set of label names directly imported into this file's
+    ///                     scope without a qualifier (e.g. `"show_inventory"` from
+    ///                     `import (show_inventory) from "items.urd"`).
     ///
     /// Both qualified (`"chars.Character"`) and unqualified (`"Character"`) keys
     /// are inserted so the type checker can resolve either form.
@@ -82,6 +85,7 @@ impl AnalysisContext {
         root: &Ast,
         imported_structs: HashMap<String, Vec<StructField>>,
         imported_enums: HashMap<String, Vec<String>>,
+        imported_labels: HashSet<String>,
     ) -> Self {
         let mut ctx = Self::build(root);
         for (name, fields) in imported_structs {
@@ -89,6 +93,9 @@ impl AnalysisContext {
         }
         for (name, variants) in imported_enums {
             ctx.enums.insert(name, variants);
+        }
+        for label in imported_labels {
+            ctx.labels.insert(label);
         }
         ctx
     }

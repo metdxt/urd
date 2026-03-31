@@ -189,11 +189,12 @@ impl Backend {
             self.workspace.update(&uri, ast);
         }
 
-        // Re-run analysis with cross-module struct/enum context so that
-        // type-checking can see definitions from imported files.
-        let (imported_structs, imported_enums) = self.workspace.imported_type_context(&uri);
+        // Re-run analysis with cross-module struct/enum/label context so that
+        // type-checking and label-resolution can see definitions from imported files.
+        let (imported_structs, imported_enums, imported_labels) =
+            self.workspace.imported_type_context(&uri);
         if let Some(mut doc) = self.documents.get_mut(&uri) {
-            doc.reanalyze_with_imports(imported_structs, imported_enums);
+            doc.reanalyze_with_imports(imported_structs, imported_enums, imported_labels);
         }
 
         self.publish_diagnostics(uri).await;

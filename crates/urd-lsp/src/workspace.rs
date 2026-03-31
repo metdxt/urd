@@ -284,19 +284,34 @@ impl WorkspaceIndex {
     ///
     /// Both qualified (`"chars.Character"`) and unqualified (`"Character"`) forms
     /// are included so the type checker can resolve either spelling.
+    /// Return imported struct, enum, and label definitions for use in cross-file
+    /// analysis.
+    ///
+    /// Returns three values:
+    /// - `imported_structs`: `"alias.StructName"` → field list
+    /// - `imported_enums`: `"alias.EnumName"` → variant list
+    /// - `imported_labels`: set of label names directly imported into scope
+    ///   without a qualifier (e.g. `"show_inventory"` from
+    ///   `import (show_inventory) from "items.urd"`)
+    ///
+    /// Both qualified (`"chars.Character"`) and unqualified (`"Character"`) forms
+    /// are included in the struct/enum maps so the type checker can resolve
+    /// either spelling.
     pub fn imported_type_context(
         &self,
         uri: &Url,
     ) -> (
         std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
         std::collections::HashMap<String, Vec<String>>,
+        std::collections::HashSet<String>,
     ) {
         let mut structs = std::collections::HashMap::new();
         let mut enums = std::collections::HashMap::new();
+        let mut labels = std::collections::HashSet::new();
 
         let modules = match self.imports.get(uri) {
             Some(m) => m,
-            None => return (structs, enums),
+            None => return (structs, enums, labels),
         };
 
         for module in modules.iter() {
@@ -304,9 +319,21 @@ impl WorkspaceIndex {
             if let Some(ast) = &module.ast {
                 collect_type_defs_from_ast(ast, alias, &mut structs, &mut enums);
             }
+
+            // Collect directly-imported label names (symbol imports without a
+            // module-qualifier prefix, e.g. `import (show_inventory) from "items.urd"`).
+            // `symbol_filter == Some(_)` means this entry is a single-symbol import;
+            // the alias is what the importing file actually uses as the label name.
+            if module.symbol_filter.is_some() {
+                for sym in module.aliased_symbols() {
+                    if sym.kind == crate::semantic::SymbolKind::Label {
+                        labels.insert(sym.name.clone());
+                    }
+                }
+            }
         }
 
-        (structs, enums)
+        (structs, enums, labels)
     }
 }
 

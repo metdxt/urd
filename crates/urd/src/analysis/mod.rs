@@ -448,13 +448,19 @@ pub fn analyze(ast: &Ast) -> Vec<AnalysisError> {
 }
 
 /// Like [`analyze`] but also checks cross-module type references using
-/// struct and enum definitions from imported modules.
+/// struct, enum, and label definitions from imported modules.
 ///
 /// `imported_structs` maps `"alias.StructName"` → field list
 /// (e.g. `"chars.Character"` → `[StructField { name: "hp", .. }, ...]`).
 ///
 /// `imported_enums` maps `"alias.EnumName"` → variant list
 /// (e.g. `"chars.Faction"` → `["hero", "villain"]`).
+///
+/// `imported_labels` is the set of label names that have been imported directly
+/// into this file's scope without a qualifier (e.g. `"show_inventory"` from
+/// `import (show_inventory) from "items.urd"`).  These are merged into
+/// [`AnalysisContext::labels`] so that the label-resolution pass does not
+/// raise [`AnalysisError::UndefinedLabel`] for them.
 ///
 /// Both qualified (`"chars.Character"`) and unqualified (`"Character"`) keys
 /// should be present in the maps so that the type checker can resolve either
@@ -463,8 +469,10 @@ pub fn analyze_with_imports(
     ast: &Ast,
     imported_structs: std::collections::HashMap<String, Vec<crate::parser::ast::StructField>>,
     imported_enums: std::collections::HashMap<String, Vec<String>>,
+    imported_labels: std::collections::HashSet<String>,
 ) -> Vec<AnalysisError> {
-    let ctx = AnalysisContext::build_with_imports(ast, imported_structs, imported_enums);
+    let ctx =
+        AnalysisContext::build_with_imports(ast, imported_structs, imported_enums, imported_labels);
     let mut errors: Vec<AnalysisError> = Vec::new();
     errors.extend(top_level::check(ast));
     errors.extend(exhaustiveness::check(ast, &ctx));

@@ -45,7 +45,13 @@ impl Document {
     ///
     /// Call this after [`update`](Self::update) (which calls [`reparse`](Self::reparse)
     /// internally) once the workspace index has been refreshed, passing the
-    /// imported struct and enum definitions for this document.
+    /// imported struct, enum, and label definitions for this document.
+    ///
+    /// `imported_labels` is the set of label names that were directly imported
+    /// into this file's scope (e.g. `show_inventory` from
+    /// `import (show_inventory) from "items.urd"`).  These are merged into the
+    /// analysis context so that `jump show_inventory` does not produce a false
+    /// [`AnalysisError::UndefinedLabel`] diagnostic.
     ///
     /// If the document currently has no AST (i.e. the last parse failed) this
     /// is a no-op — there is nothing to re-analyse.
@@ -53,10 +59,15 @@ impl Document {
         &mut self,
         imported_structs: std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
         imported_enums: std::collections::HashMap<String, Vec<String>>,
+        imported_labels: std::collections::HashSet<String>,
     ) {
         if let Some(ast) = &self.ast {
-            self.analysis_errors =
-                urd::analysis::analyze_with_imports(ast, imported_structs, imported_enums);
+            self.analysis_errors = urd::analysis::analyze_with_imports(
+                ast,
+                imported_structs,
+                imported_enums,
+                imported_labels,
+            );
         }
     }
 
