@@ -14,17 +14,26 @@
 #   Semantic tokens             : keywords, labels, strings, struct refs, enums
 # =============================================================================
 
-import "characters.urd" as chars
-import "items.urd"      as inv
-import "village.urd"    as village
-import "dungeon.urd"    as dungeon
+# Whole-module imports for navigation modules — we jump into many labels from both
+import "village.urd" as village
+import "dungeon.urd"  as dungeon
+
+# Pull just the types and characters we reference by name in this file
+import (Faction, narrator, hero, merchant, villain) from "characters.urd"
+
+# Pull the specific item type and globals we use directly
+import Item as Item           from "items.urd"
+import gold                   from "items.urd"
+import inventory_count        from "items.urd"
 
 # ---------------------------------------------------------------------------
-# LSP: Hover over 'chars.Faction' should show the enum definition
-const player_faction: chars.Faction = chars.Faction.Rebel
+# LSP: Hover over 'Faction' shows the enum definition in characters.urd
+# LSP: 'Faction.Rebel' — completion after 'Faction.' offers Guild, Empire, Rebel
+const player_faction: Faction = Faction.Rebel
 
-# LSP: Hover over 'inv.Item' — cross-file type reference
-const starting_dagger: inv.Item = :{ name: "Rusty Dagger", description: "A chipped blade of uncertain origin.", value: 5, weight: 1 }
+# LSP: Hover over 'Item' — directly imported type from items.urd
+# LSP: go-to-definition on 'Item' navigates straight to items.urd
+const starting_dagger: Item = :{ name: "Rusty Dagger", description: "A chipped blade of uncertain origin.", value: 5, weight: 1 }
 
 
 
@@ -33,7 +42,7 @@ const starting_dagger: inv.Item = :{ name: "Rusty Dagger", description: "A chipp
 # LSP RENAME TEST: rename this label and observe the jump below also updates
 # =============================================================================
 label prologue {
-    # LSP: semantic token — 'chars.narrator' is a cross-file const of struct type
+    # LSP: 'narrator' directly imported — hover shows the const definition in characters.urd
     <narrator>: {
         "In the age before the Sundering, three great powers held the world"
         "in uneasy balance: the Guild, the Empire, and the Rebels."
@@ -44,7 +53,7 @@ label prologue {
         "But today, on the road to the village of Ashfen, everything changes."
     }
 
-    # LSP: hover over 'chars.hero' — cross-file const reference
+    # LSP: 'hero' directly imported — hover shows the const definition in characters.urd
     <hero>: "I've been walking for three days. I need rest... and answers."
 
     <narrator>: {
@@ -85,7 +94,7 @@ label choose_path {
         "The dungeon path is cold, silent, and calls to something in your blood."
     }
 
-    # LSP: hover over 'chars.hero' — cross-file const used as dialogue speaker
+    # LSP: 'hero' directly imported — used as dialogue speaker
     <hero>: "Two roads. One choice. Story of my life."
 
     menu {
@@ -106,7 +115,7 @@ label choose_path {
 # =============================================================================
 # label: village_entry
 # Bridge label — delegates into the village module's control flow
-# LSP: 'village' import alias hover should show the imported file path
+# LSP: 'village' whole-module alias — hover shows the imported file path
 # LSP: cross-file completion — after 'village.' the LSP should list:
 #      village_square, market, tavern (and any consts/structs in village.urd)
 # =============================================================================
@@ -123,7 +132,7 @@ label village_entry {
 # Inline summary of village events for the main story thread
 # =============================================================================
 label village_scene {
-    # LSP: hover over 'chars.merchant' — defined in characters.urd
+    # LSP: 'merchant' directly imported from characters.urd — hover shows its definition
     <merchant>: {
         "Welcome, stranger! Ashfen hasn't seen a traveller in weeks."
         "These are dark times — the dungeon grows restless."
@@ -169,7 +178,7 @@ label dungeon_entry {
 # Inline summary of dungeon events for the main story thread
 # =============================================================================
 label dungeon_scene {
-    # LSP: hover over 'chars.villain' — cross-file character reference
+    # LSP: 'villain' directly imported from characters.urd — hover shows its definition
     <villain>: {
         "So. Another fool stumbles into my hall."
         "I can smell the road-dust on you, wanderer."
@@ -202,12 +211,12 @@ label dungeon_scene {
 # LSP: string interpolation of cross-file globals — semantic token test
 # =============================================================================
 label inventory_check {
-    # LSP: 'inv.gold' and 'inv.inventory_count' — cross-file global refs
-    <narrator>: "You check your coin pouch. You have {inv.gold} gold pieces."
-    <narrator>: "Your pack contains {inv.inventory_count} item(s)."
+    # LSP: 'gold' and 'inventory_count' directly imported — no module prefix required
+    <narrator>: "You check your coin pouch. You have {gold} gold pieces."
+    <narrator>: "Your pack contains {inventory_count} item(s)."
 
-    # LSP: hover over 'inv.Item' — cross-file struct type
-    # LSP: hover over 'starting_dagger' — local const of type inv.Item
+    # LSP: 'Item' directly imported — hover on 'Item' navigates to items.urd
+    # LSP: hover over 'starting_dagger' — local const of type Item
     <narrator>: "Your {starting_dagger.name} is still sharp enough. Barely."
 
     jump choose_path
@@ -224,17 +233,17 @@ label guild_lore {
         "Now they've gone quiet. Rumour says their master turned."
     }
 
-    # LSP: match on cross-file enum — 'chars.Faction' semantic token
+    # LSP: match on directly imported enum — 'Faction' semantic token, no module prefix
     match player_faction {
-        chars.Faction.Guild {
+        Faction.Guild {
             <hero>: "I... I used to be one of them. Before the purge."
             <merchant>: "Then you know better than most what's at stake."
         }
-        chars.Faction.Empire {
+        Faction.Empire {
             <hero>: "The Empire never trusted the Guild anyway."
             <merchant>: "Careful saying that here. Old loyalties die hard."
         }
-        chars.Faction.Rebel {
+        Faction.Rebel {
             <hero>: "The Rebels warned everyone this would happen. Nobody listened."
             <merchant>: "Aye. And now the bill comes due for all of us."
         }
@@ -254,8 +263,8 @@ label buy_and_descend {
         "you'll have earned it tenfold."
     }
 
-    # LSP: inv.gold is a global defined in items.urd — hover for cross-file info
-    <narrator>: "You stock up on supplies. Remaining gold: {inv.gold}."
+    # LSP: 'gold' directly imported from items.urd — hover for cross-file info
+    <narrator>: "You stock up on supplies. Remaining gold: {gold}."
 
     <hero>: "Thank you. I'll try not to die."
 
@@ -297,8 +306,8 @@ label boss_battle {
         "In the end, the wanderer stands. The villain does not."
     }
 
-    # LSP: cross-file const reference for item display
-    <narrator>: "Among the rubble: the Sundering Stone, and a chest of {inv.gold} gold."
+    # LSP: 'gold' directly imported — cross-file interpolation reference
+    <narrator>: "Among the rubble: the Sundering Stone, and a chest of {gold} gold."
 
     jump ending
 }

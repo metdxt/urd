@@ -1,20 +1,21 @@
 # village.urd — The Village of Ashenmoor
 # LSP features exercised in this file:
-#   - Cross-file go-to-definition: hover over 'chars.Character' to jump to characters.urd
-#   - Cross-file completion: 'chars.' prefix should offer Character, Faction, narrator, hero, etc.
+#   - Symbol imports: specific names pulled directly from other modules
+#   - Cross-file go-to-definition: hover over 'Character' to jump to characters.urd
+#   - Cross-file completion: imported names 'Character', 'Faction', 'narrator', etc.
 #   - Semantic tokens: labels, structs, enums, string interpolation, keywords
 #   - Document symbols: village_square, market, tavern, elder_warning are all indexable symbols
 
-import "characters.urd" as chars
-import "items.urd" as inv
+import (Character, Faction, narrator, hero) from "characters.urd"
+import (Item, gold, inventory_count, show_inventory) from "items.urd"
 
-# LSP: go-to-definition on 'chars.Character' should navigate to characters.urd
-# LSP: hover on 'chars.Character' should show struct definition with fields
+# LSP: go-to-definition on 'Character' navigates directly to characters.urd
+# LSP: hover on 'Character' shows the struct definition with fields
 
-const elder: chars.Character = :{ name: "Elder Maren", name_color: "#a0c8a0" }
-const blacksmith: chars.Character = :{ name: "Aldric the Smith", name_color: "#c87832" }
-const merchant_vera: chars.Character = :{ name: "Vera Quickfingers", name_color: "#d4af37" }
-const guard_captain: chars.Character = :{ name: "Captain Brynn", name_color: "#8080c0" }
+const elder: Character = :{ name: "Elder Maren", name_color: "#a0c8a0" }
+const blacksmith: Character = :{ name: "Aldric the Smith", name_color: "#c87832" }
+const merchant_vera: Character = :{ name: "Vera Quickfingers", name_color: "#d4af37" }
+const guard_captain: Character = :{ name: "Captain Brynn", name_color: "#8080c0" }
 
 # LSP: find-references on 'elder' — used in village_square and elder_warning labels below
 # LSP: rename 'elder' to see all usages update across this file
@@ -25,7 +26,7 @@ global tavern_rumor_heard: int = 0
 # ─── Village Square ───────────────────────────────────────────────────────────
 
 label village_square {
-    # LSP: semantic tokens — 'chars' is a module ref, 'narrator' is a const of type Character
+    # LSP: 'narrator' and 'hero' are directly imported consts of type Character
     <narrator>: {
         "You step through the mossy gate into Ashenmoor."
         "The smell of bread and woodsmoke drifts across the cobblestones."
@@ -45,9 +46,9 @@ label village_square {
         "Farmers won't tend the eastern fields."
     }
 
-    # LSP: string interpolation — 'inv.gold' is a global from items.urd
-    # LSP: cross-file hover on 'inv.gold' should show its type and initial value
-    <narrator>: "You check your coin purse. You have {inv.gold} gold pieces."
+    # LSP: 'gold' is a directly imported global from items.urd — no 'inv.' prefix needed
+    # LSP: cross-file hover on 'gold' should show its type and initial value
+    <narrator>: "You check your coin purse. You have {gold} gold pieces."
 
     <hero>: "I'll look into it. But first, I could use supplies."
 
@@ -62,7 +63,6 @@ label village_square {
             jump elder_warning
         }
         "Head straight to Thornspire Ridge" {
-            # LSP: jump targets are local labels within this file only
             jump village_farewell
         }
     }
@@ -98,9 +98,9 @@ label elder_warning {
 
     <guard_captain>: "Careful won't be enough. Take this."
 
-    # LSP: cross-file hover on 'inv.Item' shows the struct definition in items.urd
-    # LSP: 'inv.' completion here would offer Item, iron_sword, health_potion, gold, etc.
-    const torch: inv.Item = :{ name: "Iron Torch", description: "A sturdy iron torch. Burns for hours.", value: 2, weight: 1 }
+    # LSP: 'Item' is directly imported from items.urd — no module prefix needed
+    # LSP: hover on 'Item' shows the struct definition
+    const torch: Item = :{ name: "Iron Torch", description: "A sturdy iron torch. Burns for hours.", value: 2, weight: 1 }
 
     <narrator>: {
         "Captain Brynn hands you a well-worn iron torch."
@@ -113,7 +113,7 @@ label elder_warning {
 # ─── Market ───────────────────────────────────────────────────────────────────
 
 label market {
-    # LSP: 'visited_market' global used in conditional — semantic token (global variable)
+    # LSP: 'visited_market' global — semantic token (local global variable)
     if visited_market > 0 {
         <merchant_vera>: "Back again? My prices haven't changed, if that's what you're hoping."
     } else {
@@ -125,33 +125,33 @@ label market {
         <narrator>: "Her stall is crammed with vials, rope coils, dried herbs, and a suspiciously large number of maps."
     }
 
-    # LSP: string interpolation of global from items.urd — cross-file reference
-    <merchant_vera>: "You've got {inv.gold} gold? Enough for something good, I'd say."
+    # LSP: 'gold' — directly imported global, cross-file interpolation reference
+    <merchant_vera>: "You've got {gold} gold? Enough for something good, I'd say."
 
-    # LSP: semantic tokens on enum variant 'chars.Faction.Guild'
-    # LSP: hover on 'chars.Faction' should show enum definition
-    const vera_faction: chars.Faction = chars.Faction.Guild
+    # LSP: 'Faction' is directly imported — hover shows the enum definition in characters.urd
+    # LSP: 'Faction.Guild' — completion after 'Faction.' offers Guild, Empire, Rebel
+    const vera_faction: Faction = Faction.Guild
 
-    if vera_faction == chars.Faction.Guild {
+    if vera_faction == Faction.Guild {
         <merchant_vera>: "I supply to the Merchants' Guild — so you know my stock is certified and my weights are honest. Mostly."
     }
 
     menu {
         "Buy a healing potion (30 gold)" {
-            if inv.gold >= 30 {
-                # LSP: cross-file global mutation — 'inv.gold' is defined in items.urd
-                inv.gold = inv.gold - 30
-                inv.inventory_count = inv.inventory_count + 1
+            if gold >= 30 {
+                # LSP: mutating directly imported globals 'gold' and 'inventory_count'
+                gold = gold - 30
+                inventory_count = inventory_count + 1
                 <merchant_vera>: "Pleasure doing business. That potion will knit a wound right before your eyes — don't waste it on a scratch."
-                <narrator>: "You now have {inv.gold} gold and {inv.inventory_count} item(s) in your pack."
+                <narrator>: "You now have {gold} gold and {inventory_count} item(s) in your pack."
             } else {
                 <merchant_vera>: "Short on coin, are we? Come back when your purse is heavier."
             }
         }
         "Buy the old map (15 gold)" {
-            if inv.gold >= 15 {
-                inv.gold = inv.gold - 15
-                inv.inventory_count = inv.inventory_count + 1
+            if gold >= 15 {
+                gold = gold - 15
+                inventory_count = inventory_count + 1
                 <merchant_vera>: "That map shows the outer halls of Thornspire Dungeon. Sketched by a cartographer who made it back — barely."
                 <narrator>: "The parchment is stained with something rust-coloured. You try not to think about what."
             } else {
@@ -168,14 +168,14 @@ label market {
 
     visited_market = visited_market + 1
 
-    # LSP: jump back to square — local label reference
     jump village_square
 }
 
 # ─── Tavern ───────────────────────────────────────────────────────────────────
 
 label tavern {
-    const barkeep: chars.Character = :{ name: "Ogden", name_color: "#b05030" }
+    # LSP: 'Character' used directly — no 'chars.' prefix; go-to-def still navigates to characters.urd
+    const barkeep: Character = :{ name: "Ogden", name_color: "#b05030" }
 
     <narrator>: {
         "The Crooked Lantern is warm and dim, smelling of tallow and ale."
@@ -216,8 +216,8 @@ label tavern {
                 "We outlasted empires, we'll outlast this too."
             }
 
-            # LSP: semantic tokens — 'chars.Faction.Empire' enum variant reference
-            const old_rulers: chars.Faction = chars.Faction.Empire
+            # LSP: 'Faction' and 'Faction.Empire' — directly imported, no module prefix
+            const old_rulers: Faction = Faction.Empire
             <barkeep>: "The {old_rulers} used to station soldiers here. Now their fortresses are sheep pastures."
         }
         "Ask about other travellers" {
@@ -238,7 +238,7 @@ label tavern {
 # ─── Village Farewell ─────────────────────────────────────────────────────────
 
 label village_farewell {
-    # LSP: 'elder' const used a third time — find-references should list all three sites
+    # LSP: 'elder' const — third usage, find-references lists all three sites
     <elder>: "Return to us safe, traveller. The village will be watching the ridge for your signal fire."
 
     <guard_captain>: {
@@ -250,12 +250,12 @@ label village_farewell {
     <hero>: "Understood. I'll be back before the next moon."
 
     <narrator>: {
-        "You shoulder your pack — {inv.inventory_count} item(s) stored inside — and set off up the ridge path."
+        "You shoulder your pack — {inventory_count} item(s) stored inside — and set off up the ridge path."
         "Ashenmoor shrinks behind you."
         "Ahead, the stones of Thornspire loom grey against a pewter sky."
     }
 
-    # LSP: inv.show_inventory is a label defined in items.urd — cross-file label reference
-    # (demonstrating that the symbol exists and is resolvable via LSP go-to-definition)
-    jump inv.show_inventory
+    # LSP: 'show_inventory' is a directly imported label from items.urd
+    # LSP: go-to-definition jumps straight to the label in items.urd
+    jump show_inventory
 }

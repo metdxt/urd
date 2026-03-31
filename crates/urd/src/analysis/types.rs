@@ -425,14 +425,27 @@ fn is_compatible(value: &RuntimeValue, annotation: &TypeAnnotation, ctx: &Analys
             match value {
                 // `null` is always compatible with a Named type (nullable enum).
                 RuntimeValue::Null => true,
-                // A multi-segment IdentPath (e.g. `chars.Faction.Rebel`) is a
-                // qualified enum variant from an imported module — accept it only
-                // when the annotation itself is also cross-module (multi-segment).
-                // A 2-segment value against a 1-segment annotation (e.g. assigning
-                // `Dir.North` where `Dir` is expected) is a local qualified path
-                // and should remain a type error.
+                // A multi-segment IdentPath (e.g. `chars.Faction.Rebel`) against a
+                // multi-segment annotation (e.g. `chars.Faction`) — cross-module
+                // qualified reference; accept without further checking.
                 RuntimeValue::IdentPath(ident_path) if ident_path.len() > 1 && path.len() > 1 => {
                     true
+                }
+                // A 2-segment IdentPath where the first segment matches the type name
+                // (e.g. `Faction.Rebel` assigned to type `Faction`) — the
+                // `EnumName.Variant` form used with directly-imported or local enums.
+                RuntimeValue::IdentPath(ident_path)
+                    if ident_path.len() == 2 && ident_path[0] == path[0] =>
+                {
+                    let enum_name = path.first().map(String::as_str).unwrap_or("");
+                    if let Some(variants) = ctx.enums.get(enum_name) {
+                        variants
+                            .iter()
+                            .any(|v| v.as_str() == ident_path[1].as_str())
+                    } else {
+                        // Enum not in context (e.g. imported without type context) — accept.
+                        true
+                    }
                 }
                 // A single-segment IdentPath is treated as a local enum variant.
                 RuntimeValue::IdentPath(ident_path) if ident_path.len() == 1 => {

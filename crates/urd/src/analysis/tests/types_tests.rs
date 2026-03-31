@@ -736,12 +736,49 @@ fn top_level_context_var_good_reassignment_in_nested_block_ok() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn multi_segment_ident_path_not_compatible_with_named_annotation() {
-    let ctx = make_ctx(&[("Dir", &["North"])], &[]);
-    // "Dir.North" is a two-segment path, not a single-segment variant name.
+fn enum_name_dot_variant_compatible_with_named_annotation() {
+    let ctx = make_ctx(&[("Dir", &["North", "South"])], &[]);
+    // "Dir.North" against type "Dir" — the EnumName.Variant form used when
+    // the enum is directly imported (symbol import) rather than qualified
+    // through a module alias. This must be accepted.
     let val = Ast::value(RuntimeValue::IdentPath(vec![
         "Dir".to_owned(),
         "North".to_owned(),
+    ]));
+    let ast = Ast::block(vec![typed_decl(
+        "d",
+        TypeAnnotation::Named(vec!["Dir".to_owned()]),
+        val,
+    )]);
+    assert!(
+        types::check(&ast, &ctx).is_empty(),
+        "Dir.North should be compatible with type Dir"
+    );
+}
+
+#[test]
+fn enum_name_dot_unknown_variant_is_type_error() {
+    let ctx = make_ctx(&[("Dir", &["North", "South"])], &[]);
+    // "Dir.East" is not a known variant of Dir — must be a type error.
+    let val = Ast::value(RuntimeValue::IdentPath(vec![
+        "Dir".to_owned(),
+        "East".to_owned(),
+    ]));
+    let ast = Ast::block(vec![typed_decl(
+        "d",
+        TypeAnnotation::Named(vec!["Dir".to_owned()]),
+        val,
+    )]);
+    assert_type_mismatch(&types::check(&ast, &ctx), "d");
+}
+
+#[test]
+fn mismatched_enum_name_dot_variant_is_type_error() {
+    let ctx = make_ctx(&[("Dir", &["North"]), ("Color", &["Red"])], &[]);
+    // "Color.Red" against type "Dir" — first segment doesn't match the type.
+    let val = Ast::value(RuntimeValue::IdentPath(vec![
+        "Color".to_owned(),
+        "Red".to_owned(),
     ]));
     let ast = Ast::block(vec![typed_decl(
         "d",
