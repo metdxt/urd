@@ -24,8 +24,9 @@
 //! - [`possible_typo`]: An identifier closely resembles a known name (edit distance ≤ 2).
 //!
 //! ### Opt-in
-//! - `loop_detection`: **not active yet**. The module exists as a placeholder,
-//!   but the pass is intentionally not executed until a real implementation lands.
+//! - [`loop_detection`]: Detects strongly-connected label cycles with no
+//!   escaping path to a terminator. Emitted only for labels decorated with
+//!   `@lint(check_loops)`.
 //!
 //! All passes always run to completion; errors from one pass do not suppress the others.
 
@@ -326,11 +327,10 @@ pub enum AnalysisError {
     },
 
     // ── Opt-in ────────────────────────────────────────────────────────────
-    /// Reserved for a future loop-detection pass:
-    /// a set of labels forms a cycle with no escaping path to a terminator.
+    /// A set of labels forms a cycle with no escaping path to a terminator.
     ///
-    /// This variant is currently not emitted in practice because
-    /// `loop_detection` is a placeholder pass and is not executed.
+    /// This diagnostic is emitted only for labels explicitly decorated with
+    /// `@lint(check_loops)`.
     InfiniteDialogueLoop {
         /// The label that anchors the detected cycle.
         label: String,
@@ -544,8 +544,8 @@ impl AnalysisError {
 
             AnalysisError::InfiniteDialogueLoop { label, .. } => {
                 format!(
-                    "Reserved diagnostic (future loop-detection pass): label '{label}' \
-                     would be part of a cycle with no escaping path to a terminator"
+                    "Infinite dialogue loop: label '{label}' is part of a cycle with no \
+                     escaping path to a terminator"
                 )
             }
         }
@@ -649,7 +649,7 @@ impl AnalysisError {
             }
 
             AnalysisError::InfiniteDialogueLoop { label, .. } => {
-                format!("reserved (future pass): label '{label}' would anchor an infinite loop")
+                format!("label '{label}' anchors an infinite loop")
             }
         }
     }
@@ -773,8 +773,7 @@ fn run_passes(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     errors.extend(possible_typo::check(ast, ctx));
 
     // ── Opt-in ────────────────────────────────────────────────────────────
-    // `loop_detection` is intentionally disabled here because the pass is
-    // currently a stub/placeholder and would be misleading as an active check.
+    errors.extend(loop_detection::check(ast));
 
     errors
 }
@@ -793,8 +792,8 @@ fn run_passes(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
 /// `empty_dialogue` → `duplicate_menu_dest` → `overwritten_assign` →
 /// `unused_var` → `dead_branch` → `possible_typo`
 ///
-/// **Opt-in:** none currently (`loop_detection` exists but is intentionally
-/// not executed until its implementation is complete)
+/// **Opt-in:** `loop_detection` (emits only for labels decorated with
+/// `@lint(check_loops)`)
 pub fn analyze(ast: &Ast) -> Vec<AnalysisError> {
     let ctx = AnalysisContext::build(ast);
     run_passes(ast, &ctx)
