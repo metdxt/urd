@@ -207,10 +207,6 @@
 
 ["," ";" ":"] @punctuation.delimiter
 
-; dialogue speaker angle brackets
-(dialogue_statement "<" @punctuation.bracket)
-(dialogue_statement ">" @punctuation.bracket)
-
 ; event constraint angle brackets
 (event_constraint "<" @punctuation.bracket)
 (event_constraint ">" @punctuation.bracket)

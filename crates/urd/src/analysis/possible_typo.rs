@@ -2,7 +2,7 @@
 //!
 //! Detects likely typos in identifiers across three namespaces:
 //!
-//! - **Speaker names** in dialogue lines (e.g. `<zra>:` instead of `<zara>:`).
+//! - **Speaker names** in dialogue lines (e.g. `zra:` instead of `zara:`).
 //! - **Jump target labels** (e.g. `jump staart` instead of `jump start`).
 //! - **Variable references** (e.g. `if visted_cave` instead of `if visited_cave`).
 //!
@@ -476,10 +476,10 @@ mod tests {
         // "zara" appears 3 times (≥ 3× "zra"), "zra" appears once — distance is 1.
         let src = r#"
 label scene {
-    <zara>: "Line one."
-    <zara>: "Line two."
-    <zara>: "Line three."
-    <zra>:  "Oops."
+    zara: "Line one."
+    zara: "Line two."
+    zara: "Line three."
+    zra:  "Oops."
     end!()
 }
 "#;
@@ -504,9 +504,9 @@ label scene {
         // "zaxxon" has no spelling-similar peer — should never be flagged.
         let src = r#"
 label scene {
-    <narrator>: "Line one."
-    <narrator>: "Line two."
-    <zaxxon>: "A totally unique line."
+    narrator: "Line one."
+    narrator: "Line two."
+    zaxxon: "A totally unique line."
     end!()
 }
 "#;
@@ -535,9 +535,9 @@ label scene {
         // "zara" appears only 2 times; the 3× threshold requires ≥ 3, so "zra" is not flagged.
         let src = r#"
 label scene {
-    <zara>: "Line one."
-    <zara>: "Line two."
-    <zra>:  "Close, but threshold not met."
+    zara: "Line one."
+    zara: "Line two."
+    zra:  "Close, but threshold not met."
     end!()
 }
 "#;
@@ -862,10 +862,10 @@ label start {
     end!()
 }
 label main_scene {
-    <zara>: "Line one."
-    <zara>: "Line two."
-    <zara>: "Line three."
-    <zra>: "Oops, typo speaker."
+    zara: "Line one."
+    zara: "Line two."
+    zara: "Line three."
+    zra: "Oops, typo speaker."
     if visted_cave { end!() } else { end!() }
     jump staart
 }

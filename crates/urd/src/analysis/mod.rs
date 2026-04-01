@@ -137,7 +137,7 @@ impl std::fmt::Display for NodeDescription {
 /// Classifies what namespace a [`AnalysisError::PossibleTypo`] belongs to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypoKind {
-    /// A speaker identifier in a dialogue line (e.g. `<zra>:` instead of `<zara>:`).
+    /// A speaker identifier in a dialogue line (e.g. `zra:` instead of `zara:`).
     Speaker,
     /// A jump/let-call target label (e.g. `jump staart` instead of `jump start`).
     Label,

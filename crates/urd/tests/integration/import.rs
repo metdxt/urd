@@ -64,7 +64,7 @@ fn test_import_then_jump_to_module_label() {
         "lib.urd",
         r#"
         label greeting {
-            <"Alice">: "Hello from lib!"
+            Alice: "Hello from lib!"
         }
         "#,
     );
@@ -107,9 +107,9 @@ fn test_cross_module_global_write_and_read() {
         label main {
             lib.score = 99
             if lib.score == 99 {
-                <"Narrator">: "High score!"
+                Narrator: "High score!"
             } else {
-                <"Narrator">: "Nope"
+                Narrator: "Nope"
             }
             end!()
         }
@@ -137,7 +137,7 @@ fn test_module_label_body_executes_on_jump() {
         "state.urd",
         r#"
         label init {
-            <"Sys">: "module init ran"
+            Sys: "module init ran"
         }
         "#,
     );
@@ -173,7 +173,7 @@ fn test_two_modules_with_same_label_name_do_not_collide() {
         "module_a.urd",
         r#"
         label start {
-            <"A">: "from module A"
+            A: "from module A"
         }
         "#,
     );
@@ -181,7 +181,7 @@ fn test_two_modules_with_same_label_name_do_not_collide() {
         "module_b.urd",
         r#"
         label start {
-            <"B">: "from module B"
+            B: "from module B"
         }
         "#,
     );
@@ -218,10 +218,10 @@ fn test_jump_to_non_entry_module_label() {
         "scenes.urd",
         r#"
         label intro {
-            <"Alice">: "this is intro"
+            Alice: "this is intro"
         }
         label epilogue {
-            <"Alice">: "this is epilogue"
+            Alice: "this is epilogue"
         }
         "#,
     );
@@ -311,7 +311,7 @@ fn test_circular_import_compiles_successfully() {
 #[test]
 fn test_import_only_script_registers_labels() {
     let mut loader = MemLoader::new();
-    loader.add("util.urd", r#"label helper { <Sys>: "util" }"#);
+    loader.add("util.urd", r#"label helper { Sys: "util" }"#);
 
     let ast = parse_src(r#"import "util.urd" as util"#);
     let graph =
@@ -340,7 +340,7 @@ fn test_cross_module_global_visible_in_conditional() {
         label main {
             ns.flag = 1
             if ns.flag == 1 {
-                <"Test">: "flag is set"
+                Test: "flag is set"
             }
             end!()
         }
@@ -367,7 +367,7 @@ fn test_transitive_imports_resolve() {
         "base.urd",
         r#"
         label entry {
-            <"Base">: "from base"
+            Base: "from base"
         }
         "#,
     );

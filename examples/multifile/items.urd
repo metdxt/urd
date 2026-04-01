@@ -60,7 +60,7 @@ global courage_taken: int = 0
 label show_inventory {
     let narrator = :{ name: "Narrator", name_color: "#aaaaaa" }
 
-    <narrator>: {
+    narrator: {
         "═══════════════════════════════"
         "  INVENTORY"
         "═══════════════════════════════"
@@ -75,7 +75,7 @@ label show_inventory {
             "Drink a health potion (+30 HP)" {
                 let new_potions: int = potions_held - 1
                 global potions_held = new_potions
-                <narrator>: "You uncork the vial and drink. Warmth spreads through your body."
+                narrator: "You uncork the vial and drink. Warmth spreads through your body."
                 return
             }
             "Close inventory" {
@@ -92,7 +92,7 @@ label buy_item {
     let narrator = :{ name: "Narrator", name_color: "#aaaaaa" }
 
     if gold < 20 {
-        <merchant>: "Sorry, traveller — you haven't got the coin for anything in my stock."
+        merchant: "Sorry, traveller — you haven't got the coin for anything in my stock."
         return
     }
 
@@ -105,8 +105,8 @@ label buy_item {
                 global potions_held = count
                 let new_inv: int = inventory_count + 1
                 global inventory_count = new_inv
-                <merchant>: "There you go. One {health_potion.name}, fresh as yesterday's batch."
-                <narrator>: "You tuck the potion safely into your pack."
+                merchant: "There you go. One {health_potion.name}, fresh as yesterday's batch."
+                narrator: "You tuck the potion safely into your pack."
             }
             return
         }
@@ -116,7 +116,7 @@ label buy_item {
                 global gold = remaining
                 let new_inv: int = inventory_count + 1
                 global inventory_count = new_inv
-                <merchant>: "Fine choice. That blade's served three adventurers already — the ones who came back, anyway."
+                merchant: "Fine choice. That blade's served three adventurers already — the ones who came back, anyway."
             }
             return
         }
@@ -129,13 +129,13 @@ label buy_item {
                 let new_inv: int = inventory_count + 1
                 global inventory_count = new_inv
                 global courage_taken = 1
-                <merchant>: "Ah, you've got nerve. Or soon will. Don't take it on an empty stomach."
-                <narrator>: "You slip the golden elixir into your satchel beside the map."
+                merchant: "Ah, you've got nerve. Or soon will. Don't take it on an empty stomach."
+                narrator: "You slip the golden elixir into your satchel beside the map."
             }
             return
         }
         "Nothing, thanks" {
-            <merchant>: "Safe travels then. Mind the roads at night."
+            merchant: "Safe travels then. Mind the roads at night."
             return
         }
     }

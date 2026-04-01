@@ -1971,7 +1971,7 @@ mod tests {
 
     #[test]
     fn hover_info_string_in_label_shows_nothing() {
-        let src = "label greet {\n  <aria>: \"Hello world\"\n  end!()\n}\n";
+        let src = "label greet {\n  aria: \"Hello world\"\n  end!()\n}\n";
         let ast = parse(src);
         let syms = collect_symbols(&ast);
         // Offset pointing at 'H' in "Hello world" (inside the string).
@@ -1986,7 +1986,7 @@ mod tests {
 
     #[test]
     fn hover_info_interpolation_in_label_shows_variable() {
-        let src = "label greet {\n  let name = \"Ada\"\n  <aria>: \"Hello {name}!\"\n  end!()\n}\n";
+        let src = "label greet {\n  let name = \"Ada\"\n  aria: \"Hello {name}!\"\n  end!()\n}\n";
         let ast = parse(src);
         let syms = collect_symbols(&ast);
         // Offset pointing inside `name` within the interpolation {name}.

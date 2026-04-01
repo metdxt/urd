@@ -230,7 +230,7 @@ mod tests {
         let ast = parse(
             r#"
 label start {
-    <Narrator>: "Hello, world!"
+    Narrator: "Hello, world!"
     end!()
 }
 "#,
@@ -244,7 +244,7 @@ label start {
         let ast = parse(
             r#"
 label start {
-    <Narrator>: "Your name is {player.name}."
+    Narrator: "Your name is {player.name}."
     end!()
 }
 "#,
@@ -281,7 +281,7 @@ label start {
         let ast = parse(
             r#"
 label start {
-    <Narrator>: ""
+    Narrator: ""
     end!()
 }
 "#,
@@ -300,7 +300,7 @@ label start {
         let ast = parse(
             r#"
 label start {
-    <Narrator>: "   "
+    Narrator: "   "
     end!()
 }
 "#,
@@ -391,7 +391,7 @@ label start {
         let ast = parse(
             r#"
 label start {
-    <Hero>: ""
+    Hero: ""
     end!()
 }
 "#,
@@ -459,8 +459,8 @@ label start {
         let ast = parse(
             r#"
 label start {
-    <Narrator>: ""
-    <Hero>: "   "
+    Narrator: ""
+    Hero: "   "
     end!()
 }
 "#,
@@ -481,8 +481,8 @@ label start {
         let ast = parse(
             r#"
 label start {
-    <Narrator>: ""
-    <Narrator>: "This one is fine."
+    Narrator: ""
+    Narrator: "This one is fine."
     end!()
 }
 "#,
@@ -500,7 +500,7 @@ label start {
             r#"
 label start {
     if true {
-        <Narrator>: ""
+        Narrator: ""
     } else {
         end!()
     }
@@ -519,7 +519,7 @@ label start {
 label start {
     menu {
         "Choice A" {
-            <Narrator>: ""
+            Narrator: ""
             end!()
         }
         "Choice B" { end!() }
@@ -539,7 +539,7 @@ label start {
         let ast = parse(
             r#"
 label start {
-    <Narrator>: ""
+    Narrator: ""
     end!()
 }
 "#,

@@ -44,44 +44,44 @@ global ally_faction: Faction = Faction.Rebel
 
 label dungeon_entrance {
     # LSP: 'narrator' is a directly imported const — hover shows its definition in characters.urd
-    <narrator>: "The air grows cold as you descend the crumbling stone steps."
-    <narrator>: "Torchlight flickers against walls slick with moisture."
-    <narrator>: "Somewhere below, something stirs."
+    narrator: "The air grows cold as you descend the crumbling stone steps."
+    narrator: "Torchlight flickers against walls slick with moisture."
+    narrator: "Somewhere below, something stirs."
 
-    <shadow_warden>: "Halt, outsider."
-    <shadow_warden>: {
+    shadow_warden: "Halt, outsider."
+    shadow_warden: {
         "These ruins are claimed by Lord Malachar."
         "Turn back now, and I will let you leave with your life."
     }
 
     # LSP: 'gold' is a directly imported global from items.urd — no 'inv.' prefix
     # LSP: go-to-definition on 'gold' jumps straight to items.urd
-    <narrator>: "You clutch your coin purse — {gold} gold pieces. Perhaps enough to bribe your way through."
+    narrator: "You clutch your coin purse — {gold} gold pieces. Perhaps enough to bribe your way through."
 
     menu {
         "Bribe the warden (costs 30 gold)" {
             if gold >= 30 {
                 let new_gold: int = gold - 30
                 gold = new_gold
-                <narrator>: "You press 30 gold coins into the warden's gauntleted hand."
-                <shadow_warden>: "..."
-                <shadow_warden>: "Very well. You have one hour."
+                narrator: "You press 30 gold coins into the warden's gauntleted hand."
+                shadow_warden: "..."
+                shadow_warden: "Very well. You have one hour."
                 jump treasure_room
             } else {
-                <narrator>: "You reach into your purse — but there isn't enough."
-                <shadow_warden>: "Empty pockets? Then you have nothing to offer me."
+                narrator: "You reach into your purse — but there isn't enough."
+                shadow_warden: "Empty pockets? Then you have nothing to offer me."
                 jump fight_warden
             }
         }
         "Challenge the warden to combat" {
-            <narrator>: "You draw your weapon and settle into a fighting stance."
-            <shadow_warden>: "Bold. And foolish."
+            narrator: "You draw your weapon and settle into a fighting stance."
+            shadow_warden: "Bold. And foolish."
             jump fight_warden
         }
         "Sneak past while he's distracted" {
-            <narrator>: "You wait for the warden to glance away, then slip into the shadows."
-            <narrator>: "Your heart hammers in your chest as you press against the cold stone wall."
-            <narrator>: "You make it through."
+            narrator: "You wait for the warden to glance away, then slip into the shadows."
+            narrator: "Your heart hammers in your chest as you press against the cold stone wall."
+            narrator: "You make it through."
             jump treasure_room
         }
     }
@@ -93,23 +93,23 @@ label dungeon_entrance {
 # ---------------------------------------------------------------------------
 
 label fight_warden {
-    <shadow_warden>: "You will regret this, wanderer."
-    <narrator>: "The Shadow Warden lunges — iron-shod boots crashing against the stone floor."
+    shadow_warden: "You will regret this, wanderer."
+    narrator: "The Shadow Warden lunges — iron-shod boots crashing against the stone floor."
 
     # LSP: 'iron_sword' directly imported from items.urd — hover shows the const definition
     # LSP: go-to-definition on 'iron_sword' navigates to its declaration in items.urd
-    <narrator>: "You raise your {iron_sword.name} and parry the first blow."
+    narrator: "You raise your {iron_sword.name} and parry the first blow."
 
     menu {
         "Strike low" {
-            <narrator>: "You sweep low, catching him off-balance."
-            <narrator>: "The warden stumbles — and does not rise."
-            <shadow_warden>: "You are... stronger than you look."
+            narrator: "You sweep low, catching him off-balance."
+            narrator: "The warden stumbles — and does not rise."
+            shadow_warden: "You are... stronger than you look."
             jump treasure_room
         }
         "Feign retreat, then attack" {
-            <narrator>: "You fall back two steps — and the warden overextends."
-            <narrator>: "One clean strike ends the fight."
+            narrator: "You fall back two steps — and the warden overextends."
+            narrator: "One clean strike ends the fight."
             jump treasure_room
         }
     }
@@ -124,32 +124,32 @@ label fight_warden {
 label treasure_room {
     let entered_treasure_room: int = 1
 
-    <ancient_spirit>: "You have come far, mortal."
-    <ancient_spirit>: {
+    ancient_spirit: "You have come far, mortal."
+    ancient_spirit: {
         "This chamber has not seen living footsteps in three hundred years."
         "What you seek lies beyond the sealed door."
         "But Lord Malachar guards it jealously."
     }
 
-    <narrator>: "Before you stand two ancient pedestals. Each holds a glowing sigil."
+    narrator: "Before you stand two ancient pedestals. Each holds a glowing sigil."
 
     # LSP: 'inventory_count' — directly imported global, cross-file interpolation
-    <narrator>: "You have {inventory_count} items in your pack."
+    narrator: "You have {inventory_count} items in your pack."
 
     menu {
         "Ask the spirit about Lord Malachar" {
-            <ancient_spirit>: "He was once a scholar — brilliant, devoted to uncovering this place's secrets."
-            <ancient_spirit>: "The ruins changed him. The old magic took root in his mind."
-            <ancient_spirit>: "Now he is neither living nor dead. Something in between."
+            ancient_spirit: "He was once a scholar — brilliant, devoted to uncovering this place's secrets."
+            ancient_spirit: "The ruins changed him. The old magic took root in his mind."
+            ancient_spirit: "Now he is neither living nor dead. Something in between."
             jump treasure_room_choice
         }
         "Examine the sealed door" {
-            <narrator>: "Strange runes cover the door's surface, shifting like living ink."
-            <narrator>: "You sense immense power — and immense age — radiating from the stone."
+            narrator: "Strange runes cover the door's surface, shifting like living ink."
+            narrator: "You sense immense power — and immense age — radiating from the stone."
             jump treasure_room_choice
         }
         "Ignore it all and press forward" {
-            <narrator>: "You've come too far to be stopped by an old door."
+            narrator: "You've come too far to be stopped by an old door."
             jump boss_fight
         }
     }
@@ -163,25 +163,25 @@ label treasure_room {
 # ---------------------------------------------------------------------------
 
 label treasure_room_choice {
-    <ancient_spirit>: "I can sense your allegiances, traveller. They will shape what comes next."
+    ancient_spirit: "I can sense your allegiances, traveller. They will shape what comes next."
 
     # LSP: 'ally_faction' has type 'Faction' — match arms are enum variants, no module prefix
     match ally_faction {
         Faction.Guild {
-            <ancient_spirit>: "You carry the mark of the Guild. Pragmatic folk. Useful in a fight."
-            <narrator>: "The spirit gestures — and a hidden cache of gold coins slides from the wall."
-            <narrator>: "You pocket the coins. Every bit helps."
+            ancient_spirit: "You carry the mark of the Guild. Pragmatic folk. Useful in a fight."
+            narrator: "The spirit gestures — and a hidden cache of gold coins slides from the wall."
+            narrator: "You pocket the coins. Every bit helps."
         }
         Faction.Empire {
-            <ancient_spirit>: "The Empire's reach extends even here? Unsettling."
-            <ancient_spirit>: "I will not stop you — but know that imperial greed has already cost this place dearly."
-            <narrator>: "The spirit fades, leaving a cold silence in its wake."
+            ancient_spirit: "The Empire's reach extends even here? Unsettling."
+            ancient_spirit: "I will not stop you — but know that imperial greed has already cost this place dearly."
+            narrator: "The spirit fades, leaving a cold silence in its wake."
         }
         Faction.Rebel {
-            <ancient_spirit>: "A Rebel. Good."
-            <ancient_spirit>: "Malachar once served the Empire before these ruins consumed him."
-            <ancient_spirit>: "Strike him down — for all of us."
-            <narrator>: "The spirit bestows a faint blessing. You feel steadier. Stronger."
+            ancient_spirit: "A Rebel. Good."
+            ancient_spirit: "Malachar once served the Empire before these ruins consumed him."
+            ancient_spirit: "Strike him down — for all of us."
+            narrator: "The spirit bestows a faint blessing. You feel steadier. Stronger."
         }
     }
 
@@ -195,41 +195,41 @@ label treasure_room_choice {
 # ---------------------------------------------------------------------------
 
 label boss_fight {
-    <dungeon_boss>: "So. Another hero comes to try their luck."
-    <dungeon_boss>: {
+    dungeon_boss: "So. Another hero comes to try their luck."
+    dungeon_boss: {
         "Do you know how many have stood where you stand?"
         "Their names are carved into the walls of my chamber."
         "Yours will join them."
     }
 
-    <narrator>: "The air shudders. Shadows peel themselves from the walls and take shape."
+    narrator: "The air shudders. Shadows peel themselves from the walls and take shape."
 
     menu {
         "I'm not here to be remembered. I'm here to end this." {
-            <dungeon_boss>: "Then come."
-            <narrator>: "The fight is brutal and long — but you do not yield."
-            <narrator>: "When it is over, Lord Malachar dissolves into drifting ash."
-            <narrator>: "Silence falls over the dungeon for the first time in centuries."
+            dungeon_boss: "Then come."
+            narrator: "The fight is brutal and long — but you do not yield."
+            narrator: "When it is over, Lord Malachar dissolves into drifting ash."
+            narrator: "Silence falls over the dungeon for the first time in centuries."
             let boss_defeated: int = 1
             jump dungeon_epilogue
         }
         "What happened to you? You weren't always like this." {
-            <dungeon_boss>: "..."
-            <dungeon_boss>: "I remember... a library. Candlelight. Pages turning in the dark."
-            <dungeon_boss>: "But that was another life."
-            <narrator>: "Something in his voice wavers — a crack in centuries of stone-cold resolve."
+            dungeon_boss: "..."
+            dungeon_boss: "I remember... a library. Candlelight. Pages turning in the dark."
+            dungeon_boss: "But that was another life."
+            narrator: "Something in his voice wavers — a crack in centuries of stone-cold resolve."
             menu {
                 "There might still be a way back." {
-                    <dungeon_boss>: "No. There is not."
-                    <dungeon_boss>: "But perhaps... there is still a way forward."
-                    <narrator>: "Lord Malachar closes his eyes. The shadows retreat."
-                    <narrator>: "He dissolves — not in defeat, but in release."
+                    dungeon_boss: "No. There is not."
+                    dungeon_boss: "But perhaps... there is still a way forward."
+                    narrator: "Lord Malachar closes his eyes. The shadows retreat."
+                    narrator: "He dissolves — not in defeat, but in release."
                     let boss_defeated: int = 1
                     jump dungeon_epilogue
                 }
                 "Then I have no choice." {
-                    <narrator>: "You raise your weapon."
-                    <narrator>: "The fight begins — and ends quickly."
+                    narrator: "You raise your weapon."
+                    narrator: "The fight begins — and ends quickly."
                     let boss_defeated: int = 1
                     jump dungeon_epilogue
                 }
@@ -244,17 +244,17 @@ label boss_fight {
 # ---------------------------------------------------------------------------
 
 label dungeon_epilogue {
-    <narrator>: "The sealed door swings open of its own accord."
-    <narrator>: "Beyond it — a chamber filled with forgotten knowledge. Maps. Journals. Artifacts."
-    <narrator>: "And at the centre: a single ancient tome, its cover inlaid with silver."
+    narrator: "The sealed door swings open of its own accord."
+    narrator: "Beyond it — a chamber filled with forgotten knowledge. Maps. Journals. Artifacts."
+    narrator: "And at the centre: a single ancient tome, its cover inlaid with silver."
 
-    <ancient_spirit>: "Take it. You have earned it."
-    <ancient_spirit>: "The ruins will sleep again now. As they should."
+    ancient_spirit: "Take it. You have earned it."
+    ancient_spirit: "The ruins will sleep again now. As they should."
 
     # LSP: 'gold' — directly imported global, interpolated here without 'inv.' prefix
-    <narrator>: "You tuck the tome under your arm and begin the long climb back to daylight."
-    <narrator>: "Your gold pouch is lighter — {gold} pieces remain — but your pack is heavier."
-    <narrator>: "And somewhere above, the village waits."
+    narrator: "You tuck the tome under your arm and begin the long climb back to daylight."
+    narrator: "Your gold pouch is lighter — {gold} pieces remain — but your pack is heavier."
+    narrator: "And somewhere above, the village waits."
 
     end!()
 }

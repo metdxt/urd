@@ -25,8 +25,8 @@
 
 # Whole-module import so we can write `jump main.hub`.
 import "main.urd" as main
-# Pull narrator, hero, and Character directly so we can write <narrator>: and
-# <hero>: without a module prefix, and without re-declaring them (re-declaring
+# Pull narrator, hero, and Character directly so we can write `narrator:` and
+# `hero:` without a module prefix, and without re-declaring them (re-declaring
 # a const that main.urd already registered would error at runtime).
 import (narrator, hero, Character) from "main.urd"
 
@@ -47,16 +47,16 @@ global bought_drink: int = 0
 # Entry point — jumped to from main.hub.
 # =============================================================================
 label enter_tavern {
-    <narrator>: {
+    narrator: {
         "The Tarnished Flagon is warm and low-ceilinged, smelling of"
         "tallow candles, old wood, and something fermented and forgotten."
     }
 
-    <barkeep>: "Door. You're letting the cold in."
+    barkeep: "Door. You're letting the cold in."
 
-    <hero>: "Sorry."
+    hero: "Sorry."
 
-    <barkeep>: "Sit down then. What'll it be?"
+    barkeep: "Sit down then. What'll it be?"
 
     menu {
         "Order a drink" {
@@ -66,7 +66,7 @@ label enter_tavern {
             jump ask_rumours
         }
         "Just warm up by the fire and leave" {
-            <narrator>: "You stand by the hearth for a moment. The warmth is almost enough."
+            narrator: "You stand by the hearth for a moment. The warmth is almost enough."
             jump leave_tavern
         }
     }
@@ -78,25 +78,25 @@ label enter_tavern {
 label order_drink {
     bought_drink = 1
 
-    <barkeep>: "Copper piece. Don't argue."
+    barkeep: "Copper piece. Don't argue."
 
-    <hero>: "I wasn't going to."
+    hero: "I wasn't going to."
 
-    <barkeep>: "Most do."
+    barkeep: "Most do."
 
-    <narrator>: {
+    narrator: {
         "The drink is warm, slightly bitter, and tastes of barley and regret."
         "It's the best thing you've had in three days."
     }
 
     if heard_rumour > 0 {
-        <barkeep>: {
+        barkeep: {
             "You look like someone with a destination."
             "Word of advice — the old mill road washes out after dark."
             "Go around."
         }
 
-        <hero>: "Noted. Thanks."
+        hero: "Noted. Thanks."
 
         jump leave_tavern
     } else {
@@ -117,31 +117,31 @@ label order_drink {
 label ask_rumours {
     heard_rumour = 1
 
-    <patron>: "You talking to me?"
+    patron: "You talking to me?"
 
-    <hero>: "If you know something worth hearing."
+    hero: "If you know something worth hearing."
 
-    <patron>: {
+    patron: {
         "Riders came through last night. Dark cloaks, no markings."
         "Didn't stop for food, didn't stop for water."
         "Just rode straight through like the road was on fire."
     }
 
-    <hero>: "Which direction?"
+    hero: "Which direction?"
 
-    <patron>: "North. Where else."
+    patron: "North. Where else."
 
-    <narrator>: {
+    narrator: {
         "The patron turns back to his drink."
         "The fire crackles.  Somewhere outside, the wind picks up."
     }
 
-    <barkeep>: "Don't read too much into it. Riders pass through."
+    barkeep: "Don't read too much into it. Riders pass through."
 
-    <hero>: "Sure they do."
+    hero: "Sure they do."
 
     if bought_drink > 0 {
-        <narrator>: "You finish your drink slowly, thinking about dark cloaks and empty roads."
+        narrator: "You finish your drink slowly, thinking about dark cloaks and empty roads."
         jump leave_tavern
     } else {
         menu {
@@ -160,14 +160,14 @@ label ask_rumours {
 # Jumps back into main.urd — this is the circular edge.
 # =============================================================================
 label leave_tavern {
-    <narrator>: "You pull your coat on and push back out into the cold."
+    narrator: "You pull your coat on and push back out into the cold."
 
     if heard_rumour > 0 {
-        <hero>: "Riders. North. Right."
-        <narrator>: "The information sits in your chest like a stone."
+        hero: "Riders. North. Right."
+        narrator: "The information sits in your chest like a stone."
     }
 
-    <narrator>: "The village square is quiet. Your breath fogs the air."
+    narrator: "The village square is quiet. Your breath fogs the air."
 
     # ── circular jump ─────────────────────────────────────────────────────────
     # main.urd is imported above, so main.hub resolves to main's `hub` label

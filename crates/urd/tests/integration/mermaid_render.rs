@@ -43,14 +43,14 @@ decorator timed(duration: float, fallback: label) {
 label start {
     @voiced("narrator")
     @timed(3.0, notice_board)
-    <Narrator>: "You push open the heavy oak door and step inside."
+    Narrator: "You push open the heavy oak door and step inside."
 
     if reputation > 10 {
-        <Innkeeper>: "Ah, a friendly face! Welcome back."
+        Innkeeper: "Ah, a friendly face! Welcome back."
     } elif reputation < 0 {
-        <Innkeeper>: "I'm watching you, stranger."
+        Innkeeper: "I'm watching you, stranger."
     } else {
-        <Innkeeper>: "What do you want?"
+        Innkeeper: "What do you want?"
     }
 
     let rank = jump compute_rank and return
@@ -66,7 +66,7 @@ label start {
         }
         "Leave the tavern" {
             @voiced("narrator")
-            <Narrator>: "You step back out into the cold night air."
+            Narrator: "You step back out into the cold night air."
             return
         }
     }
@@ -74,7 +74,7 @@ label start {
 
 label talk {
     @voiced("innkeeper")
-    <Innkeeper>: {
+    Innkeeper: {
         "What can I do for you?"
         "Don't keep me waiting."
     }
@@ -82,12 +82,12 @@ label talk {
     menu {
         "Ask about local rumours" {
             reputation = reputation + 1
-            <Innkeeper>: "They say the old mill is haunted now."
+            Innkeeper: "They say the old mill is haunted now."
             jump start
         }
         "Buy a drink" {
             let cost = 2
-            <Innkeeper>: "Two gold. Pay up."
+            Innkeeper: "Two gold. Pay up."
             jump start
         }
         "Never mind" {
@@ -101,15 +101,15 @@ label notice_board {
 
     match action {
         Action.Attack {
-            <Narrator>: "You tear the notices from the board."
+            Narrator: "You tear the notices from the board."
             reputation = reputation - 5
         }
         Action.Talk {
-            <Narrator>: "You study the bounty posters carefully."
+            Narrator: "You study the bounty posters carefully."
             reputation = reputation + 1
         }
         _ {
-            <Narrator>: "You glance at the board and move on."
+            Narrator: "You glance at the board and move on."
         }
     }
 
@@ -127,7 +127,7 @@ label compute_rank {
 }
 
 label log_visit {
-    <Narrator>: "Your visit has been recorded in the ledger."
+    Narrator: "Your visit has been recorded in the ledger."
     return
 }
 "#;

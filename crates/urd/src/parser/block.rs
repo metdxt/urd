@@ -370,8 +370,21 @@ pub fn dialogue<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         .delimited_by(just(Token::LeftCurly), just(Token::RightCurly))
         .map(Ast::expr_list));
 
-    comma_separated_exprs()
-        .delimited_by(just(Token::LessThan), just(Token::GreaterThan))
+    // Speakers are restricted to `identifier_path` tokens (not arbitrary
+    // expressions).  This matches the tree-sitter grammar and avoids ambiguity
+    // with other identifier-starting constructs (assignments use `=`, declarations
+    // use a keyword prefix, so a bare `ident, ...: content` pattern is unambiguous).
+    let speaker_path = select! {
+        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
+    };
+
+    let speakers = speaker_path
+        .separated_by(just(Token::Comma))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map_with(|paths, extra| Ast::expr_list(paths).with_span(extra.span()));
+
+    speakers
         .then_ignore(just(Token::Colon))
         .then(content)
         .map_with(|(speakers, content), extra| {

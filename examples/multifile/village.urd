@@ -27,20 +27,20 @@ global tavern_rumor_heard: int = 0
 
 label village_square {
     # LSP: 'narrator' and 'hero' are directly imported consts of type Character
-    <narrator>: {
+    narrator: {
         "You step through the mossy gate into Ashenmoor."
         "The smell of bread and woodsmoke drifts across the cobblestones."
     }
 
-    <elder>: {
+    elder: {
         "Stranger! Thank the old gods you've come."
         "We haven't seen a traveller in three moons."
         "The roads have gone dark."
     }
 
-    <hero>: "What do you mean, dark?"
+    hero: "What do you mean, dark?"
 
-    <elder>: {
+    elder: {
         "The dungeon beneath Thornspire Ridge — something woke inside it."
         "Merchants won't pass the crossroads."
         "Farmers won't tend the eastern fields."
@@ -48,9 +48,9 @@ label village_square {
 
     # LSP: 'gold' is a directly imported global from items.urd — no 'inv.' prefix needed
     # LSP: cross-file hover on 'gold' should show its type and initial value
-    <narrator>: "You check your coin purse. You have {gold} gold pieces."
+    narrator: "You check your coin purse. You have {gold} gold pieces."
 
-    <hero>: "I'll look into it. But first, I could use supplies."
+    hero: "I'll look into it. But first, I could use supplies."
 
     menu {
         "Visit the market" {
@@ -72,37 +72,37 @@ label village_square {
 
 label elder_warning {
     # LSP: find-references — 'elder' const referenced again here
-    <elder>: {
+    elder: {
         "The dungeon was sealed by the Ember Compact a hundred years ago."
         "Inside lies the Vault of Kael — a sorcerer who bartered with things that should not be named."
     }
 
-    <elder>: "We found his sigil scratched into the well two weeks ago. It fears it is already too late to seal it again."
+    elder: "We found his sigil scratched into the well two weeks ago. It fears it is already too late to seal it again."
 
-    <hero>: "Who is we?"
+    hero: "Who is we?"
 
-    <elder>: {
+    elder: {
         "The village council. Captain Brynn has her soldiers posted at the ridge path,"
         "but they won't go further. Even she won't."
     }
 
-    <guard_captain>: "I heard my name."
+    guard_captain: "I heard my name."
 
-    <guard_captain>: {
+    guard_captain: {
         "The elder speaks true. Three of my scouts went in."
         "Two came back raving about halls of light and whispers in a dead tongue."
         "One didn't come back at all."
     }
 
-    <hero>: "I understand. I'll be careful."
+    hero: "I understand. I'll be careful."
 
-    <guard_captain>: "Careful won't be enough. Take this."
+    guard_captain: "Careful won't be enough. Take this."
 
     # LSP: 'Item' is directly imported from items.urd — no module prefix needed
     # LSP: hover on 'Item' shows the struct definition
     const torch: Item = :{ name: "Iron Torch", description: "A sturdy iron torch. Burns for hours.", value: 2, weight: 1 }
 
-    <narrator>: {
+    narrator: {
         "Captain Brynn hands you a well-worn iron torch."
         "You tuck it into your pack alongside your other gear."
     }
@@ -115,25 +115,25 @@ label elder_warning {
 label market {
     # LSP: 'visited_market' global — semantic token (local global variable)
     if visited_market > 0 {
-        <merchant_vera>: "Back again? My prices haven't changed, if that's what you're hoping."
+        merchant_vera: "Back again? My prices haven't changed, if that's what you're hoping."
     } else {
-        <merchant_vera>: {
+        merchant_vera: {
             "Well, well! A fresh face in Ashenmoor — and one with the look of adventure about them."
             "I'm Vera. I deal in useful things."
         }
 
-        <narrator>: "Her stall is crammed with vials, rope coils, dried herbs, and a suspiciously large number of maps."
+        narrator: "Her stall is crammed with vials, rope coils, dried herbs, and a suspiciously large number of maps."
     }
 
     # LSP: 'gold' — directly imported global, cross-file interpolation reference
-    <merchant_vera>: "You've got {gold} gold? Enough for something good, I'd say."
+    merchant_vera: "You've got {gold} gold? Enough for something good, I'd say."
 
     # LSP: 'Faction' is directly imported — hover shows the enum definition in characters.urd
     # LSP: 'Faction.Guild' — completion after 'Faction.' offers Guild, Empire, Rebel
     const vera_faction: Faction = Faction.Guild
 
     if vera_faction == Faction.Guild {
-        <merchant_vera>: "I supply to the Merchants' Guild — so you know my stock is certified and my weights are honest. Mostly."
+        merchant_vera: "I supply to the Merchants' Guild — so you know my stock is certified and my weights are honest. Mostly."
     }
 
     menu {
@@ -142,27 +142,27 @@ label market {
                 # LSP: mutating directly imported globals 'gold' and 'inventory_count'
                 gold = gold - 30
                 inventory_count = inventory_count + 1
-                <merchant_vera>: "Pleasure doing business. That potion will knit a wound right before your eyes — don't waste it on a scratch."
-                <narrator>: "You now have {gold} gold and {inventory_count} item(s) in your pack."
+                merchant_vera: "Pleasure doing business. That potion will knit a wound right before your eyes — don't waste it on a scratch."
+                narrator: "You now have {gold} gold and {inventory_count} item(s) in your pack."
             } else {
-                <merchant_vera>: "Short on coin, are we? Come back when your purse is heavier."
+                merchant_vera: "Short on coin, are we? Come back when your purse is heavier."
             }
         }
         "Buy the old map (15 gold)" {
             if gold >= 15 {
                 gold = gold - 15
                 inventory_count = inventory_count + 1
-                <merchant_vera>: "That map shows the outer halls of Thornspire Dungeon. Sketched by a cartographer who made it back — barely."
-                <narrator>: "The parchment is stained with something rust-coloured. You try not to think about what."
+                merchant_vera: "That map shows the outer halls of Thornspire Dungeon. Sketched by a cartographer who made it back — barely."
+                narrator: "The parchment is stained with something rust-coloured. You try not to think about what."
             } else {
-                <merchant_vera>: "The map's fifteen gold. Not exactly a royal ransom."
+                merchant_vera: "The map's fifteen gold. Not exactly a royal ransom."
             }
         }
         "Just browse" {
-            <merchant_vera>: "Browse all you like. Everything's priced clearly — no hidden fees, no guild surcharges. Unlike some people."
+            merchant_vera: "Browse all you like. Everything's priced clearly — no hidden fees, no guild surcharges. Unlike some people."
         }
         "Leave the market" {
-            <narrator>: "You step away from Vera's stall."
+            narrator: "You step away from Vera's stall."
         }
     }
 
@@ -177,40 +177,40 @@ label tavern {
     # LSP: 'Character' used directly — no 'chars.' prefix; go-to-def still navigates to characters.urd
     const barkeep: Character = :{ name: "Ogden", name_color: "#b05030" }
 
-    <narrator>: {
+    narrator: {
         "The Crooked Lantern is warm and dim, smelling of tallow and ale."
         "A handful of locals nurse their drinks in sullen silence."
     }
 
-    <barkeep>: "You're not from here. Good. Sit down, I'll get you something."
+    barkeep: "You're not from here. Good. Sit down, I'll get you something."
 
     if tavern_rumor_heard == 0 {
-        <barkeep>: "You're heading to the dungeon, aren't you. I can see it. Everyone who passes through with that look ends up going."
+        barkeep: "You're heading to the dungeon, aren't you. I can see it. Everyone who passes through with that look ends up going."
 
-        <hero>: "You say that like it's a bad thing."
+        hero: "You say that like it's a bad thing."
 
-        <barkeep>: {
+        barkeep: {
             "It is. But — and I say this as a man who's seen plenty walk out that door and not come back —"
             "there's a chamber deep in the dungeon called the Amber Hall."
             "The floor is warm. The stone glows faintly."
             "Whatever's sealed in the vault... it doesn't like that room. Might be worth knowing."
         }
 
-        <narrator>: {
+        narrator: {
             "Ogden refills your cup without being asked."
             "You get the sense he's lonely in the particular way of people who've watched too many strangers leave."
         }
 
         tavern_rumor_heard = 1
     } else {
-        <barkeep>: "The Amber Hall. Don't forget."
+        barkeep: "The Amber Hall. Don't forget."
 
-        <hero>: "I won't."
+        hero: "I won't."
     }
 
     menu {
         "Ask about the village's history" {
-            <barkeep>: {
+            barkeep: {
                 "Ashenmoor's been here since before the Compact."
                 "Used to be a garrison town, then a trading post, then just... a village."
                 "We outlasted empires, we'll outlast this too."
@@ -218,17 +218,17 @@ label tavern {
 
             # LSP: 'Faction' and 'Faction.Empire' — directly imported, no module prefix
             const old_rulers: Faction = Faction.Empire
-            <barkeep>: "The {old_rulers} used to station soldiers here. Now their fortresses are sheep pastures."
+            barkeep: "The {old_rulers} used to station soldiers here. Now their fortresses are sheep pastures."
         }
         "Ask about other travellers" {
-            <barkeep>: {
+            barkeep: {
                 "A woman in grey armour passed through a week ago."
                 "Didn't give a name, paid in silver, slept four hours and left before dawn."
                 "If she went into the dungeon, she hasn't come out."
             }
         }
         "Finish your drink and leave" {
-            <narrator>: "You drain your cup, leave a coin on the bar for Ogden, and step back out into the cool village air."
+            narrator: "You drain your cup, leave a coin on the bar for Ogden, and step back out into the cool village air."
         }
     }
 
@@ -239,17 +239,17 @@ label tavern {
 
 label village_farewell {
     # LSP: 'elder' const — third usage, find-references lists all three sites
-    <elder>: "Return to us safe, traveller. The village will be watching the ridge for your signal fire."
+    elder: "Return to us safe, traveller. The village will be watching the ridge for your signal fire."
 
-    <guard_captain>: {
+    guard_captain: {
         "The path north leads straight to the dungeon entrance."
         "My soldiers will hold the crossroads."
         "If you need to retreat, head for our torches — we'll cover you."
     }
 
-    <hero>: "Understood. I'll be back before the next moon."
+    hero: "Understood. I'll be back before the next moon."
 
-    <narrator>: {
+    narrator: {
         "You shoulder your pack — {inventory_count} item(s) stored inside — and set off up the ridge path."
         "Ashenmoor shrinks behind you."
         "Ahead, the stones of Thornspire loom grey against a pewter sky."

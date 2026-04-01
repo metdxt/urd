@@ -118,7 +118,7 @@ label start {
         let ast = parse(
             r#"
 label start {
-    <Narrator>: "Hello."
+    Narrator: "Hello."
     end!()
 }
 "#,

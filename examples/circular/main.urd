@@ -48,17 +48,17 @@ global bought_supplies:  int = 0
 # =============================================================================
 @entry
 label start {
-    <narrator>: {
+    narrator: {
         "The village of Greyhollow sits at the end of a road that most"
         "maps don't bother drawing."
     }
 
-    <narrator>: {
+    narrator: {
         "It is the kind of place that people arrive at by accident"
         "and leave by necessity."
     }
 
-    <hero>: "Well. Here I am."
+    hero: "Well. Here I am."
 
     jump hub
 }
@@ -71,12 +71,12 @@ label start {
 # =============================================================================
 label hub {
     if visited_tavern > 0 {
-        <narrator>: {
+        narrator: {
             "You are back in the village square."
             "The Tarnished Flagon's sign creaks in the wind behind you."
         }
     } else {
-        <narrator>: {
+        narrator: {
             "The village square is a muddy triangle of cobblestones."
             "Three things: a tavern with a broken sign, a merchant's cart,"
             "and a guard who is pretending not to watch you."
@@ -110,22 +110,22 @@ label hub {
 # =============================================================================
 label speak_to_merchant {
     if bought_supplies > 0 {
-        <merchant>: "Back again? I'm not a charity, friend."
+        merchant: "Back again? I'm not a charity, friend."
 
-        <hero>: "Just looking."
+        hero: "Just looking."
 
-        <merchant>: "Looking's free. Barely."
+        merchant: "Looking's free. Barely."
     } else {
-        <merchant>: {
+        merchant: {
             "Rope, flint, dried meat, and one slightly dented lantern."
             "I'm not proud of the stock. The roads have been bad."
         }
 
-        <hero>: "I'll take the flint and the meat."
+        hero: "I'll take the flint and the meat."
 
-        <merchant>: "Smart. The lantern's cursed anyway — I think."
+        merchant: "Smart. The lantern's cursed anyway — I think."
 
-        <narrator>: "You hand over a few coins and tuck the supplies away."
+        narrator: "You hand over a few coins and tuck the supplies away."
 
         bought_supplies = 1
     }
@@ -138,56 +138,56 @@ label speak_to_merchant {
 # =============================================================================
 label speak_to_guard {
     if spoke_to_guard > 0 {
-        <guard>: "Still here?"
+        guard: "Still here?"
 
-        <hero>: "Still here."
+        hero: "Still here."
 
-        <guard>: "Hm."
+        guard: "Hm."
 
         jump hub
     } else {
         spoke_to_guard = 1
 
-        <guard>: "You're not from here."
+        guard: "You're not from here."
 
-        <hero>: "No."
+        hero: "No."
 
-        <guard>: "Heading north?"
+        guard: "Heading north?"
 
-        <hero>: "Maybe."
+        hero: "Maybe."
 
-        <guard>: {
+        guard: {
             "Don't. Road washed out past the mill three weeks ago and"
             "nobody's fixed it.  Go east to the ridge path if you must go."
         }
 
-        <hero>: "Riders came through last night headed north."
+        hero: "Riders came through last night headed north."
 
-        <guard>: "..."
+        guard: "..."
 
-        <guard>: "What riders."
+        guard: "What riders."
 
-        <narrator>: {
+        narrator: {
             "It isn't a question."
             "The guard's hand moves — very slightly — toward his sword hilt."
         }
 
         menu {
             "Dark cloaks, no markings — you saw them too?" {
-                <guard>: {
+                guard: {
                     "I didn't see anything."
                     "And neither did you."
                     "Drink your drink, buy your rope, and move on."
                 }
 
-                <narrator>: "He turns away. The conversation is over."
+                narrator: "He turns away. The conversation is over."
 
                 jump hub
             }
             "Never mind — I must have been mistaken" {
-                <guard>: "Yes. You must have been."
+                guard: "Yes. You must have been."
 
-                <narrator>: "He relaxes. Slightly."
+                narrator: "He relaxes. Slightly."
 
                 jump hub
             }
@@ -200,12 +200,12 @@ label speak_to_guard {
 # =============================================================================
 label depart {
     if bought_supplies < 1 {
-        <narrator>: {
+        narrator: {
             "You pause at the edge of the village."
             "The road north is muddy and indistinct."
         }
 
-        <hero>: "I should probably pick up supplies before I go."
+        hero: "I should probably pick up supplies before I go."
 
         menu {
             "Go back and buy something" {
@@ -224,25 +224,25 @@ label depart {
 # label: farewell
 # =============================================================================
 label farewell {
-    <narrator>: {
+    narrator: {
         "You leave Greyhollow the way you came in — on foot, without ceremony."
         "The village shrinks behind you."
     }
 
     if spoke_to_guard > 0 {
-        <narrator>: {
+        narrator: {
             "You think about the guard's hand moving toward his sword."
             "About dark cloaks and a road that most maps don't bother drawing."
         }
     }
 
     if visited_tavern > 0 {
-        <narrator>: "The taste of that bitter drink is still in your mouth."
+        narrator: "The taste of that bitter drink is still in your mouth."
     }
 
-    <hero>: "Right then."
+    hero: "Right then."
 
-    <narrator>: "The road goes on."
+    narrator: "The road goes on."
 
     jump test
 

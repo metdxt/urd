@@ -22,7 +22,9 @@ use thiserror::Error;
 
 use crate::{
     ir::{IrChoiceOption, IrEdge, IrGraph, IrNodeKind, SwitchArm},
+    lexer::strings::ParsedString,
     parser::ast::{Ast, AstContent, DeclKind, MatchPattern, Operator},
+    runtime::value::RuntimeValue,
 };
 
 // ─── Public error type ────────────────────────────────────────────────────────
@@ -101,6 +103,42 @@ impl Compiler {
         let mut in_progress = HashSet::new();
         let mut completed = HashSet::new();
         loader::compile_recursive(ast, loader, &mut in_progress, &mut completed)
+    }
+}
+
+// ─── Speaker normalisation ────────────────────────────────────────────────────
+
+/// Convert the `speakers` AST node so that every `IdentPath` leaf is replaced
+/// with an equivalent `Str` value.
+///
+/// In the bracketless dialogue syntax (`narrator: "text"`) the parser emits
+/// speaker names as `Value(IdentPath([…]))`.  Left as-is, the VM's expression
+/// evaluator would try to look them up as runtime variables and fail.  Speakers
+/// are always *character names*, never variable references, so we canonicalise
+/// them to strings here at compile time — e.g. `IdentPath(["Alice"])` becomes
+/// `Str("Alice")` and `IdentPath(["chars", "narrator"])` becomes
+/// `Str("chars.narrator")`.
+///
+/// `Str` nodes (from the old `<"Alice">:` form or any other string literal) are
+/// passed through unchanged.
+fn normalize_speakers(speakers: &Ast) -> Ast {
+    match speakers.content() {
+        AstContent::ExprList(items) => {
+            let normalised: Vec<Ast> = items.iter().map(normalise_speaker_item).collect();
+            Ast::expr_list(normalised)
+        }
+        _ => normalise_speaker_item(speakers),
+    }
+}
+
+/// Normalise a single speaker item: `IdentPath` → `Str`, everything else
+/// unchanged.
+fn normalise_speaker_item(ast: &Ast) -> Ast {
+    if let AstContent::Value(RuntimeValue::IdentPath(path)) = ast.content() {
+        let name = path.join(".");
+        Ast::value(RuntimeValue::Str(ParsedString::new_plain(&name)))
+    } else {
+        ast.clone()
     }
 }
 
@@ -494,7 +532,7 @@ impl CompilerState {
             // ── Dialogue ─────────────────────────────────────────────────────
             AstContent::Dialogue { speakers, content } => {
                 let id = self.graph.push(IrNodeKind::Dialogue {
-                    speakers: *speakers.clone(),
+                    speakers: normalize_speakers(speakers),
                     lines: *content.clone(),
                     decorators: ast.decorators().to_vec(),
                 });

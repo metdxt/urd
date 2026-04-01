@@ -917,7 +917,7 @@ label start {
 Dialogue statement single speaker string content
 ================================================================================
 
-<narrator>: "Hello, traveler."
+narrator: "Hello, traveler."
 
 --------------------------------------------------------------------------------
 
@@ -931,7 +931,7 @@ Dialogue statement single speaker string content
 Dialogue statement single speaker interpolated string
 ================================================================================
 
-<aria>: "Hull integrity: {hull_integrity} percent."
+aria: "Hull integrity: {hull_integrity} percent."
 
 --------------------------------------------------------------------------------
 
@@ -948,7 +948,7 @@ Dialogue statement single speaker interpolated string
 Dialogue statement with block content single line
 ================================================================================
 
-<narrator>: {
+narrator: {
   "You stand at the crossroads."
 }
 
@@ -965,7 +965,7 @@ Dialogue statement with block content single line
 Dialogue statement with block content multiple lines
 ================================================================================
 
-<aria>: {
+aria: {
   "Good morning, Commander."
   "All primary systems are nominal."
   "Shall we chart a course?"
@@ -985,7 +985,7 @@ Dialogue statement with block content multiple lines
 Dialogue statement multiple speakers
 ================================================================================
 
-<aria, commander>: "We have a situation."
+aria, commander: "We have a situation."
 
 --------------------------------------------------------------------------------
 
@@ -1000,7 +1000,7 @@ Dialogue statement multiple speakers
 Dialogue statement speaker is a path
 ================================================================================
 
-<ship.captain>: "Full speed ahead."
+ship.captain: "Full speed ahead."
 
 --------------------------------------------------------------------------------
 
@@ -1016,7 +1016,7 @@ Dialogue statement speaker is a path
 Dialogue statement with escape sequence in string
 ================================================================================
 
-<narrator>: "Line one.\nLine two."
+narrator: "Line one.\nLine two."
 
 --------------------------------------------------------------------------------
 
@@ -1441,7 +1441,7 @@ Decorator application with string argument
 ================================================================================
 
 @color("red")
-<aria>: "Warning!"
+aria: "Warning!"
 
 --------------------------------------------------------------------------------
 
@@ -1459,7 +1459,7 @@ Decorator application with multiple arguments
 ================================================================================
 
 @format("cyan", "black", true)
-<narrator>: "System message."
+narrator: "System message."
 
 --------------------------------------------------------------------------------
 
@@ -1753,7 +1753,7 @@ Full label with dialogue and menu
 ================================================================================
 
 label cave_entrance {
-  <narrator>: "You stand at the cave entrance."
+  narrator: "You stand at the cave entrance."
 
   menu {
     "Enter" {

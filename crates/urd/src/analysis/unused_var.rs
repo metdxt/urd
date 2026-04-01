@@ -379,7 +379,7 @@ label scene {
         let src = r#"
 label scene {
     let name = "Alice"
-    <narrator>: "Hello, {name}!"
+    narrator: "Hello, {name}!"
     end!()
 }
 "#;
@@ -560,7 +560,7 @@ label scene {
     let msg = "going north"
     match d {
         Dir.North {
-            <narrator>: "{msg}"
+            narrator: "{msg}"
             end!()
         }
         Dir.South { end!() }

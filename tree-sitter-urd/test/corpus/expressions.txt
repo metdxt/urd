@@ -264,10 +264,10 @@ level < 10
 --------------------------------------------------------------------------------
 
 (source_file
-  (identifier_path
-    (identifier))
-  (ERROR)
-  (integer))
+  (binary_expr
+    left: (identifier_path (identifier))
+    operator: (binary_operator)
+    right: (integer)))
 
 ================================================================================
 Binary greater than or equals
@@ -292,10 +292,10 @@ score <= 100
 --------------------------------------------------------------------------------
 
 (source_file
-  (identifier_path
-    (identifier))
-  (ERROR)
-  (integer))
+  (binary_expr
+    left: (identifier_path (identifier))
+    operator: (binary_operator)
+    right: (integer)))
 
 ================================================================================
 Binary bitwise and
@@ -348,10 +348,10 @@ x << 2
 --------------------------------------------------------------------------------
 
 (source_file
-  (identifier_path
-    (identifier))
-  (ERROR)
-  (integer))
+  (binary_expr
+    left: (identifier_path (identifier))
+    operator: (binary_operator)
+    right: (integer)))
 
 ================================================================================
 Binary right shift

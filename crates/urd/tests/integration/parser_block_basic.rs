@@ -85,7 +85,7 @@ fn test_multiple_decorators_on_labeled_block() {
 fn test_decorator_on_dialogue() {
     let src = "
         @voiced
-        <Alice>: \"Hello!\"
+        Alice: \"Hello!\"
     ";
     let result = parse_test!(script(), src);
     assert!(
@@ -187,7 +187,7 @@ fn test_decorator_constructs() {
 fn test_script_bare() {
     let src = "
         let x = 1
-        <Alice>: \"Hello\"
+        Alice: \"Hello\"
     ";
     let result = parse_test!(script(), src);
     assert_eq!(

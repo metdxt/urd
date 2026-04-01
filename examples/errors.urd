@@ -123,7 +123,7 @@ label start {
     # known value at analysis time — the `then` branch is permanently dead.
 
     if DEBUG_MODE {
-        <ai_core>: "Diagnostic mode enabled. Skipping intro sequence."
+        ai_core: "Diagnostic mode enabled. Skipping intro sequence."
         # warning: AlwaysDeadBranch — then branch is dead; condition is always false
     } else {
         jump briefing
@@ -137,7 +137,7 @@ label start {
 
 @entry
 label emergency_start {
-    <ai_core>: "Backup entry point engaged. Station is in lockdown."
+    ai_core: "Backup entry point engaged. Station is in lockdown."
     end!()
 }
 # error: DuplicateEntry — label 'emergency_start' carries a duplicate @entry
@@ -149,7 +149,7 @@ label emergency_start {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label archived_debrief {
-    <captain>: {
+    captain: {
         "This debrief was recorded before the incident was classified."
         "It has since been sealed by order of the station council."
     }
@@ -166,16 +166,16 @@ label briefing {
     MAX_ALERT_LEVEL = 10
     # error: ConstReassignment — 'MAX_ALERT_LEVEL' is a constant
 
-    <captain>: {
+    captain: {
         "Detective Voss.  Someone sabotaged the {STATION_NAME} reactor core."
         "Station security is locked down.  Current alert level: {alert_level}."
         "You have forty-eight hours before we reach the frontier gate."
         "Find the saboteur."
     }
 
-    <detective>: "Understood, Captain.  Where do I start?"
+    detective: "Understood, Captain.  Where do I start?"
 
-    <captain>: {
+    captain: {
         "Three sectors are still accessible: Ops, Engineering, and the Med Bay."
         "The Cargo hold is sealed pending structural review."
     }
@@ -195,7 +195,7 @@ label briefing {
     let dossier_id: int = 4419
     # warning: UnusedVariable — 'dossier_id' is declared but never read
 
-    <detective>: "Case opened.  Internal reference: {case_ref}."
+    detective: "Case opened.  Internal reference: {case_ref}."
 
     jump sector_nav
 }
@@ -203,7 +203,7 @@ label briefing {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label sector_nav {
-    <ai_core>: "Please select the sector you wish to investigate, Detective."
+    ai_core: "Please select the sector you wish to investigate, Detective."
 
     # ── WARNING: DuplicateMenuDestination ─────────────────────────────────────
     # "Inspect Operations" and "Return to Operations" have structurally
@@ -222,9 +222,9 @@ label sector_nav {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label sector_ops {
-    <detective>: "The Operations hub is quiet.  Emergency lighting casts long shadows."
+    detective: "The Operations hub is quiet.  Emergency lighting casts long shadows."
 
-    <ai_core>: "Atmospheric processors nominal.  No anomalies logged in the last six hours."
+    ai_core: "Atmospheric processors nominal.  No anomalies logged in the last six hours."
 
     # ── WARNING: PossibleTypo (variable) ──────────────────────────────────────
     # `clue_found` is not declared anywhere in the script.  Edit distance to
@@ -233,7 +233,7 @@ label sector_ops {
 
     if clue_found > 0 {
         # warning: PossibleTypo (variable) — 'clue_found', did you mean 'clues_found'?
-        <detective>: "Some ground has already been covered here."
+        detective: "Some ground has already been covered here."
     }
 
     clues_found = clues_found + 1
@@ -248,9 +248,9 @@ label sector_ops {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label sector_engineering {
-    <detective>: "Scorch marks line the entire reactor access corridor."
+    detective: "Scorch marks line the entire reactor access corridor."
 
-    <engineer>: {
+    engineer: {
         "Someone bypassed the coolant override manually."
         "You would need a level-three access card to reach that panel."
         "I do not know who else has clearance."
@@ -264,9 +264,9 @@ label sector_engineering {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label sector_medbay {
-    <detective>: "The med bay smells of antiseptic and something else — anxiety."
+    detective: "The med bay smells of antiseptic and something else — anxiety."
 
-    <ai_core>: "Medical records are sealed per station protocol, Detective."
+    ai_core: "Medical records are sealed per station protocol, Detective."
 
     # ── ERROR: EmptyMenu ──────────────────────────────────────────────────────
     # This menu has no options at all.  The player would be presented with a
@@ -282,14 +282,14 @@ label sector_medbay {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label evidence_room {
-    <detective>: "The secondary evidence locker has been forced open."
+    detective: "The secondary evidence locker has been forced open."
 
-    <engineer>: {
+    engineer: {
         "The lock was cut cleanly.  Professional work."
         "Whoever did this knew exactly what they were looking for."
     }
 
-    <detective>: "Log it and seal the compartment."
+    detective: "Log it and seal the compartment."
 
     # error: DeadEnd — execution falls off the end with no jump, return, or end!
 }
@@ -300,7 +300,7 @@ label evidence_room {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label interrogation {
-    <detective>: "Time to speak with the station's persons of interest."
+    detective: "Time to speak with the station's persons of interest."
 
     # ── WARNING: SingleOptionMenu ─────────────────────────────────────────────
     # A menu with only one option gives the player no real agency.  This
@@ -319,16 +319,16 @@ label question_mira {
     # `detectve` appears exactly once across the whole file while `detective`
     # appears many times.  Edit distance is 1 — very likely a misspelling.
 
-    <detectve>: "Where were you at 02:00 station time, Ms Chen?"
+    detectve: "Where were you at 02:00 station time, Ms Chen?"
     # warning: PossibleTypo (speaker) — 'detectve', did you mean 'detective'?
 
-    <suspect>: {
+    suspect: {
         "I was in my quarters.  NEXUS can confirm it —"
         "I logged a maintenance request at 01:58."
         "Check the system logs."
     }
 
-    <detective>: "I will do exactly that."
+    detective: "I will do exactly that."
 
     # ── ERROR: UndefinedLabel ─────────────────────────────────────────────────
     # ── WARNING: PossibleTypo (label) ─────────────────────────────────────────
@@ -343,11 +343,11 @@ label question_mira {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label confrontation {
-    <detective>: "Ms Chen.  I have enough to bring you in for formal questioning."
+    detective: "Ms Chen.  I have enough to bring you in for formal questioning."
 
-    <suspect>: "This is an outrage.  I demand to see the captain immediately."
+    suspect: "This is an outrage.  I demand to see the captain immediately."
 
-    <detective>: "You will.  Right after this."
+    detective: "You will.  Right after this."
 
     # ── ERROR: NonExhaustiveMatch ─────────────────────────────────────────────
     # `suspect_status` is of type `SuspectStatus` which declares three variants:
@@ -356,11 +356,11 @@ label confrontation {
 
     match suspect_status {
         Clear {
-            <detective>: "The evidence does not hold.  You are free to go — for now."
+            detective: "The evidence does not hold.  You are free to go — for now."
             jump ending_cleared
         }
         Suspicious {
-            <detective>: "I am placing you under investigative hold, Ms Chen."
+            detective: "I am placing you under investigative hold, Ms Chen."
             suspect_status = Detained
             jump ending_guilty
         }
@@ -371,7 +371,7 @@ label confrontation {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label ending_cleared {
-    <captain>: {
+    captain: {
         "Voss.  You cleared the prime suspect."
         "The saboteur is still somewhere on this station."
     }
@@ -380,10 +380,10 @@ label ending_cleared {
     # This dialogue line has an empty string body.  The player sees a blank
     # line attributed to Detective Voss — almost certainly a copy-paste error.
 
-    <detective>: ""
+    detective: ""
     # warning: EmptyDialogue — 'detective' says nothing here
 
-    <detective>: "Then I keep looking until I find them."
+    detective: "Then I keep looking until I find them."
 
     jump _end
 }
@@ -391,12 +391,12 @@ label ending_cleared {
 # ══════════════════════════════════════════════════════════════════════════════
 
 label ending_guilty {
-    <captain>: {
+    captain: {
         "Outstanding work, Detective."
         "The station council will handle the rest."
     }
 
-    <detective>: "Justice, Captain.  That is all."
+    detective: "Justice, Captain.  That is all."
 
     jump _end
 }

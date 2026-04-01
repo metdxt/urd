@@ -727,7 +727,7 @@ label target {
     fn sequence_shows_dialogue_as_note() {
         let script = r#"
 label greet {
-    <Alice>: "Hello world"
+    Alice: "Hello world"
     return
 }
 "#;

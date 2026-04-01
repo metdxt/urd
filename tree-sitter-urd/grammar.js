@@ -537,15 +537,12 @@ module.exports = grammar({
     // Dialogue constructs
     // -----------------------------------------------------------------------
 
-    // <speaker, ...>: "text"  or  <speaker>: { "line1" \n "line2" }
+    // speaker: "text"  or  speaker: { "line1" \n "line2" }
     // Speakers are restricted to identifier_path (not _expr) to avoid
-    // ambiguity: if we used _expr the parser cannot tell whether `>`
-    // closes the speaker list or is a comparison operator.
+    // ambiguity with binary comparison expressions.
     dialogue_statement: ($) =>
       seq(
-        token(prec(1, "<")),
         commaSep1(field("speaker", $.identifier_path)),
-        token(prec(1, ">")),
         ":",
         field("content", choice($.string, $.dialogue_block)),
       ),

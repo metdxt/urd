@@ -11,14 +11,14 @@ use urd::{
 
 #[test]
 fn test_dialogue_single_line() {
-    let src = "{ <Alice>: \"Hello!\" }";
+    let src = "{ Alice: \"Hello!\" }";
     let result = parse_test!(code_block(), src);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_dialogue_monologue() {
-    let src = "{ <Alice>: { \"Line 1\", \"Line 2\" } }";
+    let src = "{ Alice: { \"Line 1\", \"Line 2\" } }";
     let result = parse_test!(code_block(), src);
     assert!(result.is_ok());
 }
@@ -26,7 +26,7 @@ fn test_dialogue_monologue() {
 #[test]
 fn test_dialogue_monologue_with_newlines() {
     let src = "{
-        <Alice>: {
+        Alice: {
             \"Line 1\"
             \"Line 2\"
         }
@@ -37,7 +37,7 @@ fn test_dialogue_monologue_with_newlines() {
 
 #[test]
 fn test_dialogue_multiple_speakers() {
-    let src = "{ <Alice, Bob>: \"Hello both!\" }";
+    let src = "{ Alice, Bob: \"Hello both!\" }";
     let result = parse_test!(code_block(), src);
     assert!(result.is_ok());
 }
@@ -115,10 +115,10 @@ fn test_menu_with_dialogue() {
     let src = "{
         menu {
             \"Talk to Alice\" {
-                <Alice>: \"Hello there!\"
+                Alice: \"Hello there!\"
             }
             \"Talk to Bob\" {
-                <Bob>: \"Hi!\"
+                Bob: \"Hi!\"
             }
         }
     }";
@@ -208,13 +208,13 @@ fn test_menu_real_world_example() {
         menu {
             \"Start Game\" {
                 let health = 100
-                <Narrator>: \"Your adventure begins!\"
+                Narrator: \"Your adventure begins!\"
             }
             \"Load Game\" {
-                <Narrator>: \"No save files found.\"
+                Narrator: \"No save files found.\"
             }
             \"Exit\" {
-                <Narrator>: \"Goodbye!\"
+                Narrator: \"Goodbye!\"
             }
         }
     }";
