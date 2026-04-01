@@ -95,6 +95,13 @@ const KEYWORDS: &[&str] = &[
     "not",
 ];
 
+/// All opt-in lint names accepted by the `@lint(…)` built-in decorator.
+///
+/// Each entry corresponds to an analysis pass that is gated behind an explicit
+/// opt-in on a label (e.g. `@lint(check_loops)`).  This list must be kept in
+/// sync with the analysis passes in `urd::analysis`.
+const BUILTIN_LINTS: &[&str] = &["check_loops"];
+
 // ── TypeCompatibility ─────────────────────────────────────────────────────────
 
 /// Describes which symbol types are admissible on the right-hand side of a
@@ -199,6 +206,18 @@ pub enum CompletionContext {
         enum_name: String,
     },
 
+    /// Cursor is inside the argument list of a `@lint(…)` decorator (possibly
+    /// with a partial lint name already typed).
+    ///
+    /// Only the known built-in lint names are offered (e.g. `check_loops`).
+    ///
+    /// Patterns:
+    /// ```text
+    /// @lint(|
+    /// @lint(check_|
+    /// ```
+    AfterLintParen,
+
     /// Cursor is immediately after `@` (possibly with a partial decorator name
     /// already typed).
     ///
@@ -268,32 +287,39 @@ pub fn detect_completion_context(
             .unwrap_or(before)
     );
 
-    // 1. `@` immediately before cursor.
+    // 1. `@lint(` argument — must be checked before AfterAt so that
+    //    `@lint(ch|` is not swallowed by the bare `@` detector.
+    if detect_after_lint_paren(before) {
+        tracing::debug!("detect_completion_context: matched AfterLintParen");
+        return CompletionContext::AfterLintParen;
+    }
+
+    // 2. `@` immediately before cursor.
     if detect_after_at(before) {
         tracing::debug!("detect_completion_context: matched AfterAt");
         return CompletionContext::AfterAt;
     }
 
-    // 2. Dot-triggered contexts (module access / struct fields / enum variants).
+    // 3. Dot-triggered contexts (module access / struct fields / enum variants).
     if let Some(ctx) = detect_dot_context(before, symbols) {
         tracing::debug!("detect_completion_context: matched dot context → {ctx:?}");
         return ctx;
     }
 
-    // 3. `jump` keyword before cursor.
+    // 4. `jump` keyword before cursor.
     if detect_jump_keyword(before) {
         tracing::debug!("detect_completion_context: matched JumpTarget");
         return CompletionContext::JumpTarget;
     }
 
-    // 4. Binary operator RHS.
+    // 5. Binary operator RHS.
     if let Some(ctx) = detect_operator_rhs(before, symbols) {
         tracing::debug!("detect_completion_context: matched OperatorRhs → {ctx:?}");
         return ctx;
     }
 
+    // 6. Fallback.
     tracing::debug!("detect_completion_context: fallback → General");
-    // 5. Fallback.
     CompletionContext::General
 }
 
@@ -354,6 +380,7 @@ pub fn items_for_context(
 ) -> Vec<(String, SymbolKind)> {
     match ctx {
         CompletionContext::JumpTarget => items_jump_targets(symbols),
+        CompletionContext::AfterLintParen => items_lint_args(),
         CompletionContext::AfterAt => items_decorators(symbols),
         CompletionContext::ModuleAccess { alias } => items_module_members(alias, symbols),
         CompletionContext::StructFieldAccess { struct_name, .. } => {
@@ -432,6 +459,17 @@ fn items_decorators(symbols: &[Symbol]) -> Vec<(String, SymbolKind)> {
             .filter(|s| s.kind == SymbolKind::Decorator)
             .map(|s| (s.name.clone(), s.kind)),
     )
+}
+
+/// Offer the known built-in lint names (for `@lint(` completion).
+///
+/// These are returned as [`SymbolKind::Constant`] so the editor renders them
+/// with a distinct icon from decorator/label symbols.
+fn items_lint_args() -> Vec<(String, SymbolKind)> {
+    BUILTIN_LINTS
+        .iter()
+        .map(|name| ((*name).to_string(), SymbolKind::Constant))
+        .collect()
 }
 
 /// Offer all symbols from a module, stripping the `"alias."` prefix.
@@ -727,6 +765,21 @@ fn types_compatible(a: &TypeAnnotation, b: &TypeAnnotation) -> bool {
 // ── Detectors ─────────────────────────────────────────────────────────────────
 
 // ── Detector 1: AfterAt ───────────────────────────────────────────────────────
+
+/// Return `true` if the cursor is inside the argument list of a `@lint(`
+/// decorator, optionally with a partial lint name already typed.
+///
+/// Examples:
+/// - `"@lint("` → `true`
+/// - `"@lint(check_"` → `true`  (partial name)
+/// - `"@lint(check_loops"` → `true`  (full name still completing)
+/// - `"@entry"` → `false`
+/// - `"@lint"` → `false`  (paren not yet opened)
+fn detect_after_lint_paren(before: &str) -> bool {
+    // Strip any partial ident the user has already typed inside the parens.
+    let stripped = before.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+    stripped.ends_with("@lint(")
+}
 
 /// Return `true` if the text immediately before the cursor (discarding any
 /// partial decorator name the user is typing) ends with `@`.
@@ -1201,6 +1254,52 @@ mod tests {
     fn at_in_string_context_still_triggers_lexically() {
         // The completion engine has no semantic context here; `@` is `@`.
         assert_eq!(ctx("narrator: \"hello @", &[]), CompletionContext::AfterAt);
+    }
+
+    // ── detect_after_lint_paren ───────────────────────────────────────────
+
+    #[test]
+    fn lint_paren_bare_triggers() {
+        assert_eq!(ctx("@lint(", &[]), CompletionContext::AfterLintParen);
+    }
+
+    #[test]
+    fn lint_paren_with_partial_name_triggers() {
+        assert_eq!(ctx("@lint(check_", &[]), CompletionContext::AfterLintParen);
+    }
+
+    #[test]
+    fn lint_paren_with_full_name_triggers() {
+        assert_eq!(
+            ctx("@lint(check_loops", &[]),
+            CompletionContext::AfterLintParen
+        );
+    }
+
+    #[test]
+    fn lint_no_paren_does_not_trigger_lint_paren() {
+        // `@lint` without `(` should fall through to AfterAt.
+        assert_eq!(ctx("@lint", &[]), CompletionContext::AfterAt);
+    }
+
+    #[test]
+    fn lint_paren_takes_priority_over_after_at() {
+        // The `@lint(` pattern must win before the bare `@` detector fires.
+        assert_eq!(ctx("@lint(ch", &[]), CompletionContext::AfterLintParen);
+    }
+
+    #[test]
+    fn after_lint_paren_returns_only_lint_names() {
+        let items = items_for_context(&CompletionContext::AfterLintParen, &[], &empty_type_ctx());
+        assert!(!items.is_empty(), "expected at least one lint name");
+        assert!(
+            items.iter().any(|(n, _)| n == "check_loops"),
+            "check_loops must be present"
+        );
+        assert!(
+            items.iter().all(|(_, k)| *k == SymbolKind::Constant),
+            "lint args should be Constant kind"
+        );
     }
 
     // ── detect_jump_keyword ───────────────────────────────────────────────
