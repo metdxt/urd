@@ -73,14 +73,12 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
             // Intentionally do NOT push a DeadEnd for the top-level block.
         }
         AstContent::LabeledBlock { label, .. } => {
+            // `termination_of` already emits the label-level dead-end (or
+            // terminal menu option dead-ends) for labeled blocks. Keep it as
+            // the single authoritative emitter to avoid duplicate diagnostics
+            // when the labeled block itself is the analysis root.
             let loc = NodeDescription::label(label);
-            let t = termination_of(ast, &mut errors, ast.span(), &loc);
-            if t != Termination::Terminates {
-                errors.push(AnalysisError::DeadEnd {
-                    span: ast.span(),
-                    description: loc,
-                });
-            }
+            let _ = termination_of(ast, &mut errors, ast.span(), &loc);
         }
         _ => {}
     }
@@ -1050,24 +1048,27 @@ mod tests {
     }
 
     #[test]
-    fn check_labeled_block_without_terminator_reports_two_errors() {
-        // The labeled block pushes one error for itself (from termination_of),
-        // and then the outer check also pushes one because the top-level
-        // termination status is still Open (labeled blocks are usually nested
-        // inside a top-level Block, but here it *is* the root).
+    fn check_labeled_block_without_terminator_reports_one_error() {
+        // Root labeled blocks should be diagnosed exactly once by
+        // `termination_of`, which is the authoritative emitter.
         let inner = Ast::block(vec![dialogue_node()]);
         let ast = Ast::labeled_block("scene".to_owned(), inner);
         let errors = check(&ast);
-        // At least one error for the dead-end inside the label.
-        assert!(!errors.is_empty());
-        let has_label_error = errors.iter().any(|e| match e {
-            AnalysisError::DeadEnd { description, .. } => description.0.contains("scene"),
-            _ => false,
-        });
-        assert!(
-            has_label_error,
-            "expected a dead-end error mentioning 'scene'"
+
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one dead-end diagnostic, got: {errors:?}"
         );
+        match &errors[0] {
+            AnalysisError::DeadEnd { description, .. } => {
+                assert!(
+                    description.0.contains("scene"),
+                    "expected a dead-end error mentioning 'scene', got: {description:?}"
+                );
+            }
+            other => panic!("expected DeadEnd, got: {other:?}"),
+        }
     }
 
     #[test]

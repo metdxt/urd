@@ -6,7 +6,7 @@
 //! feature, structural assertions on the rendered DOT string, and a live
 //! Graphviz validation test that pipes the output through `dot -Tsvg`.
 
-use std::io::Write as _;
+use std::io::{self, Write as _};
 use std::process::{Command, Stdio};
 
 use urd::{compiler::Compiler, parse_test, parser::block::script};
@@ -136,27 +136,38 @@ label log_visit {
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
-fn compile_example() -> urd::ir::IrGraph {
-    let ast =
-        parse_test!(script(), EXAMPLE_SCRIPT).expect("example script should parse without errors");
-    Compiler::compile(&ast).expect("example script should compile without errors")
+fn compile_example() -> Result<urd::ir::IrGraph, Box<dyn std::error::Error>> {
+    let ast = parse_test!(script(), EXAMPLE_SCRIPT).map_err(|err| {
+        io::Error::other(format!(
+            "example script should parse without errors: {err:?}"
+        ))
+    })?;
+    let graph = Compiler::compile(&ast).map_err(|err| {
+        io::Error::other(format!(
+            "example script should compile without errors: {err}"
+        ))
+    })?;
+    Ok(graph)
 }
 
 // ── Parse + compile ───────────────────────────────────────────────────────────
 
 #[test]
-fn example_script_parses() {
-    parse_test!(script(), EXAMPLE_SCRIPT).expect("example script must parse cleanly");
+fn example_script_parses() -> Result<(), Box<dyn std::error::Error>> {
+    parse_test!(script(), EXAMPLE_SCRIPT)
+        .map_err(|err| io::Error::other(format!("example script must parse cleanly: {err:?}")))?;
+    Ok(())
 }
 
 #[test]
-fn example_script_compiles() {
-    compile_example();
+fn example_script_compiles() -> Result<(), Box<dyn std::error::Error>> {
+    compile_example()?;
+    Ok(())
 }
 
 #[test]
-fn compiled_graph_has_expected_label_count() {
-    let graph = compile_example();
+fn compiled_graph_has_expected_label_count() -> Result<(), Box<dyn std::error::Error>> {
+    let graph = compile_example()?;
     // start, talk, notice_board, compute_rank, log_visit
     assert_eq!(
         graph.labels.len(),
@@ -170,18 +181,20 @@ fn compiled_graph_has_expected_label_count() {
             "label '{name}' should be present in the compiled graph"
         );
     }
+    Ok(())
 }
 
 // ── DOT structural assertions (no Graphviz required) ─────────────────────────
 
 #[test]
-fn dot_is_non_empty() {
-    assert!(!compile_example().to_dot().is_empty());
+fn dot_is_non_empty() -> Result<(), Box<dyn std::error::Error>> {
+    assert!(!compile_example()?.to_dot().is_empty());
+    Ok(())
 }
 
 #[test]
-fn dot_has_digraph_wrapper() {
-    let dot = compile_example().to_dot();
+fn dot_has_digraph_wrapper() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     assert!(
         dot.starts_with("digraph urd_script {"),
         "DOT must open with digraph header"
@@ -191,20 +204,22 @@ fn dot_has_digraph_wrapper() {
         dot.contains("splines=ortho"),
         "DOT must set splines=ortho for right-angle edge routing"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_entry_arrow() {
-    let dot = compile_example().to_dot();
+fn dot_has_entry_arrow() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     assert!(
         dot.contains("__start__"),
         "DOT must contain an entry-point arrow"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_scope_nodes_for_every_label() {
-    let dot = compile_example().to_dot();
+fn dot_has_scope_nodes_for_every_label() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     for label in ["start", "talk", "notice_board"] {
         // Each label must produce a cluster subgraph block.
         assert!(
@@ -235,20 +250,22 @@ fn dot_has_scope_nodes_for_every_label() {
         dot.contains("#66bb6a"),
         "scope marker nodes must use new green fill"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_dialogue_nodes() {
-    let dot = compile_example().to_dot();
+fn dot_has_dialogue_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     assert!(
         dot.contains("#b8c0cc"),
         "DOT must contain at least one dialogue node (muted slate fill)"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_choice_nodes() {
-    let dot = compile_example().to_dot();
+fn dot_has_choice_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     assert!(
         dot.contains("hexagon"),
         "DOT must contain at least one choice node (hexagon shape)"
@@ -258,11 +275,12 @@ fn dot_has_choice_nodes() {
         dot.contains("color=purple"),
         "choice option edges must be purple"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_choice_option_labels_are_present() {
-    let dot = compile_example().to_dot();
+fn dot_choice_option_labels_are_present() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // A sample of option labels from the script
     for label in [
         "Talk to the innkeeper",
@@ -275,22 +293,24 @@ fn dot_choice_option_labels_are_present() {
             "choice option label '{label}' should appear in DOT"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn dot_has_branch_nodes_for_if_elif_else() {
-    let dot = compile_example().to_dot();
+fn dot_has_branch_nodes_for_if_elif_else() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     assert!(
         dot.contains("diamond"),
         "DOT must contain branch/switch nodes (diamond shape)"
     );
     assert!(dot.contains("then"), "branch edges must be labelled 'then'");
     assert!(dot.contains("else"), "branch edges must be labelled 'else'");
+    Ok(())
 }
 
 #[test]
-fn dot_has_switch_node_for_match() {
-    let dot = compile_example().to_dot();
+fn dot_has_switch_node_for_match() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // match compiles to a Switch/match node which uses diamond shape.
     // The example script's match has 2 value arms + 1 wildcard default = 3 total.
     assert!(
@@ -301,11 +321,12 @@ fn dot_has_switch_node_for_match() {
         dot.contains("match (3 arms)"),
         "DOT must count all arms including the wildcard default (2 value + 1 default = 3)"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_decorator_annotations_on_emitting_nodes() {
-    let dot = compile_example().to_dot();
+fn dot_has_decorator_annotations_on_emitting_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // @voiced is on Dialogue nodes → appears in the node label
     assert!(
         dot.contains("@voiced"),
@@ -316,11 +337,12 @@ fn dot_has_decorator_annotations_on_emitting_nodes() {
         dot.contains("@important"),
         "DOT must show @important decorator on the choice node"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_jump_nodes_with_dashed_edges() {
-    let dot = compile_example().to_dot();
+fn dot_has_jump_nodes_with_dashed_edges() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     assert!(
         dot.contains("jump"),
         "DOT must contain at least one jump node"
@@ -336,11 +358,12 @@ fn dot_has_jump_nodes_with_dashed_edges() {
         dot.contains("constraint=false"),
         "jump edges must carry constraint=false to avoid distorting layout rank"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_assign_nodes() {
-    let dot = compile_example().to_dot();
+fn dot_has_assign_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // global reputation = 0  →  Assign node labelled "global reputation = ⟨expr⟩"
     assert!(
         dot.contains("global reputation"),
@@ -356,21 +379,23 @@ fn dot_has_assign_nodes() {
         dot.contains("let cost"),
         "DOT must contain an Assign node for 'let cost'"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_define_enum_node() {
-    let dot = compile_example().to_dot();
+fn dot_has_define_enum_node() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     assert!(dot.contains("enum"), "DOT must contain a DefineEnum node");
     assert!(
         dot.contains("lavender"),
         "DefineEnum node must use lavender fill"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_define_script_decorator_node() {
-    let dot = compile_example().to_dot();
+fn dot_has_define_script_decorator_node() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // Preamble definitions (globals, consts, enums, decorators) are collapsed
     // into a single __preamble__ summary node.
     assert!(
@@ -381,11 +406,12 @@ fn dot_has_define_script_decorator_node() {
         dot.contains("decorator timed"),
         "DOT preamble must mention the script-defined `timed` decorator"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_label_value_in_decorator_node() {
-    let dot = compile_example().to_dot();
+fn dot_has_label_value_in_decorator_node() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // @timed(3.0, notice_board) — the second argument resolves to
     // RuntimeValue::Label("notice_board") and is stored in the event map.
     // The dialogue node that carries @timed should mention @timed in its label.
@@ -400,11 +426,12 @@ fn dot_has_label_value_in_decorator_node() {
         dot.contains("subgraph cluster_notice_board"),
         "notice_board label (used as a value in @timed) must still compile as a real label block"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_end_sentinel() {
-    let dot = compile_example().to_dot();
+fn dot_has_end_sentinel() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     assert!(
         dot.contains("__end__"),
         "DOT must contain the __end__ sentinel for NODE_END edges"
@@ -413,22 +440,24 @@ fn dot_has_end_sentinel() {
         dot.contains("tomato"),
         "__end__ sentinel must use tomato fill"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_return_node() {
-    let dot = compile_example().to_dot();
+fn dot_has_return_node() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // The "Leave the tavern" option contains a return statement
     assert!(dot.contains("return"), "DOT must contain a Return node");
     assert!(
         dot.contains("#e8c4c4"),
         "Return node must use muted rose fill"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_let_call_nodes() {
-    let dot = compile_example().to_dot();
+fn dot_has_let_call_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // `let rank = jump compute_rank and return` compiles to an IrNodeKind::LetCall
     // node whose label in the DOT graph reads "⤑ compute_rank\n→ rank".
     assert!(
@@ -448,11 +477,12 @@ fn dot_has_let_call_nodes() {
         dot.contains("log_visit"),
         "DOT must reference the log_visit subroutine (discard-result call)"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_has_subroutine_call_edges() {
-    let dot = compile_example().to_dot();
+fn dot_has_subroutine_call_edges() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // LetCall emits two directed edges per call site:
     //   • a dashed 'call' edge  → the callee's EnterScope
     //   • a solid  'ret'  edge  → the continuation node after the call returns
@@ -464,11 +494,12 @@ fn dot_has_subroutine_call_edges() {
         dot.contains(r#"label="ret""#),
         "DOT must contain a 'ret' labelled edge from each LetCall node to its continuation"
     );
+    Ok(())
 }
 
 #[test]
-fn dot_subroutine_labels_produce_clusters() {
-    let dot = compile_example().to_dot();
+fn dot_subroutine_labels_produce_clusters() -> Result<(), Box<dyn std::error::Error>> {
+    let dot = compile_example()?.to_dot();
     // Subroutine labels compile to the same LabeledBlock IR as ordinary labels,
     // so they must also appear as named cluster subgraphs with EnterScope markers.
     for label in ["compute_rank", "log_visit"] {
@@ -481,6 +512,7 @@ fn dot_subroutine_labels_produce_clusters() {
             "DOT must contain an EnterScope (▶) marker node for subroutine label '{label}'"
         );
     }
+    Ok(())
 }
 
 // ── Graphviz live validation ──────────────────────────────────────────────────
@@ -490,27 +522,28 @@ fn dot_subroutine_labels_produce_clusters() {
 /// This proves the output is syntactically valid DOT, not just a string that
 /// looks plausible.
 #[test]
-fn dot_output_is_valid_graphviz() {
-    let dot_src = compile_example().to_dot();
+fn dot_output_is_valid_graphviz() -> Result<(), Box<dyn std::error::Error>> {
+    let dot_src = compile_example()?.to_dot();
 
-    let mut child = Command::new("dot")
+    let mut child = match Command::new("dot")
         .arg("-Tsvg")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn `dot` — is Graphviz installed?");
+    {
+        Ok(child) => child,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
 
-    child
+    let stdin = child
         .stdin
         .as_mut()
-        .expect("stdin must be piped")
-        .write_all(dot_src.as_bytes())
-        .expect("failed to write DOT to stdin");
+        .ok_or_else(|| io::Error::other("stdin must be piped"))?;
+    stdin.write_all(dot_src.as_bytes())?;
 
-    let output = child
-        .wait_with_output()
-        .expect("failed to wait for dot process");
+    let output = child.wait_with_output()?;
 
     assert!(
         output.status.success(),
@@ -525,6 +558,7 @@ fn dot_output_is_valid_graphviz() {
         "dot stdout should contain an <svg> element, got:\n{}",
         &svg[..svg.len().min(500)],
     );
+    Ok(())
 }
 
 /// Renders and writes `target/dot_render_example.dot` and
@@ -533,13 +567,13 @@ fn dot_output_is_valid_graphviz() {
 ///
 /// Always passes — purely a developer convenience artifact.
 #[test]
-fn dot_write_artifacts_for_inspection() {
-    let dot_src = compile_example().to_dot();
+fn dot_write_artifacts_for_inspection() -> Result<(), Box<dyn std::error::Error>> {
+    let dot_src = compile_example()?.to_dot();
     let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
-    std::fs::create_dir_all(&out_dir).expect("failed to create artifact output dir");
+    std::fs::create_dir_all(&out_dir)?;
 
     let dot_path = out_dir.join("dot_render_example.dot");
-    std::fs::write(&dot_path, &dot_src).expect("failed to write DOT artifact");
+    std::fs::write(&dot_path, &dot_src)?;
 
     // Best-effort SVG render — silently skipped if `dot` is unavailable.
     let svg_path = out_dir.join("dot_render_example.svg");
@@ -562,4 +596,5 @@ fn dot_write_artifacts_for_inspection() {
     }
 
     println!("DOT artifact : {}", dot_path.display());
+    Ok(())
 }

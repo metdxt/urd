@@ -9,6 +9,8 @@
 //! 4. Missing module surfaces a clear error at compile time.
 //! 5. Circular imports are detected and reported.
 
+use std::io;
+
 use urd::{
     VmStep,
     compiler::{Compiler, CompilerError},
@@ -21,20 +23,28 @@ use urd::{
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Parse `src` with the top-level `script()` parser, panicking on failure.
-fn parse_src(src: &str) -> urd::parser::ast::Ast {
-    parse_test!(script(), src).expect("parse failed")
+/// Parse `src` with the top-level `script()` parser.
+fn parse_src(src: &str) -> Result<urd::parser::ast::Ast, Box<dyn std::error::Error>> {
+    let ast = parse_test!(script(), src)
+        .map_err(|err| io::Error::other(format!("parse failed: {err:?}")))?;
+    Ok(ast)
 }
 
-/// Build a VM from a source string + loader, panicking on any error.
-fn build_vm_with_loader(main_src: &str, loader: &MemLoader) -> Vm {
-    let ast = parse_src(main_src);
-    let graph = Compiler::compile_with_loader(&ast, loader).expect("compile_with_loader failed");
-    Vm::new(graph, DecoratorRegistry::new()).expect("Vm::new failed")
+/// Build a VM from a source string + loader.
+fn build_vm_with_loader(
+    main_src: &str,
+    loader: &MemLoader,
+) -> Result<Vm, Box<dyn std::error::Error>> {
+    let ast = parse_src(main_src)?;
+    let graph = Compiler::compile_with_loader(&ast, loader)
+        .map_err(|err| io::Error::other(format!("compile_with_loader failed: {err}")))?;
+    let vm = Vm::new(graph, DecoratorRegistry::new())
+        .map_err(|err| io::Error::other(format!("Vm::new failed: {err}")))?;
+    Ok(vm)
 }
 
 /// Drain the VM and collect all `Event::Dialogue` lines into a flat `Vec<String>`.
-fn collect_dialogue_lines(vm: &mut Vm) -> Vec<String> {
+fn collect_dialogue_lines(vm: &mut Vm) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut out = Vec::new();
     loop {
         match vm.next(None) {
@@ -47,10 +57,10 @@ fn collect_dialogue_lines(vm: &mut Vm) -> Vec<String> {
                 }
             }
             VmStep::Event(_) => {}
-            VmStep::Error(e) => panic!("VM error: {e}"),
+            VmStep::Error(e) => return Err(io::Error::other(format!("VM error: {e}")).into()),
         }
     }
-    out
+    Ok(out)
 }
 
 // ─── Test 1: Jump to a label defined in an imported module ───────────────────
@@ -58,7 +68,7 @@ fn collect_dialogue_lines(vm: &mut Vm) -> Vec<String> {
 /// Importing a module and doing `jump lib.greeting` should reach the dialogue
 /// node that lives in the imported module.
 #[test]
-fn test_import_then_jump_to_module_label() {
+fn test_import_then_jump_to_module_label() -> Result<(), Box<dyn std::error::Error>> {
     let mut loader = MemLoader::new();
     loader.add(
         "lib.urd",
@@ -78,14 +88,15 @@ fn test_import_then_jump_to_module_label() {
         }
     "#;
 
-    let mut vm = build_vm_with_loader(main_src, &loader);
-    let lines = collect_dialogue_lines(&mut vm);
+    let mut vm = build_vm_with_loader(main_src, &loader)?;
+    let lines = collect_dialogue_lines(&mut vm)?;
 
     assert_eq!(
         lines,
         vec!["Hello from lib!"],
         "expected dialogue from imported module, got: {lines:?}"
     );
+    Ok(())
 }
 
 // ─── Test 2: Read a cross-module global set by the consumer ──────────────────
@@ -96,7 +107,7 @@ fn test_import_then_jump_to_module_label() {
 /// We verify this by having a conditional dialogue: only the "correct" branch
 /// fires, confirming the read returned the expected value.
 #[test]
-fn test_cross_module_global_write_and_read() {
+fn test_cross_module_global_write_and_read() -> Result<(), Box<dyn std::error::Error>> {
     let mut loader = MemLoader::new();
     loader.add("lib.urd", r#""#);
 
@@ -115,14 +126,15 @@ fn test_cross_module_global_write_and_read() {
         }
     "#;
 
-    let mut vm = build_vm_with_loader(main_src, &loader);
-    let lines = collect_dialogue_lines(&mut vm);
+    let mut vm = build_vm_with_loader(main_src, &loader)?;
+    let lines = collect_dialogue_lines(&mut vm)?;
 
     assert_eq!(
         lines,
         vec!["High score!"],
         "expected cross-module global read to return 99, got: {lines:?}"
     );
+    Ok(())
 }
 
 // ─── Test 3: Module label is reachable and body executes ─────────────────────
@@ -131,7 +143,7 @@ fn test_cross_module_global_write_and_read() {
 /// sentinel.  We check that variables set inside the label body are visible
 /// to subsequent instructions (by using them in a following dialogue).
 #[test]
-fn test_module_label_body_executes_on_jump() {
+fn test_module_label_body_executes_on_jump() -> Result<(), Box<dyn std::error::Error>> {
     let mut loader = MemLoader::new();
     loader.add(
         "state.urd",
@@ -151,14 +163,15 @@ fn test_module_label_body_executes_on_jump() {
         }
     "#;
 
-    let mut vm = build_vm_with_loader(main_src, &loader);
-    let lines = collect_dialogue_lines(&mut vm);
+    let mut vm = build_vm_with_loader(main_src, &loader)?;
+    let lines = collect_dialogue_lines(&mut vm)?;
 
     assert_eq!(
         lines,
         vec!["module init ran"],
         "expected body of module label to execute, got: {lines:?}"
     );
+    Ok(())
 }
 
 // ─── Test 4: Two modules imported under different aliases ─────────────────────
@@ -167,7 +180,8 @@ fn test_module_label_body_executes_on_jump() {
 /// imported under different aliases.  Jumping to each alias should reach the
 /// correct dialogue.
 #[test]
-fn test_two_modules_with_same_label_name_do_not_collide() {
+fn test_two_modules_with_same_label_name_do_not_collide() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut loader = MemLoader::new();
     loader.add(
         "module_a.urd",
@@ -197,14 +211,15 @@ fn test_two_modules_with_same_label_name_do_not_collide() {
         }
     "#;
 
-    let mut vm = build_vm_with_loader(main_src, &loader);
-    let lines = collect_dialogue_lines(&mut vm);
+    let mut vm = build_vm_with_loader(main_src, &loader)?;
+    let lines = collect_dialogue_lines(&mut vm)?;
 
     assert_eq!(
         lines,
         vec!["from module A"],
         "expected only module A dialogue, got: {lines:?}"
     );
+    Ok(())
 }
 
 // ─── Test 5: Module with multiple labels — jump to a non-first label ──────────
@@ -212,7 +227,7 @@ fn test_two_modules_with_same_label_name_do_not_collide() {
 /// The merged graph contains ALL labels from the module, not just the first one.
 /// Verify that jumping to a label that is not the module's graph entry works.
 #[test]
-fn test_jump_to_non_entry_module_label() {
+fn test_jump_to_non_entry_module_label() -> Result<(), Box<dyn std::error::Error>> {
     let mut loader = MemLoader::new();
     loader.add(
         "scenes.urd",
@@ -235,14 +250,15 @@ fn test_jump_to_non_entry_module_label() {
         }
     "#;
 
-    let mut vm = build_vm_with_loader(main_src, &loader);
-    let lines = collect_dialogue_lines(&mut vm);
+    let mut vm = build_vm_with_loader(main_src, &loader)?;
+    let lines = collect_dialogue_lines(&mut vm)?;
 
     assert_eq!(
         lines,
         vec!["this is epilogue"],
         "expected epilogue dialogue (non-entry module label), got: {lines:?}"
     );
+    Ok(())
 }
 
 // ─── Test 6: Missing module → ModuleLoadError at compile time ────────────────
@@ -250,10 +266,10 @@ fn test_jump_to_non_entry_module_label() {
 /// `import "ghost.urd" as g` where the loader has no such file must produce a
 /// `CompilerError::ModuleLoadError` containing the missing path.
 #[test]
-fn test_missing_module_produces_load_error() {
+fn test_missing_module_produces_load_error() -> Result<(), Box<dyn std::error::Error>> {
     let loader = MemLoader::new(); // empty — no files
 
-    let ast = parse_src(r#"import "ghost.urd" as g"#);
+    let ast = parse_src(r#"import "ghost.urd" as g"#)?;
     let result = Compiler::compile_with_loader(&ast, &loader);
 
     assert!(
@@ -263,6 +279,7 @@ fn test_missing_module_produces_load_error() {
         ),
         "expected ModuleLoadError for 'ghost.urd', got: {result:?}"
     );
+    Ok(())
 }
 
 // ─── Test 7: Circular import → compiles successfully ─────────────────────────
@@ -272,7 +289,7 @@ fn test_missing_module_produces_load_error() {
 /// stubs before emitting any IR, so neither module needs the other to be fully
 /// compiled first.
 #[test]
-fn test_circular_import_compiles_successfully() {
+fn test_circular_import_compiles_successfully() -> Result<(), Box<dyn std::error::Error>> {
     let mut loader = MemLoader::new();
     loader.add(
         "a.urd",
@@ -283,7 +300,7 @@ fn test_circular_import_compiles_successfully() {
         "import \"a.urd\" as a\nlabel b_label {\n  jump a.a_label\n}\n",
     );
 
-    let ast = parse_src(r#"import "a.urd" as a"#);
+    let ast = parse_src(r#"import "a.urd" as a"#)?;
     let result = Compiler::compile_with_loader(&ast, &loader);
 
     assert!(
@@ -291,7 +308,11 @@ fn test_circular_import_compiles_successfully() {
         "circular import should compile successfully, got: {result:?}"
     );
 
-    let graph = result.unwrap();
+    let graph = result.map_err(|err| {
+        io::Error::other(format!(
+            "expected circular import compile success, got error: {err}"
+        ))
+    })?;
     assert!(
         graph.labels.contains_key("a::a_label"),
         "a::a_label must be accessible; labels: {:?}",
@@ -302,6 +323,7 @@ fn test_circular_import_compiles_successfully() {
         "b::b_label must be accessible; labels: {:?}",
         graph.labels.keys().collect::<Vec<_>>()
     );
+    Ok(())
 }
 
 // ─── Test 8: Import-only script (no jump) — graph contains module labels ─────
@@ -309,19 +331,20 @@ fn test_circular_import_compiles_successfully() {
 /// A script that only contains an `import` statement (no jump) must still
 /// compile successfully and have the module's labels registered in the graph.
 #[test]
-fn test_import_only_script_registers_labels() {
+fn test_import_only_script_registers_labels() -> Result<(), Box<dyn std::error::Error>> {
     let mut loader = MemLoader::new();
     loader.add("util.urd", r#"label helper { Sys: "util" }"#);
 
-    let ast = parse_src(r#"import "util.urd" as util"#);
-    let graph =
-        Compiler::compile_with_loader(&ast, &loader).expect("compile_with_loader should succeed");
+    let ast = parse_src(r#"import "util.urd" as util"#)?;
+    let graph = Compiler::compile_with_loader(&ast, &loader)
+        .map_err(|err| io::Error::other(format!("compile_with_loader should succeed: {err}")))?;
 
     assert!(
         graph.labels.contains_key("util::helper"),
         "'util::helper' must be present in graph.labels after import, got: {:?}",
         graph.labels.keys().collect::<Vec<_>>()
     );
+    Ok(())
 }
 
 // ─── Test 9: Cross-module global persists across scope transitions ────────────
@@ -330,7 +353,7 @@ fn test_import_only_script_registers_labels() {
 /// value 1 — cross-module globals are stored in the global map and therefore
 /// visible everywhere in the script, including inside conditional branches.
 #[test]
-fn test_cross_module_global_visible_in_conditional() {
+fn test_cross_module_global_visible_in_conditional() -> Result<(), Box<dyn std::error::Error>> {
     let mut loader = MemLoader::new();
     loader.add("ns.urd", r#""#);
     let main_src = r#"
@@ -346,14 +369,15 @@ fn test_cross_module_global_visible_in_conditional() {
         }
     "#;
 
-    let mut vm = build_vm_with_loader(main_src, &loader);
-    let lines = collect_dialogue_lines(&mut vm);
+    let mut vm = build_vm_with_loader(main_src, &loader)?;
+    let lines = collect_dialogue_lines(&mut vm)?;
 
     assert_eq!(
         lines,
         vec!["flag is set"],
         "cross-module global must be visible in a conditional, got: {lines:?}"
     );
+    Ok(())
 }
 
 // ─── Test 10: Transitive imports — module that imports another module ─────────
@@ -361,7 +385,7 @@ fn test_cross_module_global_visible_in_conditional() {
 /// `main.urd` imports `mid.urd`, which imports `base.urd`.  Jumping to
 /// `base::entry` from main must work.
 #[test]
-fn test_transitive_imports_resolve() {
+fn test_transitive_imports_resolve() -> Result<(), Box<dyn std::error::Error>> {
     let mut loader = MemLoader::new();
     loader.add(
         "base.urd",
@@ -386,12 +410,13 @@ fn test_transitive_imports_resolve() {
         }
     "#;
 
-    let mut vm = build_vm_with_loader(main_src, &loader);
-    let lines = collect_dialogue_lines(&mut vm);
+    let mut vm = build_vm_with_loader(main_src, &loader)?;
+    let lines = collect_dialogue_lines(&mut vm)?;
 
     assert_eq!(
         lines,
         vec!["from base"],
         "expected base module dialogue via transitive import + direct import, got: {lines:?}"
     );
+    Ok(())
 }

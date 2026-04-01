@@ -1322,6 +1322,66 @@ mod tests {
         );
     }
 
+    /// Shift with a negative count must return a VM error (never panic).
+    #[test]
+    fn test_eval_left_shift_negative_count_errors() {
+        let env = Environment::new();
+        let expr = Ast::left_shift_op(int(8), int(-1));
+
+        match eval_expr(&expr, &env) {
+            Err(VmError::TypeError(msg)) => {
+                assert!(
+                    msg.contains("invalid shift count -1"),
+                    "unexpected error message: {msg}"
+                );
+            }
+            other => panic!(
+                "expected TypeError for negative shift count, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Shift with a count larger than 63 must return a VM error (never panic).
+    #[test]
+    fn test_eval_right_shift_too_large_count_errors() {
+        let env = Environment::new();
+        let expr = Ast::right_shift_op(int(8), int(64));
+
+        match eval_expr(&expr, &env) {
+            Err(VmError::TypeError(msg)) => {
+                assert!(
+                    msg.contains("invalid shift count 64"),
+                    "unexpected error message: {msg}"
+                );
+            }
+            other => panic!(
+                "expected TypeError for too-large shift count, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Boundary shift counts (0 and 63) remain valid.
+    #[test]
+    fn test_eval_shift_boundary_counts_are_valid() {
+        let env = Environment::new();
+
+        let left_zero = Ast::left_shift_op(int(1), int(0));
+        match eval_expr(&left_zero, &env) {
+            Ok(RuntimeValue::Int(1)) => {}
+            Ok(other) => panic!("1 << 0 should be Int(1), got {:?}", other),
+            Err(err) => panic!("1 << 0 should be valid, got error: {err}"),
+        }
+
+        let right_max = Ast::right_shift_op(int(i64::MAX), int(63));
+        match eval_expr(&right_max, &env) {
+            Ok(RuntimeValue::Int(0)) => {}
+            Ok(other) => panic!("i64::MAX >> 63 should be Int(0), got {:?}", other),
+            Err(err) => panic!("i64::MAX >> 63 should be valid, got error: {err}"),
+        }
+    }
+
     /// Short-circuit `And` and `Or`.
     #[test]
     fn test_eval_logical_short_circuit() {
@@ -1404,6 +1464,29 @@ mod tests {
             matches!(result, Err(VmError::TypeError(_))),
             "reassigning a const should be a TypeError"
         );
+    }
+
+    /// VM execution: plain assignment (`x = 2`) to a constant must error.
+    #[test]
+    fn test_plain_assignment_to_const_errors_at_runtime() {
+        let const_decl = Ast::decl(DeclKind::Constant, ident("x"), int(1));
+        let plain_assign = Ast::assign_op(ident("x"), int(2));
+        let ast = Ast::block(vec![const_decl, plain_assign]);
+
+        let mut vm = build_vm(ast);
+
+        match vm.next(None) {
+            VmStep::Error(VmError::TypeError(msg)) => {
+                assert!(
+                    msg.contains("cannot assign to constant 'x'"),
+                    "expected const-assignment runtime error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected VmStep::Error(TypeError) for const reassignment, got {:?}",
+                other
+            ),
+        }
     }
 
     /// Environment: globals are accessible from nested scopes.

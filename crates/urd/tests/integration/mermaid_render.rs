@@ -6,6 +6,8 @@
 //! language feature, then makes structural assertions on the rendered Mermaid
 //! string.  No external tooling is required — Mermaid is pure text.
 
+use std::io;
+
 use urd::{compiler::Compiler, parse_test, parser::block::script};
 
 // ── Example script ─────────────────────────────────────────────────────────
@@ -134,27 +136,38 @@ label log_visit {
 
 // ── Helper ──────────────────────────────────────────────────────────────────
 
-fn compile_example() -> urd::ir::IrGraph {
-    let ast =
-        parse_test!(script(), EXAMPLE_SCRIPT).expect("example script should parse without errors");
-    Compiler::compile(&ast).expect("example script should compile without errors")
+fn compile_example() -> Result<urd::ir::IrGraph, Box<dyn std::error::Error>> {
+    let ast = parse_test!(script(), EXAMPLE_SCRIPT).map_err(|err| {
+        io::Error::other(format!(
+            "example script should parse without errors: {err:?}"
+        ))
+    })?;
+    let graph = Compiler::compile(&ast).map_err(|err| {
+        io::Error::other(format!(
+            "example script should compile without errors: {err}"
+        ))
+    })?;
+    Ok(graph)
 }
 
 // ── Parse + compile ──────────────────────────────────────────────────────────
 
 #[test]
-fn example_script_parses() {
-    parse_test!(script(), EXAMPLE_SCRIPT).expect("example script must parse cleanly");
+fn example_script_parses() -> Result<(), Box<dyn std::error::Error>> {
+    parse_test!(script(), EXAMPLE_SCRIPT)
+        .map_err(|err| io::Error::other(format!("example script must parse cleanly: {err:?}")))?;
+    Ok(())
 }
 
 #[test]
-fn example_script_compiles() {
-    compile_example();
+fn example_script_compiles() -> Result<(), Box<dyn std::error::Error>> {
+    compile_example()?;
+    Ok(())
 }
 
 #[test]
-fn compiled_graph_has_expected_label_count() {
-    let graph = compile_example();
+fn compiled_graph_has_expected_label_count() -> Result<(), Box<dyn std::error::Error>> {
+    let graph = compile_example()?;
     // start, talk, notice_board, compute_rank, log_visit
     assert_eq!(
         graph.labels.len(),
@@ -168,13 +181,14 @@ fn compiled_graph_has_expected_label_count() {
             "label '{name}' should be present in the compiled graph"
         );
     }
+    Ok(())
 }
 
 // ── Mermaid structural assertions ────────────────────────────────────────────
 
 #[test]
-fn mermaid_has_flowchart_header() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_flowchart_header() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     assert!(
         mmd.contains("%%{init:"),
         "Mermaid output must contain %%{{init:}} directive for edge colour, got:\n{}",
@@ -191,17 +205,22 @@ fn mermaid_has_flowchart_header() {
         &mmd[..mmd.len().min(120)]
     );
     // init directive must come before the flowchart declaration
-    let init_pos = mmd.find("%%{init:").unwrap();
-    let flowchart_pos = mmd.find("flowchart LR").unwrap();
+    let init_pos = mmd
+        .find("%%{init:")
+        .ok_or_else(|| io::Error::other("expected init directive marker in Mermaid output"))?;
+    let flowchart_pos = mmd
+        .find("flowchart LR")
+        .ok_or_else(|| io::Error::other("expected flowchart header in Mermaid output"))?;
     assert!(
         init_pos < flowchart_pos,
         "%%{{init:}} directive must appear before 'flowchart LR'"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_classdefs() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_classdefs() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     for class in [
         "classDef dialogue",
         "classDef branch",
@@ -220,11 +239,12 @@ fn mermaid_has_classdefs() {
             "Mermaid output must contain '{class}' classDef declaration"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_start_node() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_start_node() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     assert!(
         mmd.contains("__start__"),
         "Mermaid output must contain the __start__ synthetic entry node"
@@ -233,51 +253,56 @@ fn mermaid_has_start_node() {
         mmd.contains("▶ START"),
         "Mermaid output must contain the ▶ START label on the start node"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_subgraph_for_every_label() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_subgraph_for_every_label() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     for label in ["start", "talk", "notice_board", "compute_rank", "log_visit"] {
         assert!(
             mmd.contains(&format!("subgraph cluster_{label}")),
             "Mermaid output must contain a subgraph for label '{label}'"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_enter_scope_markers() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_enter_scope_markers() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     for label in ["start", "talk", "notice_board", "compute_rank", "log_visit"] {
         assert!(
             mmd.contains(&format!("▶ {label}")),
             "Mermaid output must contain an EnterScope (▶) marker for label '{label}'"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_dialogue_nodes() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_dialogue_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     assert!(
         mmd.contains(":::dialogue"),
         "Mermaid output must contain at least one dialogue node (:::dialogue class)"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_choice_nodes() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_choice_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     assert!(
         mmd.contains(":::choice"),
         "Mermaid output must contain at least one choice node (:::choice class)"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_branch_nodes() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_branch_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     assert!(
         mmd.contains(":::branch"),
         "Mermaid output must contain at least one branch node (:::branch class)"
@@ -290,21 +315,23 @@ fn mermaid_has_branch_nodes() {
         mmd.contains("else"),
         "branch edges must include an 'else' label"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_jump_nodes() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_jump_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     assert!(
         mmd.contains(":::jump"),
         "Mermaid output must contain at least one jump node (:::jump class)"
     );
     assert!(mmd.contains("-.->"), "jump edges must be dashed (-.->)");
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_let_call_nodes() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_let_call_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     // LetCall nodes use the ⤑ prefix in their label.
     assert!(
         mmd.contains("⤑"),
@@ -323,11 +350,12 @@ fn mermaid_has_let_call_nodes() {
         mmd.contains("log_visit"),
         "Mermaid output must reference log_visit in a LetCall node"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_subroutine_return_edges() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_subroutine_return_edges() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     // Subroutine Returns must emit dashed ↩ back-edges to the caller continuation,
     // not a bare edge to __end__.
     assert!(
@@ -335,11 +363,12 @@ fn mermaid_has_subroutine_return_edges() {
         "Mermaid output must contain ↩ back-edges for subroutine Return nodes \
          (compute_rank and log_visit both return to the start cluster)"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_end_sink() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_end_sink() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     assert!(
         mmd.contains("__end__"),
         "Mermaid output must contain the __end__ sink node for terminal edges"
@@ -348,11 +377,12 @@ fn mermaid_has_end_sink() {
         mmd.contains(":::endNode"),
         "__end__ sink must carry the :::endNode class"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_assign_nodes() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_assign_nodes() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     // global reputation = 0
     assert!(
         mmd.contains("global reputation"),
@@ -363,11 +393,12 @@ fn mermaid_has_assign_nodes() {
         mmd.contains("const max_health"),
         "Mermaid output must contain an Assign node for 'const max_health'"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_define_enum_node() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_define_enum_node() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     // Preamble definitions (globals, consts, enums, decorators) are collapsed
     // into a single __preamble__ summary node.
     assert!(
@@ -378,17 +409,19 @@ fn mermaid_has_define_enum_node() {
         mmd.contains("enum Action"),
         "Mermaid preamble must mention 'enum Action'"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_has_return_node() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_has_return_node() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     // The script has several Return nodes (in compute_rank, log_visit, and the
     // "Leave the tavern" menu option).
     assert!(
         mmd.contains(":::ret"),
         "Mermaid output must contain at least one Return node (:::ret class)"
     );
+    Ok(())
 }
 
 /// Test 19 — the `LetCall.next` cluster fix.
@@ -407,18 +440,18 @@ fn mermaid_has_return_node() {
 /// never enqueued `next`, so the choice menu and everything after it fell
 /// outside `cluster_start`.
 #[test]
-fn mermaid_nodes_after_letcall_in_cluster() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_nodes_after_letcall_in_cluster() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
 
     // Find the subgraph cluster_start block.
     let start_pos = mmd
         .find("subgraph cluster_start")
-        .expect("subgraph cluster_start must exist in Mermaid output");
+        .ok_or_else(|| io::Error::other("subgraph cluster_start must exist in Mermaid output"))?;
 
     // Find the "end" line that closes this subgraph (first `\n    end` after open).
     let end_rel = mmd[start_pos..]
         .find("\n    end")
-        .expect("subgraph cluster_start must have a closing 'end'");
+        .ok_or_else(|| io::Error::other("subgraph cluster_start must have a closing 'end'"))?;
     let end_pos = start_pos + end_rel;
 
     let cluster_block = &mmd[start_pos..end_pos];
@@ -438,14 +471,16 @@ fn mermaid_nodes_after_letcall_in_cluster() {
          — this proves that LetCall.next is followed into the same cluster.\n\
          Block content:\n{cluster_block}"
     );
+    Ok(())
 }
 
 #[test]
-fn mermaid_is_non_empty() {
+fn mermaid_is_non_empty() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
-        !compile_example().to_mermaid().is_empty(),
+        !compile_example()?.to_mermaid().is_empty(),
         "Mermaid output must not be empty"
     );
+    Ok(())
 }
 
 /// Writes `target/mermaid_example.mmd` for manual inspection.
@@ -453,11 +488,12 @@ fn mermaid_is_non_empty() {
 /// Always passes — purely a developer convenience artifact.
 /// Paste the file contents into <https://mermaid.live> to view the diagram.
 #[test]
-fn mermaid_write_artifact_for_inspection() {
-    let mmd = compile_example().to_mermaid();
+fn mermaid_write_artifact_for_inspection() -> Result<(), Box<dyn std::error::Error>> {
+    let mmd = compile_example()?.to_mermaid();
     let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
-    std::fs::create_dir_all(&out_dir).expect("failed to create artifact output dir");
+    std::fs::create_dir_all(&out_dir)?;
     let path = out_dir.join("mermaid_example.mmd");
-    std::fs::write(&path, &mmd).expect("failed to write Mermaid artifact");
+    std::fs::write(&path, &mmd)?;
     println!("Mermaid artifact: {}", path.display());
+    Ok(())
 }

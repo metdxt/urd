@@ -198,12 +198,19 @@ pub fn render_parse_errors<W: std::io::Write>(
 ) -> std::io::Result<()> {
     for error in errors {
         let span = *error.span();
-        let range = span.start..span.end;
+        let src_len = src.len();
+        let range_start = span.start.min(src_len);
+        let range_end = span.end.min(src_len).max(range_start);
+        let range = range_start..range_end;
         // Pin the primary caret to a single character at the token's start so
         // that ariadne's `┬` always points at the beginning of the offending
         // token rather than somewhere inside a wide (potentially multi-token)
         // span that chumsky produces after backtracking through `.or()` chains.
-        let caret_range = span.start..span.start + 1;
+        //
+        // Clamp to source bounds so EOF errors (where start == src.len()) never
+        // create an out-of-bounds range like `len..len+1`.
+        let caret_end = range_start.saturating_add(1).min(src_len);
+        let caret_range = range_start..caret_end.max(range_start);
         let name = source_name.to_owned();
 
         // ── Derive the top-level message and primary label ─────────────────
@@ -434,6 +441,40 @@ mod tests {
         assert!(
             all.contains("'}'") || all.contains("unexpected"),
             "output should mention the unexpected token or 'unexpected': {all}"
+        );
+    }
+
+    #[test]
+    fn render_parse_errors_eof_caret_is_clamped_to_source_bounds() {
+        // Missing closing brace forces an EOF parse error. Regression check:
+        // rendering must not create an out-of-bounds caret span.
+        use crate::lexer::{Token, lex_src};
+        use chumsky::input::Stream;
+        use chumsky::prelude::*;
+
+        let src = "label start {\n";
+        let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
+            Ok(tok) => (tok, span.into()),
+            Err(e) => (Token::Error(e), span.into()),
+        });
+        let stream = Stream::from_iter(lexer)
+            .map((0..src.len()).into(), |(t, s): (Token, SimpleSpan)| (t, s));
+
+        let (_, errs) = script().parse(stream).into_output_errors();
+        assert!(
+            !errs.is_empty(),
+            "expected parse errors for unterminated label block"
+        );
+
+        let mut buf: Vec<u8> = Vec::new();
+        let result = render_parse_errors(&errs, src, "test.urd", &mut buf);
+        assert!(
+            result.is_ok(),
+            "rendering EOF error should not fail: {result:?}"
+        );
+        assert!(
+            std::str::from_utf8(&buf).is_ok(),
+            "output must be valid UTF-8"
         );
     }
 

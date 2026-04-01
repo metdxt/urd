@@ -70,11 +70,19 @@ impl Environment {
     ///
     /// - [`DeclKind::Variable`] — update an existing binding (searching
     ///   outward from the innermost scope, then globals) or create a new one in
-    ///   the innermost scope.
-    /// - [`DeclKind::Global`] — store in the globals map.
+    ///   the innermost scope. Returns [`VmError::TypeError`] if `name` is a
+    ///   constant.
+    /// - [`DeclKind::Global`] — store in the globals map. Returns
+    ///   [`VmError::TypeError`] if `name` is a constant.
     /// - [`DeclKind::Constant`] — store in the innermost scope; returns
     ///   [`VmError::TypeError`] if the name was already declared as a constant.
     pub fn set(&mut self, name: &str, value: RuntimeValue, kind: &DeclKind) -> Result<(), VmError> {
+        if !matches!(kind, DeclKind::Constant) && self.constants.contains(name) {
+            return Err(VmError::TypeError(format!(
+                "cannot assign to constant '{name}'"
+            )));
+        }
+
         match kind {
             DeclKind::Global => {
                 self.globals.insert(name.to_string(), value);

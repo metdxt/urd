@@ -979,7 +979,7 @@ mod tests {
 
         // imported_type_context must expose the Character struct fields
         // even though we only imported narrator (not the whole module).
-        let (structs, enums, _labels) = index.imported_type_context(&main_uri);
+        let (structs, _enums, _labels) = index.imported_type_context(&main_uri);
         assert!(
             structs.contains_key("Character"),
             "imported_type_context must contain 'Character' after symbol import of narrator; \

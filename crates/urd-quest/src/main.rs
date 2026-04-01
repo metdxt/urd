@@ -381,7 +381,12 @@ fn handle_choice_pipe(options: &[urd::ir::ChoiceEvent], stdin: &mut impl BufRead
 
 /// Run all static-analysis passes over `ast` and print rich ariadne diagnostics
 /// to stderr.  Analysis is non-fatal: issues are reported but execution continues.
-fn run_analysis(ast: &urd::parser::ast::Ast, src: &str, filename: &str, loader: &FsLoader) {
+fn run_analysis(
+    ast: &urd::parser::ast::Ast,
+    src: &str,
+    filename: &str,
+    loader: &dyn urd::vm::loader::FileLoader,
+) {
     use std::collections::{HashMap, HashSet};
 
     let mut imported_structs: HashMap<String, Vec<urd::parser::ast::StructField>> = HashMap::new();
@@ -410,13 +415,12 @@ fn run_analysis(ast: &urd::parser::ast::Ast, src: &str, filename: &str, loader: 
 
 fn collect_analysis_imports(
     ast: &urd::parser::ast::Ast,
-    loader: &FsLoader,
+    loader: &dyn urd::vm::loader::FileLoader,
     structs: &mut std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
     enums: &mut std::collections::HashMap<String, Vec<String>>,
     labels: &mut std::collections::HashSet<String>,
 ) {
     use urd::parser::ast::AstContent;
-    use urd::vm::loader::FileLoader;
 
     match ast.content() {
         AstContent::Block(stmts) => {
@@ -441,10 +445,14 @@ fn collect_analysis_imports(
                 ""
             };
             collect_type_defs_from_ast(&module_ast, alias, structs, enums);
-            // For symbol imports, register each directly-imported name as a known label.
+            // For symbol imports, only register aliases whose imported original
+            // resolves to a label declaration in the imported module.
             if !is_whole_module {
+                let imported_label_names = collect_label_names_from_ast(&module_ast);
                 for sym in symbols {
-                    if sym.original.is_some() {
+                    if let Some(original) = sym.original.as_ref()
+                        && imported_label_names.contains(original)
+                    {
                         labels.insert(sym.alias.clone());
                     }
                 }
@@ -490,6 +498,54 @@ fn collect_type_defs_from_ast(
         }
         AstContent::LabeledBlock { block, .. } => {
             collect_type_defs_from_ast(block, alias, structs, enums);
+        }
+        _ => {}
+    }
+}
+
+fn collect_label_names_from_ast(ast: &urd::parser::ast::Ast) -> std::collections::HashSet<String> {
+    let mut labels = std::collections::HashSet::new();
+    collect_label_names_from_node(ast, &mut labels);
+    labels
+}
+
+fn collect_label_names_from_node(
+    ast: &urd::parser::ast::Ast,
+    labels: &mut std::collections::HashSet<String>,
+) {
+    use urd::parser::ast::AstContent;
+
+    match ast.content() {
+        AstContent::LabeledBlock { label, block } => {
+            labels.insert(label.clone());
+            collect_label_names_from_node(block, labels);
+        }
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                collect_label_names_from_node(stmt, labels);
+            }
+        }
+        AstContent::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            collect_label_names_from_node(then_block, labels);
+            if let Some(else_block) = else_block {
+                collect_label_names_from_node(else_block, labels);
+            }
+        }
+        AstContent::Menu { options } => {
+            for opt in options {
+                if let AstContent::MenuOption { content, .. } = opt.content() {
+                    collect_label_names_from_node(content, labels);
+                }
+            }
+        }
+        AstContent::Match { arms, .. } => {
+            for arm in arms {
+                collect_label_names_from_node(&arm.body, labels);
+            }
         }
         _ => {}
     }
@@ -684,5 +740,102 @@ fn main() {
         }) => {
             cmd_export(&script, format, output.as_deref());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use super::collect_analysis_imports;
+    use urd::compiler::loader::parse_source;
+    use urd::vm::loader::MemLoader;
+
+    fn parse(src: &str) -> urd::parser::ast::Ast {
+        parse_source(src).expect("test source should parse")
+    }
+
+    #[test]
+    fn collect_analysis_imports_only_marks_symbols_that_are_labels() {
+        let mut loader = MemLoader::new();
+        loader.add(
+            "lib.urd",
+            r#"
+label greet {
+  end!()
+}
+
+const answer = 42
+struct Character { name: str }
+enum Faction { Guild, Empire }
+"#,
+        );
+
+        let ast = parse(
+            r#"
+import (greet, answer, Character, Faction) from "lib.urd"
+
+label start {
+  jump greet
+}
+"#,
+        );
+
+        let mut structs: HashMap<String, Vec<urd::parser::ast::StructField>> = HashMap::new();
+        let mut enums: HashMap<String, Vec<String>> = HashMap::new();
+        let mut labels: HashSet<String> = HashSet::new();
+
+        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels);
+
+        assert!(
+            labels.contains("greet"),
+            "expected imported label to be tracked"
+        );
+        assert!(
+            !labels.contains("answer"),
+            "const import must not be classified as label"
+        );
+        assert!(
+            !labels.contains("Character"),
+            "struct import must not be classified as label"
+        );
+        assert!(
+            !labels.contains("Faction"),
+            "enum import must not be classified as label"
+        );
+    }
+
+    #[test]
+    fn collect_analysis_imports_only_marks_alias_when_original_is_label() {
+        let mut loader = MemLoader::new();
+        loader.add(
+            "lib.urd",
+            r#"
+label greet { end!() }
+const answer = 42
+"#,
+        );
+
+        let ast = parse(
+            r#"
+import (greet as hello, answer as life) from "lib.urd"
+label start { jump hello }
+"#,
+        );
+
+        let mut structs: HashMap<String, Vec<urd::parser::ast::StructField>> = HashMap::new();
+        let mut enums: HashMap<String, Vec<String>> = HashMap::new();
+        let mut labels: HashSet<String> = HashSet::new();
+
+        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels);
+
+        assert!(
+            labels.contains("hello"),
+            "label alias should be tracked when original symbol is a label"
+        );
+        assert!(
+            !labels.contains("life"),
+            "non-label alias must not be tracked as label"
+        );
     }
 }

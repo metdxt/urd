@@ -860,7 +860,7 @@ fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
             } else if let Some(val) = sym
                 .detail
                 .as_deref()
-                .and_then(|d| d.splitn(2, " = ").nth(1))
+                .and_then(|d| d.split_once(" = ").map(|x| x.1))
             {
                 // Imported symbol — value was pre-rendered into `detail` at
                 // collect_symbols_recursive time.
@@ -1025,10 +1025,10 @@ fn hover_from_ast(
                 }
                 return Some(format!("```urd\nlabel {}\n```", target));
             }
-            if word == name.as_str() {
-                if let Some(sym) = symbols.iter().find(|s| s.name == *name) {
-                    return Some(hover_for_symbol(sym, root, symbols));
-                }
+            if word == name.as_str()
+                && let Some(sym) = symbols.iter().find(|s| s.name == *name)
+            {
+                return Some(hover_for_symbol(sym, root, symbols));
             }
             None
         }
@@ -1121,7 +1121,7 @@ fn interpolation_hover_at(
     src: &str,
     byte_offset: usize,
     symbols: &[Symbol],
-    ast: &Ast,
+    _ast: &Ast,
     root: &Ast,
 ) -> Option<String> {
     let bytes = src.as_bytes();
@@ -1305,7 +1305,9 @@ fn find_references_recursive(ast: &Ast, name: &str, out: &mut Vec<SimpleSpan>) {
     match ast.content() {
         // Identifier references.
         AstContent::Value(RuntimeValue::IdentPath(parts)) => {
-            if parts.iter().any(|p| p == name) {
+            let full_path = parts.join(".");
+            let leaf_matches = parts.last().is_some_and(|p| p == name);
+            if full_path == name || leaf_matches {
                 out.push(ast.span());
             }
         }
@@ -2752,6 +2754,18 @@ mod tests {
             refs.len() >= 2,
             "expected at least 2 references to 'start', got {}",
             refs.len()
+        );
+    }
+
+    #[test]
+    fn find_references_ident_path_does_not_match_middle_segment() {
+        let src = "label start {\n  let value = alpha.beta.gamma\n  end!()\n}\n";
+        let ast = parse(src);
+
+        let refs = find_references(&ast, "beta");
+        assert!(
+            refs.is_empty(),
+            "middle segment 'beta' must not match IdentPath references; got {refs:?}"
         );
     }
 

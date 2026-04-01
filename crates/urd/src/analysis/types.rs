@@ -93,7 +93,7 @@ fn check_node(
                 if s.start == 0 && s.end == 0 { span } else { s }
             };
             if let Some(var_name) = extract_decl_name(decl_name) {
-                check_value_compat(decl_defs, ann, &var_name, rhs_span, ctx, errors);
+                check_value_compat(decl_defs, ann, &var_name, rhs_span, ctx, scope, errors);
                 // Register the variable so later assignments can be checked.
                 scope.declare(var_name, ann.clone());
             }
@@ -126,7 +126,7 @@ fn check_node(
                         let s = right.span();
                         if s.start == 0 && s.end == 0 { span } else { s }
                     };
-                    check_value_compat(right, &ann, var_name, rhs_span, ctx, errors);
+                    check_value_compat(right, &ann, var_name, rhs_span, ctx, scope, errors);
                 }
             }
             check_node(left, ctx, span, scope, errors);
@@ -285,6 +285,7 @@ fn check_value_compat(
     variable: &str,
     span: SimpleSpan,
     ctx: &AnalysisContext,
+    scope: &ScopeStack,
     errors: &mut Vec<AnalysisError>,
 ) {
     let rv = match value_ast.content() {
@@ -358,7 +359,7 @@ fn check_value_compat(
         _ => return,
     };
 
-    if is_compatible(rv, expected, ctx) {
+    if is_compatible(rv, expected, ctx, scope) {
         return;
     }
 
@@ -370,18 +371,46 @@ fn check_value_compat(
     });
 }
 
+/// Returns `true` when `actual` can be assigned into `expected`.
+fn annotation_compatible(actual: &TypeAnnotation, expected: &TypeAnnotation) -> bool {
+    if actual == expected {
+        return true;
+    }
+
+    matches!(
+        (actual, expected),
+        // Numeric widening: Int -> Float
+        (TypeAnnotation::Int, TypeAnnotation::Float)
+            // Nullable named type
+            | (TypeAnnotation::Null, TypeAnnotation::Named(_))
+    )
+}
+
 /// Returns `true` if `value` is compatible with `annotation`.
-fn is_compatible(value: &RuntimeValue, annotation: &TypeAnnotation, ctx: &AnalysisContext) -> bool {
-    // An IdentPath with more than one segment is always a qualified path
-    // (e.g. `module.thing`) that we cannot resolve statically.  A single-segment
-    // IdentPath *might* be an enum variant (handled by the Named arm below) or a
-    // plain variable reference whose type we don't know.  For non-Named
-    // annotations we treat any IdentPath as a variable reference and accept it
-    // silently — the runtime will catch real type errors.
-    if let RuntimeValue::IdentPath(_) = value
+fn is_compatible(
+    value: &RuntimeValue,
+    annotation: &TypeAnnotation,
+    ctx: &AnalysisContext,
+    scope: &ScopeStack,
+) -> bool {
+    // For non-Named annotations, only allow identifier references when we can
+    // resolve a local single-segment name and prove its declared annotation is
+    // assignable into the expected annotation.
+    if let RuntimeValue::IdentPath(path) = value
         && !matches!(annotation, TypeAnnotation::Named(_))
     {
-        return true;
+        if path.len() != 1 {
+            // Qualified paths are unresolved at this stage; keep best-effort.
+            return true;
+        }
+
+        if let Some(found_ann) = scope.lookup(path[0].as_str()) {
+            return annotation_compatible(found_ann, annotation);
+        }
+
+        // Unresolved bare identifier assigned to a typed variable is not
+        // type-compatible.
+        return false;
     }
 
     match annotation {
@@ -854,6 +883,43 @@ mod tests {
         ctx.top_level_vars
             .insert("ratio".to_owned(), TypeAnnotation::Float);
         let assign = Ast::assign_op(ident("ratio"), int_lit(1));
+        let ast = Ast::block(vec![assign]);
+        assert_no_errors(&check(&ast, &ctx));
+    }
+
+    #[test]
+    fn reassignment_from_unresolved_identifier_reports_error() {
+        let mut ctx = make_ctx(&[]);
+        ctx.top_level_vars
+            .insert("score".to_owned(), TypeAnnotation::Int);
+        // score = missing  (missing is unresolved in scope)
+        let assign = Ast::assign_op(ident("score"), ident("missing"));
+        let ast = Ast::block(vec![assign]);
+        assert_type_mismatch(&check(&ast, &ctx), "score");
+    }
+
+    #[test]
+    fn reassignment_from_resolved_identifier_with_incompatible_type_reports_error() {
+        let mut ctx = make_ctx(&[]);
+        ctx.top_level_vars
+            .insert("score".to_owned(), TypeAnnotation::Int);
+        ctx.top_level_vars
+            .insert("flag".to_owned(), TypeAnnotation::Bool);
+        // score = flag  (bool into int)
+        let assign = Ast::assign_op(ident("score"), ident("flag"));
+        let ast = Ast::block(vec![assign]);
+        assert_type_mismatch(&check(&ast, &ctx), "score");
+    }
+
+    #[test]
+    fn reassignment_from_resolved_identifier_with_compatible_type_is_ok() {
+        let mut ctx = make_ctx(&[]);
+        ctx.top_level_vars
+            .insert("score".to_owned(), TypeAnnotation::Int);
+        ctx.top_level_vars
+            .insert("bonus".to_owned(), TypeAnnotation::Int);
+        // score = bonus  (int into int)
+        let assign = Ast::assign_op(ident("score"), ident("bonus"));
         let ast = Ast::block(vec![assign]);
         assert_no_errors(&check(&ast, &ctx));
     }

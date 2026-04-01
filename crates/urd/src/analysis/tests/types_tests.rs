@@ -565,10 +565,10 @@ fn call_result_initialiser_is_silently_accepted() {
 }
 
 #[test]
-fn variable_as_rhs_is_silently_accepted() {
+fn variable_as_rhs_unresolved_identifier_reports_mismatch() {
     let ctx = make_ctx(&[], &[]);
     let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Bool, ident("other"))]);
-    assert_no_errors(&types::check(&ast, &ctx));
+    assert_type_mismatch(&types::check(&ast, &ctx), "x");
 }
 
 // ---------------------------------------------------------------------------

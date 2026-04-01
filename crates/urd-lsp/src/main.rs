@@ -657,7 +657,8 @@ impl LanguageServer for Backend {
             data.push(SemanticToken {
                 delta_line,
                 delta_start,
-                length: tok.length as u32,
+                // LSP semantic token length is measured in UTF-16 code units.
+                length: utf16_code_units_in_byte_range(&src, tok.start, tok.length),
                 token_type: urd_token_type_to_index(&tok.token_type),
                 token_modifiers_bitset: 0,
             });
@@ -838,6 +839,17 @@ fn byte_offset_to_lsp_position(src: &str, byte_offset: usize) -> Position {
     document::byte_offset_to_position(src, byte_offset)
 }
 
+/// Convert a byte range in `src` to a UTF-16 code-unit length.
+///
+/// LSP semantic-token lengths are specified in UTF-16 code units, not bytes.
+fn utf16_code_units_in_byte_range(src: &str, start: usize, byte_len: usize) -> u32 {
+    let start = start.min(src.len());
+    let end = start.saturating_add(byte_len).min(src.len());
+    src.get(start..end)
+        .map(|s| s.encode_utf16().count() as u32)
+        .unwrap_or(0)
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -944,6 +956,29 @@ mod tests {
                 "index {idx} out of range for {tt:?}"
             );
         }
+    }
+
+    #[test]
+    fn utf16_code_units_in_byte_range_ascii_matches_bytes() {
+        let src = "hello";
+        assert_eq!(utf16_code_units_in_byte_range(src, 0, 5), 5);
+    }
+
+    #[test]
+    fn utf16_code_units_in_byte_range_surrogate_pair_counts_two() {
+        // '𐍈' is 4 bytes in UTF-8 and 2 UTF-16 code units.
+        let src = "a𐍈b";
+        let start = src.find('𐍈').unwrap();
+        assert_eq!(
+            utf16_code_units_in_byte_range(src, start, '𐍈'.len_utf8()),
+            2
+        );
+    }
+
+    #[test]
+    fn utf16_code_units_in_byte_range_clamps_end() {
+        let src = "ab";
+        assert_eq!(utf16_code_units_in_byte_range(src, 1, 99), 1);
     }
 
     // -- symbol kind mapping -----------------------------------------------

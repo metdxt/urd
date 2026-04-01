@@ -81,7 +81,7 @@ fn compile_flat(
 
     // Phase 2 — allocate one Nop stub per label per module in one shared graph.
     let mut shared_graph = IrGraph::new();
-    let mut local_labels = pre_allocate_labels(&all, &mut shared_graph);
+    let mut local_labels = pre_allocate_labels(&all, &mut shared_graph)?;
 
     // If the root has a known on-disk filename, register its label map under
     // that filename too.  Without this, phase 3's `build_global_labels` cannot
@@ -278,34 +278,38 @@ fn collect_import_refs_from_ast(ast: &Ast, out: &mut Vec<ImportRef>) {
 fn pre_allocate_labels(
     all: &AllModules,
     graph: &mut IrGraph,
-) -> HashMap<String, HashMap<String, NodeIndex>> {
+) -> Result<HashMap<String, HashMap<String, NodeIndex>>, CompilerError> {
     let mut result: HashMap<String, HashMap<String, NodeIndex>> = HashMap::new();
 
     for path in &all.order {
         if let Some(ast) = all.asts.get(path) {
             let mut labels: HashMap<String, NodeIndex> = HashMap::new();
-            scan_label_nops(ast, graph, &mut labels);
+            scan_label_nops(ast, graph, &mut labels)?;
             result.insert(path.clone(), labels);
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Walk `ast` and push one [`IrNodeKind::Nop`] into `graph` for each
 /// [`AstContent::LabeledBlock`] that has not yet been recorded in `labels`.
-fn scan_label_nops(ast: &Ast, graph: &mut IrGraph, labels: &mut HashMap<String, NodeIndex>) {
+fn scan_label_nops(
+    ast: &Ast,
+    graph: &mut IrGraph,
+    labels: &mut HashMap<String, NodeIndex>,
+) -> Result<(), CompilerError> {
     match ast.content() {
         AstContent::LabeledBlock { label, block } => {
-            // `or_insert_with` ensures each label name gets exactly one Nop.
-            labels
-                .entry(label.clone())
-                .or_insert_with(|| graph.push(IrNodeKind::Nop));
-            scan_label_nops(block, graph, labels);
+            if labels.contains_key(label) {
+                return Err(CompilerError::DuplicateLabel(label.clone()));
+            }
+            labels.insert(label.clone(), graph.push(IrNodeKind::Nop));
+            scan_label_nops(block, graph, labels)?;
         }
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                scan_label_nops(stmt, graph, labels);
+                scan_label_nops(stmt, graph, labels)?;
             }
         }
         AstContent::If {
@@ -313,27 +317,29 @@ fn scan_label_nops(ast: &Ast, graph: &mut IrGraph, labels: &mut HashMap<String, 
             else_block,
             ..
         } => {
-            scan_label_nops(then_block, graph, labels);
+            scan_label_nops(then_block, graph, labels)?;
             if let Some(eb) = else_block {
-                scan_label_nops(eb, graph, labels);
+                scan_label_nops(eb, graph, labels)?;
             }
         }
         AstContent::Menu { options } => {
             for opt in options {
                 if let AstContent::MenuOption { content, .. } = opt.content() {
-                    scan_label_nops(content, graph, labels);
+                    scan_label_nops(content, graph, labels)?;
                 }
             }
         }
         AstContent::Match { arms, .. } => {
             for arm in arms {
-                scan_label_nops(&arm.body, graph, labels);
+                scan_label_nops(&arm.body, graph, labels)?;
             }
         }
         // DecoratorDef bodies are stored as raw Ast for lazy apply-time
         // evaluation; their labels are private and never externally reachable.
         _ => {}
     }
+
+    Ok(())
 }
 
 // ─── Phase 3 · Cross-link ─────────────────────────────────────────────────────

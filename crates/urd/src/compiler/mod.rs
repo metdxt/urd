@@ -36,6 +36,10 @@ pub enum CompilerError {
     #[error("jump to unknown label `{0}`")]
     UnknownLabel(String),
 
+    /// Two labels with the same name were declared in the same compilation unit.
+    #[error("duplicate label definition `{0}`")]
+    DuplicateLabel(String),
+
     /// An AST node appeared at statement level where it is not permitted.
     #[error("invalid statement: {0}")]
     InvalidStatement(String),
@@ -69,13 +73,16 @@ impl Compiler {
     /// Returns [`CompilerError::UnknownLabel`] if a `jump` statement targets a
     /// label that does not exist anywhere in the script.
     ///
+    /// Returns [`CompilerError::DuplicateLabel`] when the same label name is
+    /// declared more than once in a single compilation unit.
+    ///
     /// Returns [`CompilerError::InvalidStatement`] if an expression-only AST
     /// node appears at a position where a statement is expected.
     pub fn compile(ast: &Ast) -> Result<IrGraph, CompilerError> {
         let mut state = CompilerState::new();
 
         // Pass 1 — collect all label names and pre-allocate Nop placeholders.
-        state.scan_labels(ast);
+        state.scan_labels(ast)?;
 
         // Pass 2 — emit IR nodes using top-level partitioning (@entry support).
         let entry = state.compile_top_level(ast)?;
@@ -163,18 +170,26 @@ impl CompilerState {
 
     /// Recursively walk `ast` and pre-allocate a [`IrNodeKind::Nop`] for every
     /// [`AstContent::LabeledBlock`] encountered.
-    pub(super) fn scan_labels(&mut self, ast: &Ast) {
+    ///
+    /// # Errors
+    /// Returns [`CompilerError::DuplicateLabel`] if the same label name is
+    /// encountered more than once.
+    pub(super) fn scan_labels(&mut self, ast: &Ast) -> Result<(), CompilerError> {
         match ast.content() {
             AstContent::LabeledBlock { label, block } => {
+                if self.label_placeholders.contains_key(label) {
+                    return Err(CompilerError::DuplicateLabel(label.clone()));
+                }
+
                 // Pre-allocate the placeholder (we will patch it in pass 2).
                 let placeholder = self.graph.push(IrNodeKind::Nop);
                 self.label_placeholders.insert(label.clone(), placeholder);
                 // Recurse into the block body.
-                self.scan_labels(block);
+                self.scan_labels(block)?;
             }
             AstContent::Block(stmts) => {
                 for stmt in stmts {
-                    self.scan_labels(stmt);
+                    self.scan_labels(stmt)?;
                 }
             }
             AstContent::If {
@@ -182,21 +197,21 @@ impl CompilerState {
                 else_block,
                 ..
             } => {
-                self.scan_labels(then_block);
+                self.scan_labels(then_block)?;
                 if let Some(eb) = else_block {
-                    self.scan_labels(eb);
+                    self.scan_labels(eb)?;
                 }
             }
             AstContent::Menu { options } => {
                 for opt in options {
                     if let AstContent::MenuOption { content, .. } = opt.content() {
-                        self.scan_labels(content);
+                        self.scan_labels(content)?;
                     }
                 }
             }
             AstContent::Match { arms, .. } => {
                 for arm in arms {
-                    self.scan_labels(&arm.body);
+                    self.scan_labels(&arm.body)?;
                 }
             }
             // DecoratorDef bodies are stored as raw Ast for lazy apply-time
@@ -206,6 +221,8 @@ impl CompilerState {
             // All other nodes either have no sub-statements or only expressions.
             _ => {}
         }
+
+        Ok(())
     }
 
     // ── Top-level compilation with @entry support ─────────────────────────────
@@ -1234,6 +1251,46 @@ mod tests {
             matches!(result, Err(CompilerError::UnknownLabel(ref l)) if l == "nonexistent"),
             "expected UnknownLabel error, got {:?}",
             result,
+        );
+    }
+
+    /// Duplicate labels in a single module are rejected at compile time.
+    #[test]
+    fn test_duplicate_label_in_single_module_errors() {
+        let ast = Ast::block(vec![
+            Ast::labeled_block("scene".to_string(), Ast::block(vec![])),
+            Ast::labeled_block("scene".to_string(), Ast::block(vec![])),
+        ]);
+
+        let result = Compiler::compile(&ast);
+
+        assert!(
+            matches!(result, Err(CompilerError::DuplicateLabel(ref l)) if l == "scene"),
+            "expected DuplicateLabel('scene'), got {:?}",
+            result
+        );
+    }
+
+    /// Duplicate labels inside an imported module are rejected in loader path.
+    #[test]
+    fn test_duplicate_label_in_imported_module_errors() {
+        let mut loader = MemLoader::new();
+        loader.add(
+            "dup.urd",
+            "label same { let x = 1 }\nlabel same { let y = 2 }\n",
+        );
+
+        let main_ast = Ast::block(vec![Ast::import_module(
+            "dup.urd".to_string(),
+            "dup".to_string(),
+        )]);
+
+        let result = Compiler::compile_with_loader(&main_ast, &loader);
+
+        assert!(
+            matches!(result, Err(CompilerError::DuplicateLabel(ref l)) if l == "same"),
+            "expected DuplicateLabel('same') from imported module, got {:?}",
+            result
         );
     }
 

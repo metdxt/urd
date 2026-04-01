@@ -423,8 +423,8 @@ pub(super) fn eval_binop(
         Operator::BitwiseAnd => int_bitop(lv, rv_val, |a, b| a & b),
         Operator::BitwiseOr => int_bitop(lv, rv_val, |a, b| a | b),
         Operator::BitwiseXor => int_bitop(lv, rv_val, |a, b| a ^ b),
-        Operator::LeftShift => int_bitop(lv, rv_val, |a, b| a << b),
-        Operator::RightShift => int_bitop(lv, rv_val, |a, b| a >> b),
+        Operator::LeftShift => safe_int_shiftop(lv, rv_val, ShiftDirection::Left),
+        Operator::RightShift => safe_int_shiftop(lv, rv_val, ShiftDirection::Right),
         // Handled above via early return.
         Operator::And | Operator::Or | Operator::Assign => unreachable!(),
     }
@@ -567,6 +567,39 @@ pub(super) fn int_bitop(
         (RuntimeValue::Int(a), RuntimeValue::Int(b)) => Ok(RuntimeValue::Int(op(*a, *b))),
         _ => Err(VmError::TypeError(format!(
             "bitwise operation requires two Int values, got {:?} and {:?}",
+            lv, rv
+        ))),
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(super) enum ShiftDirection {
+    Left,
+    Right,
+}
+
+pub(super) fn safe_int_shiftop(
+    lv: RuntimeValue,
+    rv: RuntimeValue,
+    direction: ShiftDirection,
+) -> Result<RuntimeValue, VmError> {
+    match (&lv, &rv) {
+        (RuntimeValue::Int(a), RuntimeValue::Int(shift)) => {
+            if *shift < 0 || *shift > 63 {
+                return Err(VmError::TypeError(format!(
+                    "invalid shift count {shift}; expected 0..=63"
+                )));
+            }
+
+            let shift_u32 = *shift as u32;
+            let out = match direction {
+                ShiftDirection::Left => *a << shift_u32,
+                ShiftDirection::Right => *a >> shift_u32,
+            };
+            Ok(RuntimeValue::Int(out))
+        }
+        _ => Err(VmError::TypeError(format!(
+            "bitwise shift requires two Int values, got {:?} and {:?}",
             lv, rv
         ))),
     }

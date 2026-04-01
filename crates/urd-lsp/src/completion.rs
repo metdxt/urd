@@ -856,18 +856,16 @@ fn try_resolve_dot_prefix(prefix: &str, symbols: &[Symbol]) -> Option<Completion
         if matches!(
             sym.kind,
             SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Global
-        ) {
-            if let Some(TypeAnnotation::Named(parts)) = &sym.type_annotation {
-                if let Some(struct_name) = parts.last().cloned() {
-                    tracing::debug!(
-                        "try_resolve_dot_prefix: {prefix:?} → StructFieldAccess(struct_name={struct_name:?})"
-                    );
-                    return Some(CompletionContext::StructFieldAccess {
-                        var_name: prefix.to_string(),
-                        struct_name,
-                    });
-                }
-            }
+        ) && let Some(TypeAnnotation::Named(parts)) = &sym.type_annotation
+            && let Some(struct_name) = parts.last().cloned()
+        {
+            tracing::debug!(
+                "try_resolve_dot_prefix: {prefix:?} → StructFieldAccess(struct_name={struct_name:?})"
+            );
+            return Some(CompletionContext::StructFieldAccess {
+                var_name: prefix.to_string(),
+                struct_name,
+            });
         }
     }
 
