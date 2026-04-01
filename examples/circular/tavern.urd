@@ -46,6 +46,7 @@ global bought_drink: int = 0
 # label: enter_tavern
 # Entry point — jumped to from main.hub.
 # =============================================================================
+@entry
 label enter_tavern {
     narrator: {
         "The Tarnished Flagon is warm and low-ceilinged, smelling of"

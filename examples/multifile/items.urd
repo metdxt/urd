@@ -57,6 +57,7 @@ global courage_taken: int = 0
 # ── Helper Labels ─────────────────────────────────────────────────────────────
 
 # LSP: hover over 'inv.show_inventory' in village.urd to see this label
+@entry
 label show_inventory {
     let narrator = :{ name: "Narrator", name_color: "#aaaaaa" }
 
@@ -70,17 +71,20 @@ label show_inventory {
         "═══════════════════════════════"
     }
 
-    if potions_held > 0 {
-        menu {
-            "Drink a health potion (+30 HP)" {
+    menu {
+        "Drink a health potion (+30 HP)" {
+            if potions_held > 0 {
                 let new_potions: int = potions_held - 1
                 global potions_held = new_potions
                 narrator: "You uncork the vial and drink. Warmth spreads through your body."
-                return
             }
-            "Close inventory" {
-                return
-            }
+            return
+        }
+        "Visit the merchant" {
+            jump buy_item
+        }
+        "Close inventory" {
+            return
         }
     }
 

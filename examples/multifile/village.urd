@@ -103,7 +103,7 @@ label elder_warning {
     const torch: Item = :{ name: "Iron Torch", description: "A sturdy iron torch. Burns for hours.", value: 2, weight: 1 }
 
     narrator: {
-        "Captain Brynn hands you a well-worn iron torch."
+        "Captain Brynn hands you a well-worn {torch.name}."
         "You tuck it into your pack alongside your other gear."
     }
 

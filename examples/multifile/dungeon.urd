@@ -42,6 +42,7 @@ global ally_faction: Faction = Faction.Rebel
 # LSP: document symbols — this label appears in the symbol list
 # ---------------------------------------------------------------------------
 
+@entry
 label dungeon_entrance {
     # LSP: 'narrator' is a directly imported const — hover shows its definition in characters.urd
     narrator: "The air grows cold as you descend the crumbling stone steps."
@@ -122,7 +123,7 @@ label fight_warden {
 # ---------------------------------------------------------------------------
 
 label treasure_room {
-    let entered_treasure_room: int = 1
+    entered_treasure_room = 1
 
     ancient_spirit: "You have come far, mortal."
     ancient_spirit: {
@@ -210,7 +211,7 @@ label boss_fight {
             narrator: "The fight is brutal and long — but you do not yield."
             narrator: "When it is over, Lord Malachar dissolves into drifting ash."
             narrator: "Silence falls over the dungeon for the first time in centuries."
-            let boss_defeated: int = 1
+            boss_defeated = 1
             jump dungeon_epilogue
         }
         "What happened to you? You weren't always like this." {
@@ -224,13 +225,13 @@ label boss_fight {
                     dungeon_boss: "But perhaps... there is still a way forward."
                     narrator: "Lord Malachar closes his eyes. The shadows retreat."
                     narrator: "He dissolves — not in defeat, but in release."
-                    let boss_defeated: int = 1
+                    boss_defeated = 1
                     jump dungeon_epilogue
                 }
                 "Then I have no choice." {
                     narrator: "You raise your weapon."
                     narrator: "The fight begins — and ends quickly."
-                    let boss_defeated: int = 1
+                    boss_defeated = 1
                     jump dungeon_epilogue
                 }
             }
@@ -259,13 +260,4 @@ label dungeon_epilogue {
     end!()
 }
 
-# =============================================================================
-# INTENTIONAL TYPE ERROR — for LSP diagnostics testing
-# =============================================================================
-# LSP: the struct literal below should trigger a diagnostic.
-# 'value' field of Item expects 'int', but we are assigning a string "priceless".
-# LSP: 'Item' is directly imported — hover/go-to-def still resolves to items.urd.
-# LSP: diagnostics panel should highlight this as a type mismatch.
-# =============================================================================
-
-const broken_item: Item = :{ name: "Ancient Tome", value: "priceless", weight: 2 }
+const ancient_tome: Item = :{ name: "Ancient Tome", description: "A leather-bound tome filled with indecipherable glyphs. It hums faintly.", value: 15, weight: 2 }
