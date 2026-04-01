@@ -603,9 +603,6 @@ fn ast_short(ast: &crate::parser::ast::Ast) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
-    #![allow(clippy::unwrap_used)]
-
     use super::*;
     use crate::compiler::Compiler;
     use crate::parser::ast::Ast;

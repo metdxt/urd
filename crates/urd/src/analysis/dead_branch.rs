@@ -18,7 +18,7 @@
 //!    - anything else                               → `None`
 //! 4. If the fold succeeds:
 //!    - `Some(true)`  → else branch is dead (`dead_branch_is_then: false`),
-//!                      only emitted when an else branch is actually present.
+//!      only emitted when an else branch is actually present.
 //!    - `Some(false)` → then branch is dead (`dead_branch_is_then: true`).
 //! 5. The diagnostic span is the span of the `if` node itself.
 
@@ -28,6 +28,7 @@ use crate::parser::ast::{Ast, AstContent, DeclKind, Operator, UnaryOperator};
 use crate::runtime::value::RuntimeValue;
 
 use super::AnalysisError;
+use super::context::{extract_decl_name, top_level_stmts};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -52,11 +53,8 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
 fn collect_top_level_bool_consts(root: &Ast) -> HashMap<String, bool> {
     let mut map = HashMap::new();
 
-    let stmts = match root.content() {
-        AstContent::Block(stmts) => stmts.as_slice(),
-        // If the root is a single labeled block (common in tests), there are
-        // no top-level const declarations.
-        _ => return map,
+    let Some(stmts) = top_level_stmts(root) else {
+        return map;
     };
 
     for stmt in stmts {
@@ -66,12 +64,10 @@ fn collect_top_level_bool_consts(root: &Ast) -> HashMap<String, bool> {
             decl_defs,
             ..
         } = stmt.content()
+            && let Some(name) = extract_decl_name(decl_name)
+            && let AstContent::Value(RuntimeValue::Bool(b)) = decl_defs.content()
         {
-            if let Some(name) = extract_simple_ident(decl_name) {
-                if let AstContent::Value(RuntimeValue::Bool(b)) = decl_defs.content() {
-                    map.insert(name, *b);
-                }
-            }
+            map.insert(name, *b);
         }
     }
 
@@ -190,27 +186,11 @@ fn fold_condition(node: &Ast, const_vals: &HashMap<String, bool>) -> Option<bool
 }
 
 // ---------------------------------------------------------------------------
-// Utility
-// ---------------------------------------------------------------------------
-
-/// Return `Some(name)` if `node` is `Value(IdentPath([name]))`, else `None`.
-fn extract_simple_ident(node: &Ast) -> Option<String> {
-    match node.content() {
-        AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => {
-            Some(path[0].clone())
-        }
-        _ => None,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use crate::analysis::AnalysisError;
     use crate::compiler::loader::parse_source;
 

@@ -3,8 +3,6 @@
 //! These tests build AST nodes directly using the builder methods on [`Ast`]
 //! and assert that [`dead_end::check`] returns the expected diagnostics.
 
-#![allow(clippy::unwrap_used)]
-
 use crate::analysis::AnalysisError;
 use crate::analysis::dead_end;
 use crate::parser::ast::{Ast, MatchArm, MatchPattern};

@@ -32,14 +32,14 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
 
     walk_ast(ast, &mut |node| {
-        if let AstContent::Dialogue { speakers, content } = node.content() {
-            if is_empty_content(content) {
-                let speaker = extract_speaker(speakers);
-                errors.push(AnalysisError::EmptyDialogue {
-                    speaker,
-                    span: node.span(),
-                });
-            }
+        if let AstContent::Dialogue { speakers, content } = node.content()
+            && is_empty_content(content)
+        {
+            let speaker = extract_speaker(speakers);
+            errors.push(AnalysisError::EmptyDialogue {
+                speaker,
+                span: node.span(),
+            });
         }
     });
 
@@ -60,12 +60,11 @@ fn extract_speaker(speakers: &Ast) -> String {
     match speakers.content() {
         // Parsed form: ExprList of IdentPath values.
         AstContent::ExprList(items) => {
-            if let Some(first) = items.first() {
-                if let AstContent::Value(RuntimeValue::IdentPath(path)) = first.content() {
-                    if let Some(name) = path.first() {
-                        return name.clone();
-                    }
-                }
+            if let Some(first) = items.first()
+                && let AstContent::Value(RuntimeValue::IdentPath(path)) = first.content()
+                && let Some(name) = path.first()
+            {
+                return name.clone();
             }
             "(unknown)".to_owned()
         }
@@ -133,7 +132,6 @@ fn is_empty_string(s: &ParsedString) -> bool {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::compiler::loader::parse_source;

@@ -282,8 +282,6 @@ pub fn render_parse_errors_stderr(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use super::*;
     use crate::parse_test;
     use crate::parser::block::script;

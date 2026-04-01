@@ -749,6 +749,34 @@ pub fn render_errors_stderr(errors: &[AnalysisError], src: &str, source_name: &s
 // Public analysis entry point
 // ---------------------------------------------------------------------------
 
+/// Execute all analysis passes against `ast` using the pre-built `ctx`.
+fn run_passes(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
+    let mut errors: Vec<AnalysisError> = Vec::new();
+
+    // ── Errors ────────────────────────────────────────────────────────────
+    errors.extend(top_level::check(ast));
+    errors.extend(exhaustiveness::check(ast, ctx));
+    errors.extend(types::check(ast, ctx));
+    errors.extend(dead_end::check(ast));
+    errors.extend(menu_structure::check(ast));
+    errors.extend(const_reassign::check(ast));
+
+    // ── Warnings ──────────────────────────────────────────────────────────
+    errors.extend(labels::check(ast, ctx));
+    errors.extend(unreachable_label::check(ast));
+    errors.extend(empty_dialogue::check(ast));
+    errors.extend(duplicate_menu_dest::check(ast));
+    errors.extend(overwritten_assign::check(ast));
+    errors.extend(unused_var::check(ast));
+    errors.extend(dead_branch::check(ast));
+    errors.extend(possible_typo::check(ast, ctx));
+
+    // ── Opt-in ────────────────────────────────────────────────────────────
+    errors.extend(loop_detection::check(ast));
+
+    errors
+}
+
 /// Run all analysis passes over `ast` and collect every diagnostic.
 ///
 /// All passes always run to completion regardless of errors found by the
@@ -767,30 +795,7 @@ pub fn render_errors_stderr(errors: &[AnalysisError], src: &str, source_name: &s
 /// `@lint(check_loops)`)
 pub fn analyze(ast: &Ast) -> Vec<AnalysisError> {
     let ctx = AnalysisContext::build(ast);
-    let mut errors: Vec<AnalysisError> = Vec::new();
-
-    // ── Errors ────────────────────────────────────────────────────────────
-    errors.extend(top_level::check(ast));
-    errors.extend(exhaustiveness::check(ast, &ctx));
-    errors.extend(types::check(ast, &ctx));
-    errors.extend(dead_end::check(ast));
-    errors.extend(menu_structure::check(ast));
-    errors.extend(const_reassign::check(ast));
-
-    // ── Warnings ──────────────────────────────────────────────────────────
-    errors.extend(labels::check(ast, &ctx));
-    errors.extend(unreachable_label::check(ast));
-    errors.extend(empty_dialogue::check(ast));
-    errors.extend(duplicate_menu_dest::check(ast));
-    errors.extend(overwritten_assign::check(ast));
-    errors.extend(unused_var::check(ast));
-    errors.extend(dead_branch::check(ast));
-    errors.extend(possible_typo::check(ast, &ctx));
-
-    // ── Opt-in ────────────────────────────────────────────────────────────
-    errors.extend(loop_detection::check(ast));
-
-    errors
+    run_passes(ast, &ctx)
 }
 
 /// Like [`analyze`] but also checks cross-module type references using
@@ -819,28 +824,5 @@ pub fn analyze_with_imports(
 ) -> Vec<AnalysisError> {
     let ctx =
         AnalysisContext::build_with_imports(ast, imported_structs, imported_enums, imported_labels);
-    let mut errors: Vec<AnalysisError> = Vec::new();
-
-    // ── Errors ────────────────────────────────────────────────────────────
-    errors.extend(top_level::check(ast));
-    errors.extend(exhaustiveness::check(ast, &ctx));
-    errors.extend(types::check(ast, &ctx));
-    errors.extend(dead_end::check(ast));
-    errors.extend(menu_structure::check(ast));
-    errors.extend(const_reassign::check(ast));
-
-    // ── Warnings ──────────────────────────────────────────────────────────
-    errors.extend(labels::check(ast, &ctx));
-    errors.extend(unreachable_label::check(ast));
-    errors.extend(empty_dialogue::check(ast));
-    errors.extend(duplicate_menu_dest::check(ast));
-    errors.extend(overwritten_assign::check(ast));
-    errors.extend(unused_var::check(ast));
-    errors.extend(dead_branch::check(ast));
-    errors.extend(possible_typo::check(ast, &ctx));
-
-    // ── Opt-in ────────────────────────────────────────────────────────────
-    errors.extend(loop_detection::check(ast));
-
-    errors
+    run_passes(ast, &ctx)
 }

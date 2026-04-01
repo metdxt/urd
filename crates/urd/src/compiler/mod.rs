@@ -426,7 +426,12 @@ impl CompilerState {
                 let body_entry = self.compile_node(block, Some(exit_id))?.unwrap_or(exit_id);
 
                 // Patch the placeholder Nop → EnterScope.
-                *self.graph.node_mut(placeholder_id) = IrNodeKind::EnterScope {
+                *self.graph.node_mut(placeholder_id).ok_or_else(|| {
+                    CompilerError::InvalidStatement(format!(
+                        "internal: placeholder node for label '{}' was removed",
+                        label
+                    ))
+                })? = IrNodeKind::EnterScope {
                     label: label.clone(),
                 };
                 // Add the Next edge from EnterScope to the body entry.
@@ -737,7 +742,6 @@ fn resolve_label(
 // ─── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{

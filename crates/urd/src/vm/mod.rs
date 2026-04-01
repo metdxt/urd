@@ -38,7 +38,7 @@ use thiserror::Error;
 
 use crate::{
     compiler::CompilerError,
-    ir::{ChoiceEvent, Event, IrChoiceOption, IrEdge, IrGraph, IrNodeKind},
+    ir::{ChoiceEvent, Event, IrChoiceOption, IrEdge, IrGraph, IrNodeKind, VmStep},
     parser::ast::{AstContent, DeclKind, Decorator, MatchPattern},
     runtime::value::RuntimeValue,
 };
@@ -103,6 +103,10 @@ pub enum VmError {
     /// An error propagated from the compiler (e.g. when constructing test graphs).
     #[error("compiler error: {0}")]
     CompilerError(#[from] CompilerError),
+
+    /// A language feature that is not yet implemented was encountered.
+    #[error("not yet implemented: {0}")]
+    NotImplemented(String),
 }
 
 // ─── Decorator validation helper ─────────────────────────────────────────────
@@ -270,9 +274,9 @@ impl Vm {
     /// Pass `choice: Some(idx)` when responding to a [`Event::Choice`] event;
     /// pass `None` for all other steps.
     ///
-    /// Returns `None` when the script has ended.
+    /// Returns [`VmStep::Ended`] when the script has ended.
     #[allow(clippy::collapsible_if)]
-    pub fn next(&mut self, choice: Option<usize>) -> Option<Result<Event, VmError>> {
+    pub fn next(&mut self, choice: Option<usize>) -> VmStep {
         // Split borrows: the graph and exit-scope map are immutable for the
         // entire loop, while the state (cursor, env, call-stack, …) is mutated
         // freely.  This lets the borrow checker verify the invariant without
@@ -283,22 +287,22 @@ impl Vm {
 
         loop {
             let node_idx = match state.cursor {
-                None => return None,
                 Some(idx) => idx,
+                None => return VmStep::Ended,
             };
 
             let node_kind = match graph.graph.node_weight(node_idx) {
-                None => return None,
                 Some(k) => k,
+                None => return VmStep::Ended,
             };
 
             match node_kind {
                 // ── Terminal ─────────────────────────────────────────────────
-                IrNodeKind::End => return None,
+                IrNodeKind::End => return VmStep::Ended,
 
                 IrNodeKind::Todo => {
                     log::warn!("todo!() reached — this execution path is not yet implemented");
-                    return None;
+                    return VmStep::Ended;
                 }
 
                 // ── Nop / merge point ────────────────────────────────────────
@@ -310,10 +314,10 @@ impl Vm {
                 IrNodeKind::Assign { var, scope, expr } => {
                     let value = match eval_expr(expr, &state.env) {
                         Ok(v) => v,
-                        Err(e) => return Some(Err(e)),
+                        Err(e) => return VmStep::Error(e),
                     };
                     if let Err(e) = state.env.set(var, value, scope) {
-                        return Some(Err(e));
+                        return VmStep::Error(e);
                     }
                     state.cursor = next_of(graph, node_idx);
                 }
@@ -327,12 +331,12 @@ impl Vm {
                             if let Err(e) =
                                 eval_subscript_assign(object, key, value, &mut state.env)
                             {
-                                return Some(Err(e));
+                                return VmStep::Error(e);
                             }
                         }
                         _ => {
                             if let Err(e) = eval_expr(expr, &state.env) {
-                                return Some(Err(e));
+                                return VmStep::Error(e);
                             }
                         }
                     }
@@ -343,7 +347,7 @@ impl Vm {
                 IrNodeKind::Branch { condition } => {
                     let cond_val = match eval_expr(condition, &state.env) {
                         Ok(v) => v,
-                        Err(e) => return Some(Err(e)),
+                        Err(e) => return VmStep::Error(e),
                     };
                     let mut then_node: Option<NodeIndex> = None;
                     let mut else_node: Option<NodeIndex> = None;
@@ -365,7 +369,7 @@ impl Vm {
                 IrNodeKind::Switch { scrutinee, arms } => {
                     let scrutinee_val = match eval_expr(scrutinee, &state.env) {
                         Ok(v) => v,
-                        Err(e) => return Some(Err(e)),
+                        Err(e) => return VmStep::Error(e),
                     };
 
                     let mut matched = false;
@@ -422,7 +426,7 @@ impl Vm {
                     let return_val = if let Some(val_ast) = value {
                         match eval_expr(val_ast, &state.env) {
                             Ok(v) => Some(v),
-                            Err(e) => return Some(Err(e)),
+                            Err(e) => return VmStep::Error(e),
                         }
                     } else {
                         None
@@ -438,12 +442,12 @@ impl Vm {
                             if let (Some(var_name), Some(val)) = (&frame.assign_to_var, return_val)
                             {
                                 if let Err(e) = state.env.set(var_name, val, &DeclKind::Variable) {
-                                    return Some(Err(e));
+                                    return VmStep::Error(e);
                                 }
                             }
                             state.cursor = frame.return_cursor;
                         }
-                        None => return None, // No frame → script ends.
+                        None => return VmStep::Ended, // No frame → script ends.
                     }
                 }
 
@@ -551,7 +555,7 @@ impl Vm {
                         body: Box::new(body.clone()),
                     };
                     if let Err(e) = state.env.set(name, decorator_val, &DeclKind::Variable) {
-                        return Some(Err(e));
+                        return VmStep::Error(e);
                     }
                     state.cursor = next_of(graph, node_idx);
                 }
@@ -564,11 +568,11 @@ impl Vm {
                 } => {
                     let speakers_vec = match eval_expr_list(speakers, &state.env) {
                         Ok(v) => v,
-                        Err(e) => return Some(Err(e)),
+                        Err(e) => return VmStep::Error(e),
                     };
                     let lines_vec = match eval_expr_list(lines, &state.env) {
                         Ok(v) => v,
-                        Err(e) => return Some(Err(e)),
+                        Err(e) => return VmStep::Error(e),
                     };
 
                     // Evaluate decorators and merge their fields.
@@ -578,16 +582,16 @@ impl Vm {
                     for dec in decorators {
                         match apply_decorator(dec, &state.env, &state.registry, fields) {
                             Ok(new_fields) => fields = new_fields,
-                            Err(e) => return Some(Err(e)),
+                            Err(e) => return VmStep::Error(e),
                         }
                     }
 
                     state.cursor = next_of(graph, node_idx);
-                    return Some(Ok(Event::Dialogue {
+                    return VmStep::Event(Event::Dialogue {
                         speakers: speakers_vec,
                         lines: lines_vec,
                         fields,
-                    }));
+                    });
                 }
 
                 // ── Choice event ─────────────────────────────────────────────
@@ -801,7 +805,9 @@ fn exec_stmt_sync(
         }
         _ => {
             // Best-effort evaluation of expression statements (side-effects only).
-            let _ = eval_expr(stmt, env);
+            if let Err(e) = eval_expr(stmt, env) {
+                log::warn!("exec_stmt_sync: expression evaluation failed: {e}");
+            }
         }
     }
     Ok(())
@@ -878,7 +884,7 @@ fn apply_decorator(
     }
 
     // Fall back to Rust-registered handler.
-    let extra_fields = registry.apply(dec, env).unwrap_or_else(|_| HashMap::new());
+    let extra_fields = registry.apply(dec, env)?;
     Ok(event.into_iter().chain(extra_fields).collect())
 }
 
@@ -890,13 +896,13 @@ fn build_choice_event(
     decorators: &[Decorator],
     env: &Environment,
     registry: &DecoratorRegistry,
-) -> Option<Result<Event, VmError>> {
+) -> VmStep {
     // Evaluate top-level choice decorators.
     let mut fields: HashMap<String, RuntimeValue> = HashMap::new();
     for dec in decorators {
         match apply_decorator(dec, env, registry, fields) {
             Ok(new_fields) => fields = new_fields,
-            Err(e) => return Some(Err(e)),
+            Err(e) => return VmStep::Error(e),
         }
     }
 
@@ -907,7 +913,7 @@ fn build_choice_event(
         for dec in &opt.decorators {
             match apply_decorator(dec, env, registry, opt_fields) {
                 Ok(new_fields) => opt_fields = new_fields,
-                Err(e) => return Some(Err(e)),
+                Err(e) => return VmStep::Error(e),
             }
         }
         choice_options.push(ChoiceEvent {
@@ -916,10 +922,10 @@ fn build_choice_event(
         });
     }
 
-    Some(Ok(Event::Choice {
+    VmStep::Event(Event::Choice {
         options: choice_options,
         fields,
-    }))
+    })
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -974,7 +980,10 @@ mod tests {
 
         let mut vm = build_vm(ast);
 
-        let ev = vm.next(None).expect("expected an event").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
         match ev {
             Event::Dialogue {
                 speakers, lines, ..
@@ -989,7 +998,10 @@ mod tests {
             other => panic!("expected Dialogue, got {:?}", other),
         }
 
-        assert!(vm.next(None).is_none(), "script should end after dialogue");
+        assert!(
+            matches!(vm.next(None), VmStep::Ended),
+            "script should end after dialogue"
+        );
     }
 
     /// A `Branch` on `true` follows `then_node`; the dialogue reads the
@@ -1007,7 +1019,10 @@ mod tests {
         let ast = Ast::block(vec![if_ast, dialogue]);
 
         let mut vm = build_vm(ast);
-        let ev = vm.next(None).expect("event expected").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
 
         match ev {
             Event::Dialogue { lines, .. } => {
@@ -1035,7 +1050,10 @@ mod tests {
         let ast = Ast::block(vec![if_ast, dialogue]);
 
         let mut vm = build_vm(ast);
-        let ev = vm.next(None).expect("event expected").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
         match ev {
             Event::Dialogue { lines, .. } => {
                 assert_eq!(
@@ -1066,7 +1084,10 @@ mod tests {
         let mut vm = build_vm(ast);
 
         // First call — emits Choice and sets pending_choice.
-        let ev1 = vm.next(None).expect("first event").expect("no error");
+        let ev1 = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("first next(None) should emit Event, got {:?}", other),
+        };
         assert!(
             matches!(ev1, Event::Choice { .. }),
             "first next(None) should emit Choice, got {:?}",
@@ -1080,7 +1101,10 @@ mod tests {
         );
 
         // Second call with None — re-emits Choice.
-        let ev2 = vm.next(None).expect("second event").expect("no error");
+        let ev2 = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("second next(None) should emit Event, got {:?}", other),
+        };
         assert!(
             matches!(ev2, Event::Choice { ref options, .. } if options.len() == 2),
             "second next(None) should re-emit same Choice"
@@ -1093,9 +1117,9 @@ mod tests {
             vm.state.pending_choice.is_none(),
             "pending_choice must be cleared after valid choice"
         );
-        // Option body has no dialogue → script ends → None.
+        // Option body has no dialogue → script ends → VmStep::Ended.
         assert!(
-            ev3.is_none(),
+            matches!(ev3, VmStep::Ended),
             "expected script end after choosing option 0, got {:?}",
             ev3
         );
@@ -1110,13 +1134,16 @@ mod tests {
         let mut vm = build_vm(ast);
 
         // Consume the initial None-choice emission.
-        let _ = vm.next(None).expect("event").expect("no error");
+        match vm.next(None) {
+            VmStep::Event(_) => {}
+            other => panic!("expected Event, got {:?}", other),
+        };
 
         // Provide an out-of-bounds index.
-        let ev = vm
-            .next(Some(99))
-            .expect("should re-emit")
-            .expect("no error");
+        let ev = match vm.next(Some(99)) {
+            VmStep::Event(e) => e,
+            other => panic!("out-of-bounds should re-emit Event, got {:?}", other),
+        };
         assert!(
             matches!(ev, Event::Choice { .. }),
             "out-of-bounds choice should re-emit Choice, got {:?}",
@@ -1137,7 +1164,10 @@ mod tests {
 
         let mut vm = build_vm(ast);
 
-        let ev = vm.next(None).expect("expected event").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
         match ev {
             Event::Dialogue { lines, .. } => match &lines[0] {
                 RuntimeValue::Str(ps) => {
@@ -1217,7 +1247,10 @@ mod tests {
 
         let mut vm = build_vm(ast);
 
-        let ev = vm.next(None).expect("expected event").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
         match ev {
             Event::Dialogue { lines, .. } => match &lines[0] {
                 RuntimeValue::Str(ps) => assert_eq!(ps.to_string(), "After block"),
@@ -1225,7 +1258,10 @@ mod tests {
             },
             other => panic!("expected Dialogue after return, got {:?}", other),
         }
-        assert!(vm.next(None).is_none(), "script should end after dialogue");
+        assert!(
+            matches!(vm.next(None), VmStep::Ended),
+            "script should end after dialogue"
+        );
     }
 
     /// A `Return` with no call frame on the stack ends the script.
@@ -1234,7 +1270,7 @@ mod tests {
         let ast = Ast::return_stmt(None);
         let mut vm = build_vm(ast);
         assert!(
-            vm.next(None).is_none(),
+            matches!(vm.next(None), VmStep::Ended),
             "Return with empty call stack should end script"
         );
     }
@@ -1419,7 +1455,10 @@ mod tests {
         let ast = Ast::block(vec![enum_decl, dir_decl, match_stmt]);
         let mut vm = build_vm(ast);
 
-        let ev = vm.next(None).expect("event").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
         match ev {
             Event::Dialogue { lines, .. } => match &lines[0] {
                 RuntimeValue::Str(ps) => {
@@ -1455,7 +1494,10 @@ mod tests {
         let ast = Ast::dialogue(speakers, lines);
 
         let mut vm = build_vm(ast);
-        let ev = vm.next(None).expect("event").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
         match ev {
             Event::Dialogue { speakers, .. } => {
                 assert_eq!(speakers.len(), 2, "expected 2 speakers");
@@ -1507,7 +1549,10 @@ mod tests {
         let ast = Ast::block(vec![decorator_def, dialogue]);
         let mut vm = build_vm(ast);
 
-        let ev = vm.next(None).expect("expected event").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
         match ev {
             Event::Dialogue { fields, .. } => {
                 assert!(
@@ -1727,7 +1772,10 @@ mod tests {
         let ast = Ast::block(vec![fallback_label, decorator_def, dialogue]);
         let mut vm = build_vm(ast);
 
-        let ev = vm.next(None).expect("expected event").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
         match ev {
             Event::Dialogue { fields, .. } => {
                 assert!(
@@ -1768,10 +1816,10 @@ mod tests {
         let ast = Ast::block(vec![call_jump, after_dialogue, main_return, greet_label]);
         let mut vm = build_vm(ast);
 
-        let ev1 = vm
-            .next(None)
-            .expect("expected first event")
-            .expect("no error");
+        let ev1 = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected first Event, got {:?}", other),
+        };
         match ev1 {
             Event::Dialogue { lines, .. } => match &lines[0] {
                 RuntimeValue::Str(ps) => assert_eq!(
@@ -1784,10 +1832,10 @@ mod tests {
             other => panic!("expected Dialogue for greet, got {:?}", other),
         }
 
-        let ev2 = vm
-            .next(None)
-            .expect("expected second event")
-            .expect("no error");
+        let ev2 = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected second Event, got {:?}", other),
+        };
         match ev2 {
             Event::Dialogue { lines, .. } => match &lines[0] {
                 RuntimeValue::Str(ps) => assert_eq!(
@@ -1801,7 +1849,7 @@ mod tests {
         }
 
         assert!(
-            vm.next(None).is_none(),
+            matches!(vm.next(None), VmStep::Ended),
             "script should end after second dialogue"
         );
     }
@@ -1822,7 +1870,10 @@ mod tests {
         let ast = Ast::block(vec![let_call, dialogue, double_label]);
         let mut vm = build_vm(ast);
 
-        let ev = vm.next(None).expect("expected event").expect("no error");
+        let ev = match vm.next(None) {
+            VmStep::Event(e) => e,
+            other => panic!("expected Event, got {:?}", other),
+        };
         match ev {
             Event::Dialogue { lines, .. } => {
                 assert_eq!(
@@ -1834,7 +1885,10 @@ mod tests {
             other => panic!("expected Dialogue, got {:?}", other),
         }
 
-        assert!(vm.next(None).is_none(), "script should end after dialogue");
+        assert!(
+            matches!(vm.next(None), VmStep::Ended),
+            "script should end after dialogue"
+        );
     }
 
     #[test]
@@ -1855,7 +1909,7 @@ mod tests {
         let mut vm = Vm::new(graph, registry).unwrap();
         let result = vm.next(None);
         assert!(
-            result.is_none(),
+            matches!(result, VmStep::Ended),
             "todo!() should end the script, got: {result:?}"
         );
     }
@@ -1878,7 +1932,7 @@ mod tests {
         let mut vm = Vm::new(graph, registry).unwrap();
         let result = vm.next(None);
         assert!(
-            result.is_none(),
+            matches!(result, VmStep::Ended),
             "end!() should end the script, got: {result:?}"
         );
     }

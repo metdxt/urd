@@ -21,6 +21,7 @@ use crossterm::{
 
 use urd::analysis;
 
+use urd::VmStep;
 use urd::ir::{Event, IrGraph};
 use urd::parser::block::script;
 use urd::parser::errors::render_parse_errors_stderr;
@@ -433,7 +434,7 @@ fn collect_analysis_imports(
                 Err(_) => return,
             };
             // A whole-module import has a single symbol entry with `original: None`.
-            let is_whole_module = symbols.first().map_or(false, |s| s.original.is_none());
+            let is_whole_module = symbols.first().is_some_and(|s| s.original.is_none());
             let alias = if is_whole_module {
                 symbols[0].alias.as_str()
             } else {
@@ -586,24 +587,24 @@ fn cmd_run(script_path: &Path) {
 
     loop {
         match vm.next(choice) {
-            None => {
+            VmStep::Ended => {
                 println!();
                 print_separator();
                 println!("  \x1b[1m--- The End ---\x1b[0m");
                 print_separator();
                 break;
             }
-            Some(Err(e)) => {
+            VmStep::Error(e) => {
                 eprintln!("\n\x1b[91mRuntime error:\x1b[0m {:?}\n", e);
                 std::process::exit(1);
             }
-            Some(Ok(Event::Dialogue {
+            VmStep::Event(Event::Dialogue {
                 speakers, lines, ..
-            })) => {
+            }) => {
                 handle_dialogue(&speakers, &lines, &mut stdin_lock, is_tty);
                 choice = None;
             }
-            Some(Ok(Event::Choice { options, .. })) => {
+            VmStep::Event(Event::Choice { options, .. }) => {
                 let idx = if is_tty {
                     handle_choice_tty(&options)
                 } else {

@@ -411,7 +411,6 @@ fn extract_variant_name(ast: &Ast) -> Option<&str> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::parser::ast::{DeclKind, MatchArm, MatchPattern};

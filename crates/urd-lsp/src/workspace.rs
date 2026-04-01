@@ -23,6 +23,13 @@ use urd::parser::ast::{Ast, AstContent};
 use crate::document::byte_span_to_lsp_range;
 use crate::semantic::{Symbol, collect_symbols};
 
+/// Collected type definitions from imported modules, used by the analysis pass.
+type ImportedTypeDefs = (
+    std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
+    std::collections::HashMap<String, Vec<String>>,
+    std::collections::HashSet<String>,
+);
+
 // ── ImportedModule ────────────────────────────────────────────────────────────
 
 /// Everything the LSP knows about a single module that was imported by one file.
@@ -297,14 +304,7 @@ impl WorkspaceIndex {
     /// Both qualified (`"chars.Character"`) and unqualified (`"Character"`) forms
     /// are included in the struct/enum maps so the type checker can resolve
     /// either spelling.
-    pub fn imported_type_context(
-        &self,
-        uri: &Url,
-    ) -> (
-        std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
-        std::collections::HashMap<String, Vec<String>>,
-        std::collections::HashSet<String>,
-    ) {
+    pub fn imported_type_context(&self, uri: &Url) -> ImportedTypeDefs {
         let mut structs = std::collections::HashMap::new();
         let mut enums = std::collections::HashMap::new();
         let mut labels = std::collections::HashSet::new();
@@ -519,7 +519,6 @@ fn path_to_uri(path: &PathBuf) -> Option<Url> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::io::Write;

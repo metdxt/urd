@@ -89,10 +89,10 @@ fn compile_flat(
     // that was loaded as a dependency — it would look for
     // `local_labels.get("main.urd")` and find nothing, so `main.hub` etc.
     // would never be added to `graph.labels`.
-    if let Some(rp) = root_path {
-        if let Some(root_map) = local_labels.get("").cloned() {
-            local_labels.entry(rp.to_string()).or_insert(root_map);
-        }
+    if let Some(rp) = root_path
+        && let Some(root_map) = local_labels.get("").cloned()
+    {
+        local_labels.entry(rp.to_string()).or_insert(root_map);
     }
 
     // Phase 3 — build the cross-module label map from every import statement.
@@ -218,7 +218,7 @@ fn collect_import_refs_from_ast(ast: &Ast, out: &mut Vec<ImportRef>) {
         AstContent::Import { path, symbols } => {
             // A single ImportSymbol with `original == None` signals a whole-
             // module import (`import "p" as alias`).
-            let is_whole = symbols.first().map_or(false, |s| s.original.is_none());
+            let is_whole = symbols.first().is_some_and(|s| s.original.is_none());
 
             let style = if is_whole {
                 ImportStyle::WholeModule {
@@ -431,10 +431,9 @@ fn emit_all(
     }
 
     // Emit the root module last.
-    let root_ast = all
-        .asts
-        .get("")
-        .expect("root AST must be present in AllModules");
+    let root_ast = all.asts.get("").ok_or_else(|| {
+        CompilerError::InvalidStatement("internal: root AST missing from compilation unit".into())
+    })?;
     state.label_placeholders = local_labels.get("").cloned().unwrap_or_default();
     let root_entry = state.compile_top_level(root_ast)?;
 

@@ -262,6 +262,10 @@ pub(super) fn eval_runtime_value(
             // Resolve any interpolation placeholders.
             Ok(RuntimeValue::Str(interpolate_string(ps, env)))
         }
+        RuntimeValue::Dice(count, sides) => Err(VmError::NotImplemented(format!(
+            "dice evaluation ({}d{}) — wire up a dice roller via DecoratorRegistry or a custom evaluator",
+            count, sides
+        ))),
         other => Ok(other.clone()),
     }
 }
@@ -580,7 +584,8 @@ pub(super) fn is_truthy(v: &RuntimeValue) -> bool {
         RuntimeValue::Null => false,
         RuntimeValue::Bool(b) => *b,
         RuntimeValue::Int(i) => *i != 0,
-        RuntimeValue::Float(f) => *f != 0.0,
+        // NaN is explicitly falsy — a NaN comparison should never pass a guard.
+        RuntimeValue::Float(f) => *f != 0.0 && !f.is_nan(),
         _ => true,
     }
 }

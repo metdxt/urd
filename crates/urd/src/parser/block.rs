@@ -262,7 +262,7 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
 pub fn assignment<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     // Subscript assignment: ident[key] = value  (must come FIRST — more specific)
     let subscript_assign = select! {
-        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
+        Token::IdentPath(path) if path.len() == 1 => Ast::value(RuntimeValue::IdentPath(path))
     }
     .then(expr().delimited_by(just(Token::LeftBracket), just(Token::RightBracket)))
     .then_ignore(just(Token::Assign))
@@ -272,6 +272,9 @@ pub fn assignment<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     });
 
     // Plain assignment: ident = expr  (existing logic)
+    // Accepts both single-segment locals (`score = 1`) and multi-segment
+    // cross-module globals (`lib.score = 1`).  The compiler distinguishes them
+    // via the BinOp(Assign) path — no length guard needed here.
     let plain_assign = select! {
         Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
     }
@@ -624,8 +627,6 @@ pub fn script<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use super::*;
     use crate::{parse_test, parser::ast::AstContent};
 

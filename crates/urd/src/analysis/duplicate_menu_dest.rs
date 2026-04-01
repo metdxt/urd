@@ -105,7 +105,6 @@ fn check_menu_options(options: &[Ast], errors: &mut Vec<AnalysisError>) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::compiler::loader::parse_source;

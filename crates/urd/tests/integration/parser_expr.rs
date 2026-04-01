@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used)]
-
 use urd::{
     lexer::strings::{ParsedString, StringPart},
     parse_test,

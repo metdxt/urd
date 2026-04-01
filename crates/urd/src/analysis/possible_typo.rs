@@ -47,16 +47,16 @@ fn check_speaker_typos(ast: &Ast) -> Vec<AnalysisError> {
     let mut first_span: HashMap<String, SimpleSpan> = HashMap::new();
 
     walk_ast(ast, &mut |node| {
-        if let AstContent::Dialogue { speakers, .. } = node.content() {
-            if let AstContent::ExprList(exprs) = speakers.content() {
-                for expr in exprs {
-                    if let AstContent::Value(RuntimeValue::IdentPath(path)) = expr.content() {
-                        if path.len() == 1 {
-                            let name = path[0].clone();
-                            *freq.entry(name.clone()).or_insert(0) += 1;
-                            first_span.entry(name).or_insert_with(|| node.span());
-                        }
-                    }
+        if let AstContent::Dialogue { speakers, .. } = node.content()
+            && let AstContent::ExprList(exprs) = speakers.content()
+        {
+            for expr in exprs {
+                if let AstContent::Value(RuntimeValue::IdentPath(path)) = expr.content()
+                    && path.len() == 1
+                {
+                    let name = path[0].clone();
+                    *freq.entry(name.clone()).or_insert(0) += 1;
+                    first_span.entry(name).or_insert_with(|| expr.span());
                 }
             }
         }
@@ -77,23 +77,23 @@ fn check_speaker_typos(ast: &Ast) -> Vec<AnalysisError> {
         // Candidates: every other known speaker name.
         let candidates = names.iter().filter(|n| n.as_str() != written.as_str());
 
-        if let Some((dist, suggestion)) = closest_match(written, candidates) {
-            if dist <= 2 {
-                let candidate_freq = freq.get(&suggestion).copied().unwrap_or(0);
-                // Only flag if the suggestion is substantially more common.
-                if candidate_freq >= 3 * count {
-                    seen.insert(written.clone());
-                    let span = first_span
-                        .get(written)
-                        .copied()
-                        .unwrap_or(SimpleSpan::new((), 0..0));
-                    errors.push(AnalysisError::PossibleTypo {
-                        written: written.clone(),
-                        suggestion,
-                        kind: TypoKind::Speaker,
-                        span,
-                    });
-                }
+        if let Some((dist, suggestion)) = closest_match(written, candidates)
+            && dist <= 2
+        {
+            let candidate_freq = freq.get(&suggestion).copied().unwrap_or(0);
+            // Only flag if the suggestion is substantially more common.
+            if candidate_freq >= 3 * count {
+                seen.insert(written.clone());
+                let span = first_span
+                    .get(written)
+                    .copied()
+                    .unwrap_or(SimpleSpan::new((), 0..0));
+                errors.push(AnalysisError::PossibleTypo {
+                    written: written.clone(),
+                    suggestion,
+                    kind: TypoKind::Speaker,
+                    span,
+                });
             }
         }
     }
@@ -138,16 +138,16 @@ fn check_label_typos(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
             return;
         }
 
-        if let Some((dist, suggestion)) = closest_match(&target, defined.iter()) {
-            if dist <= 2 {
-                seen.insert(target.clone());
-                errors.push(AnalysisError::PossibleTypo {
-                    written: target,
-                    suggestion,
-                    kind: TypoKind::Label,
-                    span: node.span(),
-                });
-            }
+        if let Some((dist, suggestion)) = closest_match(&target, defined.iter())
+            && dist <= 2
+        {
+            seen.insert(target.clone());
+            errors.push(AnalysisError::PossibleTypo {
+                written: target,
+                suggestion,
+                kind: TypoKind::Label,
+                span: node.span(),
+            });
         }
     });
 
@@ -206,16 +206,16 @@ fn check_variable_typos(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> 
         }
         // -----------------------------------------------------------------------
 
-        if let Some((dist, suggestion)) = closest_match(&name, known_var_list.iter()) {
-            if dist <= 2 {
-                seen.insert(name.clone());
-                errors.push(AnalysisError::PossibleTypo {
-                    written: name,
-                    suggestion,
-                    kind: TypoKind::Variable,
-                    span,
-                });
-            }
+        if let Some((dist, suggestion)) = closest_match(&name, known_var_list.iter())
+            && dist <= 2
+        {
+            seen.insert(name.clone());
+            errors.push(AnalysisError::PossibleTypo {
+                written: name,
+                suggestion,
+                kind: TypoKind::Variable,
+                span,
+            });
         }
     }
 
@@ -232,10 +232,10 @@ fn collect_all_declared_vars(ast: &Ast) -> HashSet<String> {
     let mut vars = HashSet::new();
     walk_ast(ast, &mut |node| match node.content() {
         AstContent::Declaration { decl_name, .. } => {
-            if let AstContent::Value(RuntimeValue::IdentPath(path)) = decl_name.content() {
-                if path.len() == 1 {
-                    vars.insert(path[0].clone());
-                }
+            if let AstContent::Value(RuntimeValue::IdentPath(path)) = decl_name.content()
+                && path.len() == 1
+            {
+                vars.insert(path[0].clone());
             }
         }
         AstContent::LetCall { name, .. } => {
@@ -400,7 +400,6 @@ fn levenshtein(a: &str, b: &str) -> usize {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::analysis::context::AnalysisContext;

@@ -30,6 +30,7 @@ use crate::parser::ast::{Ast, AstContent, DeclKind, MatchArm, Operator};
 use crate::runtime::value::RuntimeValue;
 
 use super::AnalysisError;
+use super::context::extract_decl_name;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -80,7 +81,7 @@ fn visit_node(
             collect_reads(right, last_write);
 
             // 2. Determine the assigned name (simple ident only).
-            if let Some(name) = extract_simple_ident(left) {
+            if let Some(name) = extract_decl_name(left) {
                 let assign_span = node.span();
 
                 // 3. If there's already an unread write → warn.
@@ -122,7 +123,7 @@ fn visit_node(
                     // Then register the new write.  If the same name was already
                     // in `last_write` (a re-declaration / shadow without a read),
                     // emit an OverwrittenAssignment before replacing the entry.
-                    if let Some(name) = extract_simple_ident(decl_name) {
+                    if let Some(name) = extract_decl_name(decl_name) {
                         let decl_span = node.span();
                         if last_write.contains_key(&name) {
                             errors.push(AnalysisError::OverwrittenAssignment {
@@ -307,7 +308,7 @@ fn collect_reads(node: &Ast, last_write: &mut HashMap<String, SimpleSpan>) {
         AstContent::LetCall { .. } => {}
 
         // For an assignment BinOp, only scan the RHS for reads; the LHS is
-        // a write target (unless it is a complex expression — but extract_simple_ident
+        // a write target (unless it is a complex expression — but extract_decl_name
         // handles the simple case and visit_node handles SubscriptAssign).
         AstContent::BinOp {
             op: Operator::Assign,
@@ -316,7 +317,7 @@ fn collect_reads(node: &Ast, last_write: &mut HashMap<String, SimpleSpan>) {
         } => {
             // The left side is a write target for simple idents; skip it here.
             // But if left is NOT a simple ident (e.g. subscript), scan it too.
-            if extract_simple_ident(left).is_none() {
+            if extract_decl_name(left).is_none() {
                 collect_reads(left, last_write);
             }
             collect_reads(right, last_write);
@@ -346,27 +347,11 @@ fn collect_reads(node: &Ast, last_write: &mut HashMap<String, SimpleSpan>) {
 }
 
 // ---------------------------------------------------------------------------
-// Utility
-// ---------------------------------------------------------------------------
-
-/// If `node` is a `Value(IdentPath([name]))`, return `Some(name.clone())`.
-fn extract_simple_ident(node: &Ast) -> Option<String> {
-    match node.content() {
-        AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => {
-            Some(path[0].clone())
-        }
-        _ => None,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use crate::analysis::AnalysisError;
     use crate::compiler::loader::parse_source;
 

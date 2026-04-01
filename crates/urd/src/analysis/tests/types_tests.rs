@@ -3,8 +3,6 @@
 //! These tests build AST nodes directly using the builder methods on [`Ast`]
 //! and assert that [`types::check`] returns the expected diagnostics.
 
-#![allow(clippy::unwrap_used)]
-
 use crate::analysis::AnalysisError;
 use crate::analysis::context::AnalysisContext;
 use crate::analysis::types;

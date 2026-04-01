@@ -5,9 +5,6 @@
 //! `Ast` nodes carry genuine byte-offset spans.  The rendered output can then
 //! be inspected for source-location information.
 
-#![allow(clippy::unwrap_used)]
-#![allow(clippy::expect_used)]
-
 use crate::analysis::{AnalysisError, analyze, render_errors};
 use crate::parse_test;
 use crate::parser::block::script;

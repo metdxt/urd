@@ -35,6 +35,7 @@ use crate::parser::ast::{Ast, AstContent, DeclKind, Operator};
 use crate::runtime::value::RuntimeValue;
 
 use super::AnalysisError;
+use super::context::extract_decl_name;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -169,7 +170,7 @@ fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
                     scan_reads(decl_defs, unread);
 
                     // Then register the declaration.
-                    if let Some(name) = extract_simple_ident(decl_name) {
+                    if let Some(name) = extract_decl_name(decl_name) {
                         // If the same name was already in `unread` (re-declaration
                         // / shadowing), the old entry is replaced — the old one was
                         // already covered by the previous declaration's check or
@@ -191,7 +192,7 @@ fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
             // SubscriptAssign which is handled below.)
             scan_reads(right, unread);
             // If LHS is not a simple ident (e.g. complex expression), scan it too.
-            if extract_simple_ident(left).is_none() {
+            if extract_decl_name(left).is_none() {
                 scan_reads(left, unread);
             }
         }
@@ -294,7 +295,7 @@ fn scan_reads(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
             left,
             right,
         } => {
-            if extract_simple_ident(left).is_none() {
+            if extract_decl_name(left).is_none() {
                 scan_reads(left, unread);
             }
             scan_reads(right, unread);
@@ -310,27 +311,11 @@ fn scan_reads(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
 }
 
 // ---------------------------------------------------------------------------
-// Utility
-// ---------------------------------------------------------------------------
-
-/// Return `Some(name)` if `node` is `Value(IdentPath([name]))`, else `None`.
-fn extract_simple_ident(node: &Ast) -> Option<String> {
-    match node.content() {
-        AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => {
-            Some(path[0].clone())
-        }
-        _ => None,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use crate::analysis::AnalysisError;
     use crate::compiler::loader::parse_source;
 

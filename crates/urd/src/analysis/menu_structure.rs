@@ -9,8 +9,6 @@
 //!   one option.  The player has no real choice; a simple dialogue line would
 //!   be semantically equivalent.
 
-use chumsky::span::{SimpleSpan, Span};
-
 use crate::analysis::AnalysisError;
 use crate::parser::ast::{Ast, AstContent, walk_ast};
 
@@ -41,26 +39,21 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers (used only in tests)
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-fn zero_span() -> SimpleSpan {
-    SimpleSpan::new((), 0..0)
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::compiler::loader::parse_source;
     use crate::lexer::strings::ParsedString;
     use crate::parser::ast::Ast;
     use crate::runtime::value::RuntimeValue;
+    use chumsky::span::{SimpleSpan, Span};
+
+    fn zero_span() -> SimpleSpan {
+        SimpleSpan::new((), 0..0)
+    }
 
     // ── AST builder helpers ──────────────────────────────────────────────────
 

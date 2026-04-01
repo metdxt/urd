@@ -135,7 +135,6 @@ fn collect_reachable(ast: &Ast) -> HashSet<String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::compiler::loader::parse_source;

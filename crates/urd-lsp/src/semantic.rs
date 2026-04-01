@@ -1799,8 +1799,6 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use super::*;
     use urd::compiler::loader::parse_source;
 

@@ -71,7 +71,7 @@ impl FileLoader for FsLoader {
 /// A [`FileLoader`] backed by an in-memory map, useful for unit tests.
 ///
 /// Keys are module paths (e.g. `"lib/helpers.urd"`), values are raw source strings.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MemLoader {
     files: std::collections::HashMap<String, String>,
 }
@@ -99,7 +99,6 @@ impl FileLoader for MemLoader {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

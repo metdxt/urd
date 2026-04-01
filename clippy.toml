@@ -1,0 +1,4 @@
+# Allow `unwrap()` and `expect()` inside `#[test]` functions and `#[cfg(test)]` modules.
+# Production code still has both lints set to `deny` via [workspace.lints.clippy] in Cargo.toml.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

@@ -3,11 +3,9 @@
 //! These tests build AST nodes directly using the builder methods on [`Ast`]
 //! and assert that [`exhaustiveness::check`] returns the expected diagnostics.
 
-#![allow(clippy::unwrap_used)]
-
-use crate::analysis::exhaustiveness;
 use crate::analysis::AnalysisError;
 use crate::analysis::context::AnalysisContext;
+use crate::analysis::exhaustiveness;
 use crate::parser::ast::{Ast, MatchArm, MatchPattern, TypeAnnotation};
 use crate::runtime::value::RuntimeValue;
 
@@ -24,7 +22,8 @@ fn make_ctx(enums: &[(&str, &[&str])], vars: &[(&str, TypeAnnotation)]) -> Analy
         );
     }
     for (var_name, ann) in vars {
-        ctx.top_level_vars.insert((*var_name).to_owned(), ann.clone());
+        ctx.top_level_vars
+            .insert((*var_name).to_owned(), ann.clone());
     }
     ctx
 }
@@ -49,16 +48,8 @@ fn assert_no_errors(errors: &[AnalysisError]) {
     assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
 }
 
-fn assert_non_exhaustive(
-    errors: &[AnalysisError],
-    expected_enum: &str,
-    expected_missing: &[&str],
-) {
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly 1 error, got: {errors:?}"
-    );
+fn assert_non_exhaustive(errors: &[AnalysisError], expected_enum: &str, expected_missing: &[&str]) {
+    assert_eq!(errors.len(), 1, "expected exactly 1 error, got: {errors:?}");
     match &errors[0] {
         AnalysisError::NonExhaustiveMatch {
             enum_name,
@@ -156,7 +147,10 @@ fn missing_one_variant_is_error() {
 
 #[test]
 fn missing_first_variant_is_error() {
-    let ctx = make_ctx(&[("Season", &["Spring", "Summer", "Autumn", "Winter"])], &[]);
+    let ctx = make_ctx(
+        &[("Season", &["Spring", "Summer", "Autumn", "Winter"])],
+        &[],
+    );
     let scrutinee = ident_path("s");
     let arms = vec![
         // "Spring" is missing
@@ -176,10 +170,7 @@ fn missing_first_variant_is_error() {
 
 #[test]
 fn missing_multiple_variants_reported() {
-    let ctx = make_ctx(
-        &[("Phase", &["New", "Waxing", "Full", "Waning"])],
-        &[],
-    );
+    let ctx = make_ctx(&[("Phase", &["New", "Waxing", "Full", "Waning"])], &[]);
     let scrutinee = ident_path("phase");
     // Only "New" is covered
     let arms = vec![value_arm("New", return_block())];
@@ -278,10 +269,7 @@ fn variable_with_named_type_all_covered_is_ok() {
 
 #[test]
 fn int_annotated_variable_match_is_skipped() {
-    let ctx = make_ctx(
-        &[("Foo", &["A", "B"])],
-        &[("x", TypeAnnotation::Int)],
-    );
+    let ctx = make_ctx(&[("Foo", &["A", "B"])], &[("x", TypeAnnotation::Int)]);
     let scrutinee = ident_path("x");
     let arms = vec![value_arm("A", return_block())];
     let ast = Ast::match_stmt(scrutinee, arms);
@@ -304,10 +292,7 @@ fn error_location_reflects_labeled_block() {
     let scrutinee = ident_path("t");
     let arms = vec![value_arm("A", return_block())]; // "B" missing
     let match_node = Ast::match_stmt(scrutinee, arms);
-    let label = Ast::labeled_block(
-        "act_one".to_owned(),
-        Ast::block(vec![match_node]),
-    );
+    let label = Ast::labeled_block("act_one".to_owned(), Ast::block(vec![match_node]));
     let root = Ast::block(vec![label]);
     let errors = exhaustiveness::check(&root, &ctx);
     assert_eq!(errors.len(), 1, "expected exactly 1 error, got: {errors:?}");
@@ -331,10 +316,7 @@ fn error_location_reflects_menu_option() {
     let scrutinee = ident_path("t");
     let arms = vec![value_arm("A", return_block())]; // "B" missing
     let match_node = Ast::match_stmt(scrutinee, arms);
-    let option = Ast::menu_option(
-        "Choice One".to_owned(),
-        Ast::block(vec![match_node]),
-    );
+    let option = Ast::menu_option("Choice One".to_owned(), Ast::block(vec![match_node]));
     let menu = Ast::menu(vec![option]);
     let root = Ast::block(vec![menu]);
     let errors = exhaustiveness::check(&root, &ctx);
@@ -357,13 +339,7 @@ fn error_location_reflects_menu_option() {
 fn nested_match_both_checked_independently() {
     // Outer match: A / B fully covered
     // Inner match (inside arm A): X missing Y
-    let ctx = make_ctx(
-        &[
-            ("Outer", &["A", "B"]),
-            ("Inner", &["X", "Y"]),
-        ],
-        &[],
-    );
+    let ctx = make_ctx(&[("Outer", &["A", "B"]), ("Inner", &["X", "Y"])], &[]);
     let inner_scrutinee = ident_path("inner_val");
     let inner_arms = vec![value_arm("X", return_block())]; // "Y" missing
     let inner_match = Ast::match_stmt(inner_scrutinee, inner_arms);
@@ -396,13 +372,7 @@ fn nested_match_both_checked_independently() {
 
 #[test]
 fn two_non_exhaustive_matches_both_reported() {
-    let ctx = make_ctx(
-        &[
-            ("A", &["A1", "A2"]),
-            ("B", &["B1", "B2"]),
-        ],
-        &[],
-    );
+    let ctx = make_ctx(&[("A", &["A1", "A2"]), ("B", &["B1", "B2"])], &[]);
     let match_a = Ast::match_stmt(
         ident_path("a"),
         vec![value_arm("A1", return_block())], // "A2" missing
@@ -465,11 +435,7 @@ fn match_inside_if_branch_is_checked() {
         vec![value_arm("Yes", return_block())], // "No" missing
     );
     let then_block = Ast::block(vec![match_node]);
-    let if_node = Ast::if_stmt(
-        Ast::value(RuntimeValue::Bool(true)),
-        then_block,
-        None,
-    );
+    let if_node = Ast::if_stmt(Ast::value(RuntimeValue::Bool(true)), then_block, None);
     let root = Ast::block(vec![if_node]);
     let errors = exhaustiveness::check(&root, &ctx);
     assert_non_exhaustive(&errors, "Flag", &["No"]);
@@ -498,10 +464,7 @@ fn only_non_exhaustive_match_produces_error() {
         ],
     );
     // Non-exhaustive match over Size (missing "Large")
-    let match_size = Ast::match_stmt(
-        ident_path("size"),
-        vec![value_arm("Small", return_block())],
-    );
+    let match_size = Ast::match_stmt(ident_path("size"), vec![value_arm("Small", return_block())]);
     let root = Ast::block(vec![match_color, match_size]);
     let errors = exhaustiveness::check(&root, &ctx);
     assert_non_exhaustive(&errors, "Size", &["Large"]);
@@ -548,12 +511,7 @@ fn match_inside_decorator_body_is_checked() {
         vec![value_arm("Start", return_block())], // "End" missing
     );
     let body = Ast::block(vec![match_node]);
-    let dec_def = Ast::decorator_def(
-        "my_dec".to_owned(),
-        EventConstraint::Any,
-        vec![],
-        body,
-    );
+    let dec_def = Ast::decorator_def("my_dec".to_owned(), EventConstraint::Any, vec![], body);
     let root = Ast::block(vec![dec_def]);
     let errors = exhaustiveness::check(&root, &ctx);
     assert_non_exhaustive(&errors, "Ev", &["End"]);

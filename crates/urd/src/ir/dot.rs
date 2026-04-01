@@ -691,11 +691,11 @@ pub fn render_dot(graph: &IrGraph) -> String {
 // ─── Visual attributes ───────────────────────────────────────────────────────
 
 /// Returns `(shape, fillcolor, label)` for a given IR node.
-fn node_attrs<'a>(
+fn node_attrs(
     idx: NodeIndex,
     kind: &IrNodeKind,
     graph: &IrGraph,
-    label_by_entry: &'a HashMap<NodeIndex, String>,
+    label_by_entry: &HashMap<NodeIndex, String>,
 ) -> (&'static str, &'static str, String) {
     match kind {
         IrNodeKind::Assign { var, scope, .. } => (
@@ -960,10 +960,7 @@ fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<N
         if !visited.insert(current) {
             return Some(current);
         }
-        let kind = match graph.graph.node_weight(current) {
-            Some(k) => k,
-            None => return None,
-        };
+        let kind = graph.graph.node_weight(current)?;
         match kind {
             IrNodeKind::Assign { .. }
             | IrNodeKind::DefineEnum { .. }
@@ -990,9 +987,6 @@ fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<N
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
-    #![allow(clippy::unwrap_used)]
-
     use std::collections::HashMap;
 
     use super::*;

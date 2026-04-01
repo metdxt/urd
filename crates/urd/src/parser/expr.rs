@@ -283,8 +283,9 @@ pub fn declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     };
 
     let ident = select! {
-        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
-    };
+        Token::IdentPath(path) if path.len() == 1 => Ast::value(RuntimeValue::IdentPath(path))
+    }
+    .labelled("variable name");
 
     decl_word
         .then(ident)
@@ -306,8 +307,6 @@ pub fn declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use super::*;
     use crate::parse_test;
 

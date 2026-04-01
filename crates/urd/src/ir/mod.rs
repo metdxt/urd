@@ -126,15 +126,10 @@ impl IrGraph {
         self.graph.add_node(kind)
     }
 
-    /// Mutably borrows the node weight at `idx`.
-    ///
-    /// # Panics
-    /// Panics if `idx` does not refer to a live node (should never happen
-    /// inside the compiler while indices remain in scope).
-    pub(crate) fn node_mut(&mut self, idx: NodeIndex) -> &mut IrNodeKind {
-        self.graph
-            .node_weight_mut(idx)
-            .expect("IrGraph::node_mut: index refers to a removed or nonexistent node")
+    /// Mutably borrows the node weight at `idx`, returning `None` if the index
+    /// does not refer to a live node.
+    pub(crate) fn node_mut(&mut self, idx: NodeIndex) -> Option<&mut IrNodeKind> {
+        self.graph.node_weight_mut(idx)
     }
 
     /// Adds a directed edge from `from` to `to` with semantic label `edge`.
@@ -464,6 +459,35 @@ pub struct ChoiceEvent {
     pub label: String,
     /// Evaluated decorator fields for this option.
     pub fields: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
+}
+
+// ─── VmStep ──────────────────────────────────────────────────────────────────
+
+/// The result of a single [`crate::vm::Vm::next`] call.
+///
+/// This enum replaces the `Option<Result<Event, VmError>>` return type with a
+/// value that is self-documenting and pattern-matches cleanly in game engine
+/// integration code.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// loop {
+///     match vm.next(choice.take()) {
+///         VmStep::Event(event) => handle(event),
+///         VmStep::Ended        => break,
+///         VmStep::Error(e)     => return Err(e),
+///     }
+/// }
+/// ```
+#[derive(Debug)]
+pub enum VmStep {
+    /// The VM produced an observable [`Event`] (dialogue or choice).
+    Event(Event),
+    /// The script has ended — no more events will be produced.
+    Ended,
+    /// A runtime error occurred.
+    Error(crate::vm::VmError),
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

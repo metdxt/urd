@@ -1,6 +1,4 @@
 #![allow(missing_docs)]
-#![allow(clippy::expect_used)]
-#![allow(clippy::unwrap_used)]
 
 //! Integration tests for the Mermaid flowchart renderer.
 //!

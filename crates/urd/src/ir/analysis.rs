@@ -324,9 +324,6 @@ pub fn node_to_cluster(clusters: &HashMap<String, HashSet<NodeIndex>>) -> HashMa
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
-    #![allow(clippy::unwrap_used)]
-
     use petgraph::Direction;
 
     use super::*;

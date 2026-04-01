@@ -28,6 +28,29 @@ pub fn extract_decl_name(node: &Ast) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// top_level_stmts
+// ---------------------------------------------------------------------------
+
+/// Returns the direct statement slice of the outermost block in `ast`.
+///
+/// Two root shapes are accepted:
+/// - `ast` is itself a [`AstContent::Block`] — its statements are returned.
+/// - `ast` is a [`AstContent::LabeledBlock`] wrapping a `Block` — the inner
+///   block's statements are returned.
+///
+/// Any other shape returns `None`.
+pub fn top_level_stmts(ast: &Ast) -> Option<&[Ast]> {
+    match ast.content() {
+        AstContent::Block(stmts) => Some(stmts),
+        AstContent::LabeledBlock { block, .. } => match block.content() {
+            AstContent::Block(stmts) => Some(stmts),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AnalysisContext
 // ---------------------------------------------------------------------------
 

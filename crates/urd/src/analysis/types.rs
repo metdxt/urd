@@ -575,7 +575,6 @@ fn runtime_value_type_name(value: &RuntimeValue) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::parser::ast::{DeclKind, TypeAnnotation};

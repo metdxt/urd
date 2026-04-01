@@ -56,15 +56,15 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
         {
             // Only flag bare single-segment ident assignments, not qualified
             // paths or subscript assignments.
-            if let AstContent::Value(RuntimeValue::IdentPath(path)) = left.content() {
-                if path.len() == 1 {
-                    let name = &path[0];
-                    if const_names.contains(name.as_str()) {
-                        errors.push(AnalysisError::ConstReassignment {
-                            name: name.clone(),
-                            span: node.span(),
-                        });
-                    }
+            if let AstContent::Value(RuntimeValue::IdentPath(path)) = left.content()
+                && path.len() == 1
+            {
+                let name = &path[0];
+                if const_names.contains(name.as_str()) {
+                    errors.push(AnalysisError::ConstReassignment {
+                        name: name.clone(),
+                        span: node.span(),
+                    });
                 }
             }
         }
@@ -104,12 +104,10 @@ fn collect_const_names(ast: &Ast) -> HashSet<String> {
             decl_name,
             ..
         } = stmt.content()
+            && let AstContent::Value(RuntimeValue::IdentPath(path)) = decl_name.content()
+            && path.len() == 1
         {
-            if let AstContent::Value(RuntimeValue::IdentPath(path)) = decl_name.content() {
-                if path.len() == 1 {
-                    names.insert(path[0].clone());
-                }
-            }
+            names.insert(path[0].clone());
         }
     }
 
@@ -121,7 +119,6 @@ fn collect_const_names(ast: &Ast) -> HashSet<String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::compiler::loader::parse_source;

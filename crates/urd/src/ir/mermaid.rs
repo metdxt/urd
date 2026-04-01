@@ -954,10 +954,7 @@ fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<N
         if !visited.insert(current) {
             return Some(current);
         }
-        let kind = match graph.graph.node_weight(current) {
-            Some(k) => k,
-            None => return None,
-        };
+        let kind = graph.graph.node_weight(current)?;
         match kind {
             IrNodeKind::Assign { .. }
             | IrNodeKind::DefineEnum { .. }
@@ -1027,9 +1024,6 @@ fn sanitize_id(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
-    #![allow(clippy::unwrap_used)]
-
     use super::*;
     use crate::compiler::Compiler;
     use crate::lexer::strings::ParsedString;

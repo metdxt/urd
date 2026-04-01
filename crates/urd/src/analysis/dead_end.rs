@@ -423,7 +423,6 @@ fn extract_call_name(func_path: &Ast) -> Option<&str> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::parser::ast::{MatchArm, MatchPattern};

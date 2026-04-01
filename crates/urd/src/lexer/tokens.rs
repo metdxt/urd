@@ -287,7 +287,6 @@ pub fn lex_src(src: &str) -> Lexer<'_, Token> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)] // unwrap is still forbidden
 
     use super::*;
 

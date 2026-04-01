@@ -1,4 +1,3 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
 //! Integration tests for Urd's import system.
 //!
 //! These tests exercise the full pipeline — source → lex → parse →
@@ -11,6 +10,7 @@
 //! 5. Circular imports are detected and reported.
 
 use urd::{
+    VmStep,
     compiler::{Compiler, CompilerError},
     ir::Event,
     parse_test,
@@ -38,16 +38,16 @@ fn collect_dialogue_lines(vm: &mut Vm) -> Vec<String> {
     let mut out = Vec::new();
     loop {
         match vm.next(None) {
-            None => break,
-            Some(Ok(Event::Dialogue { lines, .. })) => {
+            VmStep::Ended => break,
+            VmStep::Event(Event::Dialogue { lines, .. }) => {
                 for val in &lines {
                     if let RuntimeValue::Str(ps) = val {
                         out.push(ps.to_string());
                     }
                 }
             }
-            Some(Ok(_)) => {}
-            Some(Err(e)) => panic!("VM error: {e}"),
+            VmStep::Event(_) => {}
+            VmStep::Error(e) => panic!("VM error: {e}"),
         }
     }
     out
