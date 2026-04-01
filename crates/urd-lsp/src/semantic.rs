@@ -252,6 +252,40 @@ fn ident_path_from_ast(ast: &Ast) -> Option<String> {
     }
 }
 
+/// Extract the `[_a-zA-Z0-9]+` identifier word that the cursor sits inside.
+///
+/// Returns an empty string when `byte_offset` is not on an identifier character.
+/// Unlike [`word_at_offset`](crate::main) this helper does **not** include dots,
+/// so it returns only a single identifier segment — suitable for comparing
+/// against `Jump.label` and `LetCall.target` which are plain names.
+fn ident_at_offset(src: &str, byte_offset: usize) -> &str {
+    let bytes = src.as_bytes();
+    let offset = byte_offset.min(bytes.len());
+
+    fn is_ident(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+
+    let probe = if offset < bytes.len() && is_ident(bytes[offset]) {
+        offset
+    } else if offset > 0 && is_ident(bytes[offset - 1]) {
+        offset - 1
+    } else {
+        return "";
+    };
+
+    let mut start = probe;
+    while start > 0 && is_ident(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = probe + 1;
+    while end < bytes.len() && is_ident(bytes[end]) {
+        end += 1;
+    }
+
+    &src[start..end]
+}
+
 /// Check whether a byte offset falls inside a [`SimpleSpan`].
 fn span_contains(span: SimpleSpan, offset: usize) -> bool {
     offset >= span.start && offset < span.end
@@ -929,12 +963,56 @@ fn hover_from_ast(
         AstContent::Value(RuntimeValue::Dice(count, sides)) => {
             Some(format!("**dice** `{count}d{sides}`"))
         }
-        // These nodes are self-evident from the source text — suppress hover
-        // and claim the position so the label/decorator fallback doesn't fire.
-        AstContent::Jump { .. } | AstContent::Menu { .. } | AstContent::MenuOption { .. } => {
-            Some(String::new())
+
+        // Jump / LetCall — the target label is stored as a plain String, not
+        // as an AST child, so hover_from_ast_children can never find it.
+        // We detect whether the cursor is over the target name by comparing
+        // the word under the cursor to the stored label string; if it matches
+        // we resolve the label symbol directly.
+        AstContent::Jump { label, .. } => {
+            let word = ident_at_offset(src, byte_offset);
+            if word == label.as_str() {
+                // Cursor is on the target label name — show its hover card.
+                if let Some(sym) = symbols
+                    .iter()
+                    .find(|s| s.name == *label && s.kind == SymbolKind::Label)
+                {
+                    return Some(hover_for_symbol(sym, root, symbols));
+                }
+                // Label not (yet) in the symbol table — show a plain snippet.
+                return Some(format!("```urd\nlabel {}\n```", label));
+            }
+            // Cursor is on the `jump` keyword — return None so that
+            // is_keyword_or_syntax suppresses the container-label fallback.
+            None
         }
+
+        AstContent::LetCall { name, target } => {
+            let word = ident_at_offset(src, byte_offset);
+            if word == target.as_str() {
+                if let Some(sym) = symbols
+                    .iter()
+                    .find(|s| s.name == *target && s.kind == SymbolKind::Label)
+                {
+                    return Some(hover_for_symbol(sym, root, symbols));
+                }
+                return Some(format!("```urd\nlabel {}\n```", target));
+            }
+            if word == name.as_str() {
+                if let Some(sym) = symbols.iter().find(|s| s.name == *name) {
+                    return Some(hover_for_symbol(sym, root, symbols));
+                }
+            }
+            None
+        }
+
         // Recurse into children to find the innermost match.
+        // Note: Menu, MenuOption, and Jump are intentionally NOT suppressed here
+        // so that hover works on identifiers inside menu bodies, if-blocks, etc.
+        // The `jump` / `menu` keywords are already handled by `is_keyword_or_syntax`
+        // in the container fallback path, so suppressing these nodes would
+        // incorrectly prevent hover from reaching nested content like
+        // `boss_defeated = 1` inside a menu option body.
         _ => hover_from_ast_children(ast.content(), symbols, src, byte_offset, root),
     }
 }
@@ -2485,6 +2563,150 @@ mod tests {
         assert!(
             !info.contains('…'),
             "hover must not show ellipsis for an ident reference value; got: {info}"
+        );
+    }
+
+    // ── hover inside nested blocks ────────────────────────────────────────
+
+    #[test]
+    fn hover_works_inside_menu_option_body() {
+        // Regression test: `Menu` and `MenuOption` nodes were previously in
+        // the `hover_from_ast` suppress arm, which returned `Some("")` without
+        // recursing into children.  Any identifier inside a menu option body
+        // (e.g. `boss_defeated = 1`) was unreachable for hover.
+        let src = "global boss_defeated: int = 0\n\
+                   label dungeon {\n\
+                   \tmenu {\n\
+                   \t\t\"Fight\" {\n\
+                   \t\t\tboss_defeated = 1\n\
+                   \t\t\tend!()\n\
+                   \t\t}\n\
+                   \t}\n\
+                   }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        // Cursor on `boss_defeated` on the assignment line (last occurrence).
+        let offset = src.rfind("boss_defeated").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(
+            info.is_some(),
+            "hover must work for an identifier inside a menu option body; got None\n\
+             (check that Menu/MenuOption are not in the suppress arm of hover_from_ast)"
+        );
+        let text = info.unwrap();
+        assert!(
+            text.contains("boss_defeated"),
+            "hover must mention the symbol name; got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_works_inside_if_block() {
+        let src = "global score: int = 0\n\
+                   label play {\n\
+                   \tif score == 0 {\n\
+                   \t\tscore = 1\n\
+                   \t}\n\
+                   \tend!()\n\
+                   }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        // Cursor on `score` in the assignment inside the if body.
+        let offset = src.rfind("score").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(
+            info.is_some(),
+            "hover must work for an identifier inside an if block; got None"
+        );
+        let text = info.unwrap();
+        assert!(
+            text.contains("score"),
+            "hover must mention the symbol name; got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_on_jump_target_shows_target_label_card() {
+        // When the cursor is on `dungeon_epilogue` in `jump dungeon_epilogue`,
+        // the hover must show the target label's card, not the enclosing label.
+        let src = "label dungeon_epilogue {\n\
+                   \tend!()\n\
+                   }\n\
+                   label boss_fight {\n\
+                   \tjump dungeon_epilogue\n\
+                   }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        // Cursor on `dungeon_epilogue` in the jump statement (last occurrence).
+        let offset = src.rfind("dungeon_epilogue").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(
+            info.is_some(),
+            "hover on jump target must produce hover text; got None"
+        );
+        let text = info.unwrap();
+        assert!(
+            text.contains("dungeon_epilogue"),
+            "hover must show the TARGET label, not the enclosing one; got: {text}"
+        );
+        assert!(
+            !text.contains("boss_fight"),
+            "hover must NOT show the enclosing label; got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_on_jump_keyword_does_not_crash() {
+        // Hovering on the `jump` keyword itself (not the target name) should
+        // not crash and may return None (keyword suppression) or the enclosing
+        // label's hover card — both are acceptable.
+        let src = "label dungeon_epilogue {\n\
+                   \tend!()\n\
+                   }\n\
+                   label dungeon {\n\
+                   \tjump dungeon_epilogue\n\
+                   }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        // Cursor on the `jump` keyword.
+        let jump_offset = src.rfind("jump").unwrap() + 1;
+        // Must not panic — result can be None or Some(...).
+        let _ = hover_info(&ast, &syms, src, jump_offset);
+    }
+
+    #[test]
+    fn hover_on_jump_shows_enclosing_label_or_target() {
+        // Hovering on `dungeon_epilogue` after `jump` — since Jump nodes store
+        // the target as a String (not an AST child), hover_from_ast_children
+        // returns None for Jump, so the enclosing label's hover card appears.
+        // The important thing is no panic and some meaningful output.
+        let src = "label dungeon_epilogue {\n\
+                   \tend!()\n\
+                   }\n\
+                   label dungeon {\n\
+                   \tjump dungeon_epilogue\n\
+                   }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        // Cursor on `dungeon_epilogue` in the jump statement (last occurrence).
+        let offset = src.rfind("dungeon_epilogue").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset);
+        // Some hover is expected (the enclosing `dungeon` label's card).
+        assert!(
+            info.is_some(),
+            "hovering near a jump target must produce some hover text; got None"
+        );
+        // The result shows either the target or the enclosing label — either
+        // is a `label` urd code block.
+        let text = info.unwrap();
+        assert!(
+            text.contains("label"),
+            "hover near jump must show a label hover card; got: {text}"
         );
     }
 
