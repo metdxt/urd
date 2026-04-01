@@ -74,7 +74,7 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
 ///
 /// Allowed top-level forms:
 /// - `Declaration` (let / const / global bindings)
-/// - `ExternDeclaration` (extern const / extern global provided by the runtime)
+/// - `ExternDeclaration` (extern value provided by the runtime)
 /// - `EnumDecl`
 /// - `StructDecl`
 /// - `DecoratorDef`
@@ -209,12 +209,7 @@ mod tests {
 
     #[test]
     fn extern_declaration_is_allowed() {
-        use crate::parser::ast::DeclKind;
-        let node = spanned(
-            Ast::extern_decl(DeclKind::Constant, ident("narrator"), None),
-            0,
-            20,
-        );
+        let node = spanned(Ast::extern_decl(ident("narrator"), None), 0, 20);
         let ast = root_block(vec![node]);
         let errors = check(&ast);
         assert!(

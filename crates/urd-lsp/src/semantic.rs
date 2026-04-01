@@ -521,30 +521,19 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
             ));
         }
 
-        // ── Extern declarations (extern const / extern global) ───────────
+        // ── Extern declarations (`extern name: Type`) ────────────────────
         AstContent::ExternDeclaration {
-            kind,
             name,
             type_annotation,
         } => {
             if let Some(var_name) = ident_name_from_ast(name) {
-                let sym_kind = match kind {
-                    DeclKind::Constant => SymbolKind::Constant,
-                    DeclKind::Global => SymbolKind::Global,
-                    DeclKind::Variable => SymbolKind::Variable,
-                };
                 let detail = Some(match type_annotation {
-                    Some(ta) => format!(
-                        "extern {} {}: {}",
-                        format_decl_kind(kind),
-                        var_name,
-                        format_type_annotation(ta)
-                    ),
-                    None => format!("extern {} {}", format_decl_kind(kind), var_name),
+                    Some(ta) => format!("extern {}: {}", var_name, format_type_annotation(ta)),
+                    None => format!("extern {}", var_name),
                 });
                 out.push(Symbol {
                     name: var_name,
-                    kind: sym_kind,
+                    kind: SymbolKind::Variable,
                     span: ast.span(),
                     type_annotation: type_annotation.clone(),
                     detail,
@@ -3108,11 +3097,11 @@ mod tests {
 
     #[test]
     fn collect_symbols_finds_extern_const() {
-        let src = "extern const narrator: Character\n";
+        let src = "extern narrator: Character\n";
         let ast = parse(src);
         let syms = collect_symbols(&ast);
         let sym = syms.iter().find(|s| s.name == "narrator").unwrap();
-        assert_eq!(sym.kind, SymbolKind::Constant);
+        assert_eq!(sym.kind, SymbolKind::Variable);
         assert_eq!(
             sym.type_annotation,
             Some(TypeAnnotation::Named(vec!["Character".to_owned()]))
@@ -3121,7 +3110,7 @@ mod tests {
             sym.detail
                 .as_deref()
                 .unwrap_or("")
-                .contains("extern const narrator"),
+                .contains("extern narrator"),
             "detail should show extern keyword; got: {:?}",
             sym.detail
         );
@@ -3129,35 +3118,32 @@ mod tests {
 
     #[test]
     fn collect_symbols_finds_extern_global() {
-        let src = "extern global score: int\n";
+        let src = "extern score: int\n";
         let ast = parse(src);
         let syms = collect_symbols(&ast);
         let sym = syms.iter().find(|s| s.name == "score").unwrap();
-        assert_eq!(sym.kind, SymbolKind::Global);
+        assert_eq!(sym.kind, SymbolKind::Variable);
         assert_eq!(sym.type_annotation, Some(TypeAnnotation::Int));
         assert!(
-            sym.detail
-                .as_deref()
-                .unwrap_or("")
-                .contains("extern global score"),
-            "detail should show extern global; got: {:?}",
+            sym.detail.as_deref().unwrap_or("").contains("extern score"),
+            "detail should show extern; got: {:?}",
             sym.detail
         );
     }
 
     #[test]
     fn collect_symbols_finds_extern_without_annotation() {
-        let src = "extern const narrator\n";
+        let src = "extern narrator\n";
         let ast = parse(src);
         let syms = collect_symbols(&ast);
         let sym = syms.iter().find(|s| s.name == "narrator").unwrap();
-        assert_eq!(sym.kind, SymbolKind::Constant);
+        assert_eq!(sym.kind, SymbolKind::Variable);
         assert!(sym.type_annotation.is_none());
         assert!(
             sym.detail
                 .as_deref()
                 .unwrap_or("")
-                .contains("extern const narrator"),
+                .contains("extern narrator"),
             "detail should still show name; got: {:?}",
             sym.detail
         );
@@ -3165,23 +3151,23 @@ mod tests {
 
     #[test]
     fn find_definition_extern_const() {
-        let src = "extern const narrator: Character\n";
+        let src = "extern narrator: Character\n";
         let ast = parse(src);
         let span = find_definition(&ast, "narrator");
-        assert!(span.is_some(), "should find definition for extern const");
+        assert!(span.is_some(), "should find definition for extern");
     }
 
     #[test]
     fn find_definition_extern_global() {
-        let src = "extern global score: int\n";
+        let src = "extern score: int\n";
         let ast = parse(src);
         let span = find_definition(&ast, "score");
-        assert!(span.is_some(), "should find definition for extern global");
+        assert!(span.is_some(), "should find definition for extern");
     }
 
     #[test]
     fn hover_extern_const_shows_type() {
-        let src = "extern const narrator: Character\n";
+        let src = "extern narrator: Character\n";
         let ast = parse(src);
         let syms = collect_symbols(&ast);
         let offset = src.find("narrator").unwrap() + 1;
@@ -3202,7 +3188,7 @@ mod tests {
 
     #[test]
     fn hover_extern_global_shows_type() {
-        let src = "extern global score: int\n";
+        let src = "extern score: int\n";
         let ast = parse(src);
         let syms = collect_symbols(&ast);
         let offset = src.find("score").unwrap() + 1;
@@ -3219,7 +3205,7 @@ mod tests {
 
     #[test]
     fn hover_extern_with_doc_comment() {
-        let src = "## The active narrator character\nextern const narrator: Character\n";
+        let src = "## The active narrator character\nextern narrator: Character\n";
         let ast = parse(src);
         let syms = collect_symbols(&ast);
         let offset = src.find("narrator: Character").unwrap() + 1;

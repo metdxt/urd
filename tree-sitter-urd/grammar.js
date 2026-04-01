@@ -462,7 +462,6 @@ module.exports = grammar({
     extern_declaration: ($) =>
       seq(
         "extern",
-        field("kind", choice("const", "global")),
         field("name", $.identifier_path),
         optional(field("type", $.type_annotation)),
       ),

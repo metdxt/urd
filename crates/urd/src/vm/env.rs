@@ -36,6 +36,10 @@ pub struct Environment {
     /// values so they can be passed as arguments (e.g. to decorators) without
     /// being treated as saveable game state.
     builtins: HashMap<String, RuntimeValue>,
+    /// Runtime-provided extern values injected by the host before execution.
+    /// These are read-only from script code — only the runtime can write them
+    /// via [`Environment::provide_extern`]. Never part of a save file.
+    externs: HashMap<String, RuntimeValue>,
 }
 
 impl Environment {
@@ -43,6 +47,7 @@ impl Environment {
     pub fn new() -> Self {
         Environment {
             scopes: vec![HashMap::new()],
+            externs: HashMap::new(),
             ..Default::default()
         }
     }
@@ -77,6 +82,11 @@ impl Environment {
     /// - [`DeclKind::Constant`] — store in the innermost scope; returns
     ///   [`VmError::TypeError`] if the name was already declared as a constant.
     pub fn set(&mut self, name: &str, value: RuntimeValue, kind: &DeclKind) -> Result<(), VmError> {
+        if self.externs.contains_key(name) {
+            return Err(VmError::TypeError(format!(
+                "cannot assign to extern '{name}' — extern values are controlled by the runtime"
+            )));
+        }
         if !matches!(kind, DeclKind::Constant) && self.constants.contains(name) {
             return Err(VmError::TypeError(format!(
                 "cannot assign to constant '{name}'"
@@ -142,6 +152,9 @@ impl Environment {
         if let Some(v) = self.globals.get(name) {
             return Ok(v.clone());
         }
+        if let Some(v) = self.externs.get(name) {
+            return Ok(v.clone());
+        }
         if let Some(v) = self.builtins.get(name) {
             return Ok(v.clone());
         }
@@ -195,31 +208,14 @@ impl Environment {
     /// Inject a runtime-provided extern value into the environment.
     ///
     /// Must be called by the host runtime **before** the first [`crate::vm::Vm::next`]
-    /// call for every name declared with `extern const` or `extern global` in the script.
+    /// call for every name declared with `extern` in the script. May also be called
+    /// between steps to update a live extern value.
     ///
-    /// - [`DeclKind::Constant`] — stores in the root scope and marks the name as
-    ///   immutable (same semantics as a script-level `const`).
-    /// - [`DeclKind::Global`] — stores in the global map (same semantics as `global`).
-    ///
-    /// # Panics
-    /// Panics in debug builds if `kind` is [`DeclKind::Variable`] — `extern let`
-    /// is not a valid construct.
-    pub fn provide_extern(&mut self, name: &str, value: RuntimeValue, kind: &DeclKind) {
-        match kind {
-            DeclKind::Global => {
-                self.globals.insert(name.to_string(), value);
-            }
-            DeclKind::Constant => {
-                // Store in the root (outermost) scope so it is visible everywhere.
-                if let Some(root_scope) = self.scopes.first_mut() {
-                    root_scope.insert(name.to_string(), value);
-                }
-                self.constants.insert(name.to_string());
-            }
-            DeclKind::Variable => {
-                debug_assert!(false, "provide_extern: DeclKind::Variable is not supported");
-            }
-        }
+    /// Extern values are stored in a dedicated map separate from locals, globals, and
+    /// constants. Scripts cannot overwrite them — any `set` attempt on an extern name
+    /// returns a [`VmError::TypeError`].
+    pub fn provide_extern(&mut self, name: &str, value: RuntimeValue) {
+        self.externs.insert(name.to_string(), value);
     }
 }
 
@@ -230,30 +226,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provide_extern_const_is_immutable() {
+    fn provide_extern_is_readable() {
         let mut env = Environment::new();
-        env.provide_extern("MAX", RuntimeValue::Int(100), &DeclKind::Constant);
-        // Should be readable
-        assert!(env.get("MAX").is_ok());
+        env.provide_extern("MAX", RuntimeValue::Int(100));
         assert_eq!(env.get("MAX").unwrap(), RuntimeValue::Int(100));
-        // Should be marked as constant (can't be overwritten)
+    }
+
+    #[test]
+    fn provide_extern_blocks_script_reassignment() {
+        let mut env = Environment::new();
+        env.provide_extern("score", RuntimeValue::Int(0));
+        // Scripts cannot overwrite extern values
+        let result = env.set("score", RuntimeValue::Int(42), &DeclKind::Variable);
+        assert!(result.is_err(), "expected error when assigning to extern");
+        let err_msg = result.unwrap_err().to_string();
         assert!(
-            env.set("MAX", RuntimeValue::Int(999), &DeclKind::Variable)
-                .is_err()
+            err_msg.contains("extern"),
+            "error should mention 'extern': {err_msg}"
         );
     }
 
     #[test]
-    fn provide_extern_global_is_mutable() {
+    fn provide_extern_runtime_can_update() {
+        // The runtime itself can call provide_extern multiple times to update a value
         let mut env = Environment::new();
-        env.provide_extern("score", RuntimeValue::Int(0), &DeclKind::Global);
-        assert!(env.get("score").is_ok());
-        // Global externs can be reassigned via set
-        assert!(
-            env.set("score", RuntimeValue::Int(42), &DeclKind::Global)
-                .is_ok()
+        env.provide_extern(
+            "player_name",
+            RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain("Alice")),
         );
-        assert_eq!(env.get("score").unwrap(), RuntimeValue::Int(42));
+        env.provide_extern(
+            "player_name",
+            RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain("Bob")),
+        );
+        if let RuntimeValue::Str(s) = env.get("player_name").unwrap() {
+            assert_eq!(s.to_string(), "Bob");
+        } else {
+            panic!("expected Str");
+        }
     }
 }
 

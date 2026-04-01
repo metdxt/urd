@@ -456,7 +456,6 @@ mod tests {
     #[test]
     fn build_collects_typed_extern_declaration() {
         let decl = Ast::extern_decl(
-            DeclKind::Constant,
             ident("narrator"),
             Some(TypeAnnotation::Named(vec!["Character".to_owned()])),
         );
@@ -470,7 +469,7 @@ mod tests {
 
     #[test]
     fn build_ignores_untyped_extern_declaration() {
-        let decl = Ast::extern_decl(DeclKind::Constant, ident("narrator"), None);
+        let decl = Ast::extern_decl(ident("narrator"), None);
         let root = Ast::block(vec![decl]);
         let ctx = AnalysisContext::build(&root);
         assert!(!ctx.top_level_vars.contains_key("narrator"));

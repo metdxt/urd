@@ -393,8 +393,6 @@ pub enum IrNodeKind {
     ExternDecl {
         /// The extern variable name.
         name: String,
-        /// [`DeclKind::Constant`] or [`DeclKind::Global`].
-        kind: DeclKind,
     },
 
     /// A merge point or pre-allocated placeholder.

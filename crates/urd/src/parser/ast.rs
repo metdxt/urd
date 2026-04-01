@@ -277,14 +277,18 @@ pub enum AstContent {
 
     /// An `extern const` or `extern global` declaration: value provided by the host runtime.
     ///
-    /// Syntax: `extern const name: Type` or `extern global name: Type`
+    /// An `extern` declaration: a value provided by the host runtime.
+    ///
+    /// Syntax: `extern name` or `extern name: Type`
     ///
     /// The type annotation is optional but recommended for linting and autocompletion.
     /// There is no initialiser — the runtime injects the value before execution via
     /// [`crate::vm::env::Environment::provide_extern`].
+    ///
+    /// Extern values are controlled entirely by the runtime: they are neither
+    /// save/loadable game state nor guaranteed to be constant. Scripts may not
+    /// reassign them.
     ExternDeclaration {
-        /// The declaration kind: only [`DeclKind::Constant`] or [`DeclKind::Global`] are valid.
-        kind: DeclKind,
         /// The variable name (a single-segment [`AstContent::Value(RuntimeValue::IdentPath)`]).
         name: Box<Ast>,
         /// Optional type hint used by static analysis and autocompletion.
@@ -600,9 +604,8 @@ impl Ast {
     }
 
     /// Create an extern declaration node.
-    pub fn extern_decl(kind: DeclKind, name: Ast, type_annotation: Option<TypeAnnotation>) -> Self {
+    pub fn extern_decl(name: Ast, type_annotation: Option<TypeAnnotation>) -> Self {
         Ast::new(AstContent::ExternDeclaration {
-            kind,
             name: Box::new(name),
             type_annotation,
         })

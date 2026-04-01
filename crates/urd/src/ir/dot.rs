@@ -787,14 +787,7 @@ fn node_attrs(
             format!("def_decorator\n@{name} ({} params)", params.len()),
         ),
 
-        IrNodeKind::ExternDecl { name, kind } => {
-            let kw = match kind {
-                crate::parser::ast::DeclKind::Constant => "extern const",
-                crate::parser::ast::DeclKind::Global => "extern global",
-                crate::parser::ast::DeclKind::Variable => "extern let",
-            };
-            ("box", "#c8e6c9", format!("{kw} {name}"))
-        }
+        IrNodeKind::ExternDecl { name } => ("box", "#c8e6c9", format!("extern {name}")),
 
         IrNodeKind::Nop => {
             // Nop nodes should never reach node_attrs — they are skipped before

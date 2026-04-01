@@ -57,15 +57,8 @@
   name: (identifier_path
     . (identifier) @local.definition))
 
-; `extern const name` — external constant binding, declared but defined elsewhere.
+; `extern name` — external binding, declared but provided by the runtime.
 (extern_declaration
-  kind: "const"
-  name: (identifier_path
-    . (identifier) @local.definition))
-
-; `extern global name` — external global, declared but defined elsewhere.
-(extern_declaration
-  kind: "global"
   name: (identifier_path
     . (identifier) @local.definition))
 

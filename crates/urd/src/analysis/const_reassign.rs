@@ -8,8 +8,8 @@
 //! ## Algorithm
 //!
 //! 1. Walk the outermost `Block`'s direct children and collect the names of
-//!    every `Declaration { kind: Constant, .. }` or
-//!    `ExternDeclaration { kind: Constant, .. }` into a `HashSet<String>`
+//!    every `Declaration { kind: Constant, .. }` or every `ExternDeclaration`
+//!    (all externs are script-non-reassignable) into a `HashSet<String>`
 //!    (`const_names`).
 //! 2. Walk the entire AST.  For every `BinOp { op: Assign, left, .. }` where
 //!    `left` is a bare `Value(IdentPath([name]))` (single-segment ident), check
@@ -112,12 +112,8 @@ fn collect_const_names(ast: &Ast) -> HashSet<String> {
             names.insert(path[0].clone());
         }
 
-        // Extern const declaration
-        if let AstContent::ExternDeclaration {
-            kind: DeclKind::Constant,
-            name,
-            ..
-        } = stmt.content()
+        // Extern declaration — all externs are script-non-reassignable
+        if let AstContent::ExternDeclaration { name, .. } = stmt.content()
             && let AstContent::Value(RuntimeValue::IdentPath(path)) = name.content()
             && path.len() == 1
         {
@@ -397,7 +393,7 @@ label start {
     fn extern_const_reassignment_is_flagged() {
         let ast = parse(
             r#"
-extern const MAX: int
+extern MAX: int
 label start {
   MAX = 999
   end!()
@@ -415,11 +411,11 @@ label start {
     }
 
     #[test]
-    fn extern_global_reassignment_is_not_flagged() {
-        // extern global can be reassigned
+    fn extern_reassignment_is_always_flagged() {
+        // All externs are script-non-reassignable regardless of old kind specifiers
         let ast = parse(
             r#"
-extern global score: int
+extern score: int
 label start {
   score = 42
   end!()
@@ -427,9 +423,12 @@ label start {
 "#,
         );
         let errors = check(&ast);
-        assert!(
-            errors.is_empty(),
-            "extern global should allow reassignment, got: {errors:?}"
-        );
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::ConstReassignment { name, .. } => {
+                assert_eq!(name, "score");
+            }
+            other => panic!("expected ConstReassignment, got: {other:?}"),
+        }
     }
 }

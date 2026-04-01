@@ -1253,12 +1253,8 @@ mod tests {
     #[test]
     fn extern_declaration_registers_type_in_scope() {
         let ctx = make_ctx(&[]);
-        // extern const x: int — then reassign x = true (mismatch)
-        let extern_decl = Ast::extern_decl(
-            crate::parser::ast::DeclKind::Constant,
-            ident("x"),
-            Some(TypeAnnotation::Int),
-        );
+        // extern x: int — then reassign x = true (mismatch)
+        let extern_decl = Ast::extern_decl(ident("x"), Some(TypeAnnotation::Int));
         let assign = Ast::assign_op(ident("x"), bool_lit(true));
         let ast = Ast::block(vec![extern_decl, assign]);
         let errors = check(&ast, &ctx);
@@ -1273,8 +1269,7 @@ mod tests {
     #[test]
     fn extern_declaration_without_annotation_no_error() {
         let ctx = make_ctx(&[]);
-        let extern_decl =
-            Ast::extern_decl(crate::parser::ast::DeclKind::Global, ident("score"), None);
+        let extern_decl = Ast::extern_decl(ident("score"), None);
         let ast = Ast::block(vec![extern_decl]);
         let errors = check(&ast, &ctx);
         assert_no_errors(&errors);

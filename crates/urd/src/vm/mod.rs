@@ -108,8 +108,8 @@ pub enum VmError {
     #[error("not yet implemented: {0}")]
     NotImplemented(String),
 
-    /// A value declared with `extern const` or `extern global` was not injected
-    /// by the host runtime before script execution started.
+    /// A value declared with `extern` was not injected by the host runtime
+    /// before script execution started.
     #[error("extern value '{0}' was not provided by the host runtime before execution")]
     ExternNotProvided(String),
 }
@@ -686,12 +686,13 @@ impl Vm {
 
     /// Inject a runtime-provided extern value into the VM's environment.
     ///
-    /// This must be called for every name declared `extern const` or `extern global`
-    /// in the script **before** the first [`Vm::next`] call.
+    /// This must be called for every name declared `extern` in the script
+    /// **before** the first [`Vm::next`] call. May also be called between steps
+    /// to update a live extern value.
     ///
     /// See [`Environment::provide_extern`] for storage semantics.
-    pub fn provide_extern(&mut self, name: &str, value: RuntimeValue, kind: &DeclKind) {
-        self.state.env.provide_extern(name, value, kind);
+    pub fn provide_extern(&mut self, name: &str, value: RuntimeValue) {
+        self.state.env.provide_extern(name, value);
     }
 }
 
@@ -2073,16 +2074,15 @@ mod tests {
     }
 
     #[test]
-    fn test_extern_const_provided_runs_ok() {
+    fn test_extern_provided_runs_ok() {
         use crate::compiler::Compiler;
         use crate::compiler::loader::parse_source;
-        use crate::parser::ast::DeclKind;
         use crate::runtime::value::RuntimeValue;
         use crate::vm::Vm;
         use crate::vm::registry::DecoratorRegistry;
 
         let src = r#"
-extern const narrator: str
+extern narrator: str
 label start {
     narrator: "Hello"
     end!()
@@ -2094,7 +2094,6 @@ label start {
         vm.provide_extern(
             "narrator",
             RuntimeValue::Str(ParsedString::new_plain("Narrator")),
-            &DeclKind::Constant,
         );
         // Should run without error
         let step = vm.next(None);
@@ -2114,7 +2113,7 @@ label start {
         use crate::vm::registry::DecoratorRegistry;
 
         let src = r#"
-extern const narrator: str
+extern narrator: str
 label start {
     end!()
 }
