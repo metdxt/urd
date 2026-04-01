@@ -163,6 +163,54 @@ impl Document {
 
 // ── Span conversion utilities ────────────────────────────────────────────────
 
+/// Return the UTF-16 *character* column at which the identifier **prefix**
+/// under the cursor starts on its line.
+///
+/// Starting from `byte_offset` in `src` we scan backwards, stopping when we
+/// hit a byte that is not a valid Urd identifier character (`[_a-zA-Z0-9]`).
+/// The returned value is the UTF-16 code-unit count from the beginning of the
+/// line to that start byte — exactly what you need as the `start.character`
+/// of a `TextEdit` range to replace only the typed prefix.
+///
+/// If the cursor is at the beginning of the line (or the character to its left
+/// is not an identifier character) the function returns `pos.character`
+/// unchanged, meaning the replacement range is a zero-width insertion point.
+///
+/// # Example
+/// ```text
+/// "    jump"   (cursor after 'p', byte_offset points one past 'p')
+///  0123456789
+/// ```
+/// The call returns `4` (the `j`), not `0` (the leading spaces).
+pub fn prefix_start_character(src: &str, byte_offset: usize, pos: Position) -> u32 {
+    let bytes = src.as_bytes();
+    let clamped = byte_offset.min(src.len());
+
+    // Walk backwards over identifier characters.
+    let mut start = clamped;
+    while start > 0 {
+        let prev = start - 1;
+        // Only ASCII ident chars matter for Urd; multibyte sequences are never
+        // ident characters so this byte-level check is safe.
+        if bytes[prev].is_ascii_alphanumeric() || bytes[prev] == b'_' {
+            start = prev;
+        } else {
+            break;
+        }
+    }
+
+    if start == clamped {
+        // No identifier prefix — keep cursor column as the start.
+        return pos.character;
+    }
+
+    // Find the byte offset of the beginning of the line that contains `start`.
+    let line_start = src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+
+    // Count UTF-16 code units from line_start to start.
+    src[line_start..start].encode_utf16().count() as u32
+}
+
 /// Convert a chumsky byte-offset [`SimpleSpan`] to an LSP [`Range`].
 ///
 /// LSP positions use *line* / *character* where *character* is a **UTF-16
@@ -249,6 +297,73 @@ pub fn position_to_byte_offset(src: &str, pos: Position) -> usize {
 mod tests {
     use super::*;
     use chumsky::span::Span as _;
+
+    // -- prefix_start_character --------------------------------------------
+
+    #[test]
+    fn prefix_start_char_mid_word() {
+        // "    jump" — cursor after 'p' (char 8, byte 8).
+        let src = "    jump";
+        let pos = Position::new(0, 8);
+        let off = position_to_byte_offset(src, pos);
+        assert_eq!(prefix_start_character(src, off, pos), 4);
+    }
+
+    #[test]
+    fn prefix_start_char_at_word_start() {
+        // Cursor is right before the word — no ident char to the left.
+        let src = "    jump";
+        let pos = Position::new(0, 4);
+        let off = position_to_byte_offset(src, pos);
+        // Nothing to scan back over; should return pos.character unchanged.
+        assert_eq!(prefix_start_character(src, off, pos), 4);
+    }
+
+    #[test]
+    fn prefix_start_char_no_prefix() {
+        // Cursor is at column 0.
+        let src = "jump";
+        let pos = Position::new(0, 0);
+        let off = position_to_byte_offset(src, pos);
+        assert_eq!(prefix_start_character(src, off, pos), 0);
+    }
+
+    #[test]
+    fn prefix_start_char_full_word_at_col0() {
+        // Cursor is right after "jump" at column 0 — prefix starts at 0.
+        let src = "jump";
+        let pos = Position::new(0, 4);
+        let off = position_to_byte_offset(src, pos);
+        assert_eq!(prefix_start_character(src, off, pos), 0);
+    }
+
+    #[test]
+    fn prefix_start_char_second_line() {
+        // "hello\n    jump" — cursor after 'p' on line 1.
+        let src = "hello\n    jump";
+        let pos = Position::new(1, 8);
+        let off = position_to_byte_offset(src, pos);
+        assert_eq!(prefix_start_character(src, off, pos), 4);
+    }
+
+    #[test]
+    fn prefix_start_char_after_dot() {
+        // Dots are not ident chars, so scan stops at the dot.
+        // "foo.bar" — cursor after 'r' (char 7).
+        let src = "foo.bar";
+        let pos = Position::new(0, 7);
+        let off = position_to_byte_offset(src, pos);
+        assert_eq!(prefix_start_character(src, off, pos), 4);
+    }
+
+    #[test]
+    fn prefix_start_char_after_space() {
+        // "foo bar" — cursor after 'r'; prefix is "bar" starting at char 4.
+        let src = "foo bar";
+        let pos = Position::new(0, 7);
+        let off = position_to_byte_offset(src, pos);
+        assert_eq!(prefix_start_character(src, off, pos), 4);
+    }
 
     // -- byte_offset_to_position -------------------------------------------
 

@@ -17,7 +17,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tracing::{debug, info};
 
-use document::{Document, byte_span_to_lsp_range, position_to_byte_offset};
+use document::{Document, byte_span_to_lsp_range, position_to_byte_offset, prefix_start_character};
 use urd::analysis::AnalysisError;
 
 use completion::{TypeContext, completion_items};
@@ -457,13 +457,38 @@ impl LanguageServer for Backend {
 
         debug!("completion: {} candidates generated", candidates.len());
 
+        // Compute the UTF-16 column where the typed prefix starts so that the
+        // TextEdit replaces only the prefix under the cursor (e.g. "jum") and
+        // not the surrounding whitespace / indentation.
+        //
+        // Using `text_edit` instead of `insert_text` is critical: the LSP spec
+        // explicitly states that `insert_text` semantics are client-defined and
+        // may cause editors (including Zed) to replace from column 0 rather
+        // than from the cursor.  When `text_edit` is present, `insert_text` is
+        // ignored, and the editor uses the provided range verbatim.
+        let prefix_start_char = prefix_start_character(&src, byte_offset, pos);
+        let replace_range = Range {
+            start: Position {
+                line: pos.line,
+                character: prefix_start_char,
+            },
+            end: pos,
+        };
+
         let items: Vec<CompletionItem> = candidates
             .into_iter()
             .map(|(name, kind)| CompletionItem {
                 label: name.clone(),
                 kind: Some(urd_symbol_kind_to_completion(&kind)),
                 detail: Some(kind.to_string()),
-                insert_text: Some(name),
+                // `text_edit` takes precedence over `insert_text` per the LSP
+                // spec.  The range covers exactly the typed prefix on the
+                // current line so indentation is preserved.
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: replace_range,
+                    new_text: name,
+                })),
+                insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
                 ..Default::default()
             })
             .collect();
