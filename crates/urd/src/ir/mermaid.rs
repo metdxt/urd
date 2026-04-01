@@ -490,6 +490,7 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             | IrNodeKind::ExitScope { .. }
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::ExternDecl { .. }
             | IrNodeKind::Dialogue { .. } => {
                 let next_raw = graph
                     .graph
@@ -797,6 +798,17 @@ fn mermaid_node_def(
             let raw = format!("def_decorator<br/>@{name} ({} params)", params.len());
             let text = escape_mermaid(&raw);
             format!("{n}[\"{text}\"]:::decoratorDef")
+        }
+
+        // ── ExternDecl ─────────────────────────────────────────────────────
+        IrNodeKind::ExternDecl { name, kind } => {
+            let kw = match kind {
+                crate::parser::ast::DeclKind::Constant => "extern const",
+                crate::parser::ast::DeclKind::Global => "extern global",
+                crate::parser::ast::DeclKind::Variable => "extern let",
+            };
+            let text = escape_mermaid(&format!("{kw} {name}"));
+            format!("{n}[\"{text}\"]:::assign")
         }
 
         // ── Nop ────────────────────────────────────────────────────────────

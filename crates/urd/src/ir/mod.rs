@@ -382,6 +382,21 @@ pub enum IrNodeKind {
         body: crate::parser::ast::Ast,
     },
 
+    /// Validate that a runtime-provided extern value was injected before execution.
+    ///
+    /// When executed, the VM checks that the host called
+    /// [`crate::vm::env::Environment::provide_extern`] for `name` before the first
+    /// [`crate::vm::Vm::next`] call. Returns [`crate::vm::VmError::ExternNotProvided`]
+    /// if the value was not injected.
+    ///
+    /// Continues via a single [`IrEdge::Next`] edge.
+    ExternDecl {
+        /// The extern variable name.
+        name: String,
+        /// [`DeclKind::Constant`] or [`DeclKind::Global`].
+        kind: DeclKind,
+    },
+
     /// A merge point or pre-allocated placeholder.
     ///
     /// Used as a forward-reference during two-pass compilation; the compiler

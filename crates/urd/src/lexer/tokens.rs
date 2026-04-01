@@ -184,6 +184,8 @@ pub enum Token {
     Let,
     #[token("global")]
     Global,
+    #[token("extern")]
+    Extern,
 
     #[token("if")]
     If,
@@ -390,6 +392,12 @@ mod tests {
         assert!(matches!(lex("decorator"), Token::DecoratorKw));
         // "decorators" (with extra chars) must still lex as IdentPath
         assert!(matches!(lex("decorators"), Token::IdentPath(_)));
+    }
+
+    #[test]
+    fn extern_keyword() {
+        assert!(matches!(lex("extern"), Token::Extern));
+        assert!(matches!(lex("external"), Token::IdentPath(_)));
     }
 
     #[test]

@@ -74,6 +74,7 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
 ///
 /// Allowed top-level forms:
 /// - `Declaration` (let / const / global bindings)
+/// - `ExternDeclaration` (extern const / extern global provided by the runtime)
 /// - `EnumDecl`
 /// - `StructDecl`
 /// - `DecoratorDef`
@@ -83,6 +84,7 @@ fn disallowed_description(node: &Ast) -> Option<String> {
     match node.content() {
         // ---- allowed ----
         AstContent::Declaration { .. }
+        | AstContent::ExternDeclaration { .. }
         | AstContent::EnumDecl { .. }
         | AstContent::StructDecl { .. }
         | AstContent::DecoratorDef { .. }
@@ -199,6 +201,26 @@ mod tests {
         let ast = root_block(children);
         let errors = check(&ast);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+    }
+
+    // ---------------------------------------------------------------
+    // ExternDeclaration is allowed at top level
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn extern_declaration_is_allowed() {
+        use crate::parser::ast::DeclKind;
+        let node = spanned(
+            Ast::extern_decl(DeclKind::Constant, ident("narrator"), None),
+            0,
+            20,
+        );
+        let ast = root_block(vec![node]);
+        let errors = check(&ast);
+        assert!(
+            errors.is_empty(),
+            "extern declaration should be allowed at top level, got: {errors:?}"
+        );
     }
 
     // ---------------------------------------------------------------

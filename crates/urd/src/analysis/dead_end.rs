@@ -396,7 +396,8 @@ fn termination_of(
         | AstContent::DecoratorDef { .. }
         | AstContent::Subscript { .. }
         | AstContent::SubscriptAssign { .. }
-        | AstContent::Import { .. } => Termination::Open,
+        | AstContent::Import { .. }
+        | AstContent::ExternDeclaration { .. } => Termination::Open,
     }
 }
 

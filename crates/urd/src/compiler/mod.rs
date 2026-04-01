@@ -730,6 +730,19 @@ impl CompilerState {
                 }
                 Ok(Some(id))
             }
+
+            // ── Extern declaration ──────────────────────────────────────────
+            AstContent::ExternDeclaration { kind, name, .. } => {
+                let var = extract_name(name)?;
+                let id = self.graph.push(IrNodeKind::ExternDecl {
+                    name: var,
+                    kind: kind.clone(),
+                });
+                if let Some(n) = next {
+                    self.graph.add_edge(id, n, IrEdge::Next);
+                }
+                Ok(Some(id))
+            }
         }
     }
 }

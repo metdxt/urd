@@ -8,6 +8,7 @@
 ; ── Keywords ──────────────────────────────────────────────────────────────────
 
 ; Declaration kinds
+"extern" @keyword.storage.modifier
 "const"  @keyword.storage.modifier
 "let"    @keyword.storage.modifier
 "global" @keyword.storage.modifier
@@ -110,6 +111,16 @@
 
 ; `let x = ...` / `global x = ...` — mutable binding
 (declaration
+  name: (identifier_path) @variable.declaration)
+
+; `extern const x` — external constant binding (no initialiser)
+(extern_declaration
+  kind: "const"
+  name: (identifier_path) @constant)
+
+; `extern global x` — external mutable binding (no initialiser)
+(extern_declaration
+  kind: "global"
   name: (identifier_path) @variable.declaration)
 
 ; ── Labels ────────────────────────────────────────────────────────────────────

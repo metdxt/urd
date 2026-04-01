@@ -275,6 +275,22 @@ pub enum AstContent {
         decl_defs: Box<Ast>,
     },
 
+    /// An `extern const` or `extern global` declaration: value provided by the host runtime.
+    ///
+    /// Syntax: `extern const name: Type` or `extern global name: Type`
+    ///
+    /// The type annotation is optional but recommended for linting and autocompletion.
+    /// There is no initialiser — the runtime injects the value before execution via
+    /// [`crate::vm::env::Environment::provide_extern`].
+    ExternDeclaration {
+        /// The declaration kind: only [`DeclKind::Constant`] or [`DeclKind::Global`] are valid.
+        kind: DeclKind,
+        /// The variable name (a single-segment [`AstContent::Value(RuntimeValue::IdentPath)`]).
+        name: Box<Ast>,
+        /// Optional type hint used by static analysis and autocompletion.
+        type_annotation: Option<TypeAnnotation>,
+    },
+
     /// A call to function
     Call {
         /// Function to call, typically Value with identifier node
@@ -583,6 +599,15 @@ impl Ast {
         })
     }
 
+    /// Create an extern declaration node.
+    pub fn extern_decl(kind: DeclKind, name: Ast, type_annotation: Option<TypeAnnotation>) -> Self {
+        Ast::new(AstContent::ExternDeclaration {
+            kind,
+            name: Box::new(name),
+            type_annotation,
+        })
+    }
+
     /// Create declaration type node with an explicit type annotation.
     pub fn typed_decl(kind: DeclKind, name: Ast, annotation: TypeAnnotation, def: Ast) -> Self {
         Ast::new(AstContent::Declaration {
@@ -775,6 +800,8 @@ impl Ast {
                 decl_defs,
                 ..
             } => vec![decl_name, decl_defs],
+
+            AstContent::ExternDeclaration { name, .. } => vec![name],
 
             AstContent::Call { func_path, params } => vec![func_path, params],
 

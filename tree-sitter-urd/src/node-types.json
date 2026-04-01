@@ -116,6 +116,10 @@
         "named": true
       },
       {
+        "type": "extern_declaration",
+        "named": true
+      },
+      {
         "type": "if_statement",
         "named": true
       },
@@ -597,6 +601,46 @@
           {
             "type": "dialogue",
             "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "extern_declaration",
+    "named": true,
+    "fields": {
+      "kind": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "const",
+            "named": false
+          },
+          {
+            "type": "global",
+            "named": false
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier_path",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type_annotation",
+            "named": true
           }
         ]
       }
@@ -1300,11 +1344,11 @@
   },
   {
     "type": "dice",
-    "named": true
+    "named": false
   },
   {
     "type": "dice",
-    "named": false
+    "named": true
   },
   {
     "type": "elif",
@@ -1331,16 +1375,20 @@
     "named": false
   },
   {
+    "type": "extern",
+    "named": false
+  },
+  {
     "type": "false",
     "named": false
   },
   {
     "type": "float",
-    "named": true
+    "named": false
   },
   {
     "type": "float",
-    "named": false
+    "named": true
   },
   {
     "type": "format_spec",
@@ -1392,7 +1440,8 @@
   },
   {
     "type": "line_comment",
-    "named": true
+    "named": true,
+    "extra": true
   },
   {
     "type": "list",

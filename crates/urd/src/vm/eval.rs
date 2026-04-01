@@ -178,6 +178,10 @@ pub fn eval_expr(
         AstContent::StructDecl { .. } => Err(VmError::InvalidExpression(
             "StructDecl cannot appear in expression context".to_string(),
         )),
+
+        AstContent::ExternDeclaration { .. } => Err(VmError::InvalidExpression(
+            "ExternDeclaration cannot appear in expression context".to_string(),
+        )),
     }
 }
 

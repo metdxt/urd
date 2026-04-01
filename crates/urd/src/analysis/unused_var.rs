@@ -150,6 +150,9 @@ fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
         // ── LetCall: `let x = jump label and return` — exempt ────────────
         AstContent::LetCall { .. } => {}
 
+        // ── Extern declaration: provided by runtime, not tracked ─────────────────
+        AstContent::ExternDeclaration { .. } => {}
+
         // ── Declaration ──────────────────────────────────────────────────
         AstContent::Declaration {
             kind,

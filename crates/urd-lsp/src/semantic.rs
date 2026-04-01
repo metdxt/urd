@@ -589,7 +589,8 @@ fn walk_ast_content(content: &AstContent, out: &mut Vec<Symbol>) {
         | AstContent::StructDecl { .. }
         | AstContent::DecoratorDef { .. }
         | AstContent::Import { .. }
-        | AstContent::LetCall { .. } => {}
+        | AstContent::LetCall { .. }
+        | AstContent::ExternDeclaration { .. } => {}
     }
 }
 
@@ -2004,6 +2005,19 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
             emit_semantic_tokens(object, out);
             emit_semantic_tokens(key, out);
             emit_semantic_tokens(value, out);
+        }
+
+        AstContent::ExternDeclaration { name, .. } => {
+            // "extern" keyword at start, then the variable name.
+            let kw_len = "extern".len().min(len);
+            if len > 0 {
+                out.push(SemanticTokenInfo {
+                    start: span.start,
+                    length: kw_len,
+                    token_type: SemanticTokenType::Keyword,
+                });
+            }
+            emit_semantic_tokens(name, out);
         }
     }
 }

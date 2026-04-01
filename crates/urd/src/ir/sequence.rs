@@ -325,6 +325,7 @@ fn decode_node(
         | IrNodeKind::Eval { .. }
         | IrNodeKind::DefineEnum { .. }
         | IrNodeKind::DefineScriptDecorator { .. }
+        | IrNodeKind::ExternDecl { .. }
         | IrNodeKind::EnterScope { .. }
         | IrNodeKind::ExitScope { .. } => Action::Skip(next_of(graph, node_idx)),
 

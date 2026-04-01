@@ -303,6 +303,37 @@ pub fn declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         .boxed()
 }
 
+/// Parser for extern declarations. Parses:
+///
+/// - `extern const ident`
+/// - `extern global ident`
+/// - `extern const ident: Type`
+/// - `extern global ident: Type`
+///
+/// No initialiser is parsed — the value is provided by the host runtime.
+pub fn extern_declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
+    let extern_kind = select! {
+        Token::Const => DeclKind::Constant,
+        Token::Global => DeclKind::Global,
+    }
+    .labelled("const or global");
+
+    let ident = select! {
+        Token::IdentPath(path) if path.len() == 1 => Ast::value(RuntimeValue::IdentPath(path))
+    }
+    .labelled("variable name");
+
+    just(Token::Extern)
+        .ignore_then(extern_kind)
+        .then(ident)
+        .then(type_annotation().or_not())
+        .map_with(|((kind, name), annotation), extra| {
+            Ast::extern_decl(kind, name, annotation).with_span(extra.span())
+        })
+        .labelled("extern declaration")
+        .boxed()
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -434,5 +465,72 @@ mod tests {
     #[test]
     fn test_type_annotation_bare_colon_fails() {
         assert!(parse_type_annotation(":").is_err());
+    }
+
+    #[test]
+    fn test_extern_const_no_annotation() {
+        use crate::parser::ast::{AstContent, DeclKind};
+        let result = parse_test!(extern_declaration(), "extern const narrator");
+        assert!(
+            result.is_ok(),
+            "extern const without type should parse: {:?}",
+            result
+        );
+        let ast = result.unwrap();
+        assert!(matches!(
+            ast.content(),
+            AstContent::ExternDeclaration {
+                kind: DeclKind::Constant,
+                type_annotation: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_extern_global_with_annotation() {
+        use crate::parser::ast::{AstContent, DeclKind, TypeAnnotation};
+        let result = parse_test!(extern_declaration(), "extern global score: int");
+        assert!(
+            result.is_ok(),
+            "extern global with type should parse: {:?}",
+            result
+        );
+        let ast = result.unwrap();
+        assert!(matches!(
+            ast.content(),
+            AstContent::ExternDeclaration {
+                kind: DeclKind::Global,
+                type_annotation: Some(TypeAnnotation::Int),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_extern_const_named_type() {
+        use crate::parser::ast::{AstContent, DeclKind, TypeAnnotation};
+        let result = parse_test!(extern_declaration(), "extern const narrator: Character");
+        assert!(
+            result.is_ok(),
+            "extern const with named type should parse: {:?}",
+            result
+        );
+        let ast = result.unwrap();
+        assert!(matches!(
+            ast.content(),
+            AstContent::ExternDeclaration {
+                kind: DeclKind::Constant,
+                type_annotation: Some(TypeAnnotation::Named(_)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_extern_let_fails() {
+        // `extern let` is not valid syntax (only const and global)
+        let result = parse_test!(extern_declaration(), "extern let narrator");
+        assert!(result.is_err(), "extern let should not parse");
     }
 }

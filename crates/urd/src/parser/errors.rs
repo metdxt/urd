@@ -53,6 +53,7 @@ fn format_token(token: &Token) -> String {
         Token::Const => "'const'".to_owned(),
         Token::Let => "'let'".to_owned(),
         Token::Global => "'global'".to_owned(),
+        Token::Extern => "'extern'".to_owned(),
         Token::If => "'if'".to_owned(),
         Token::Else => "'else'".to_owned(),
         Token::Elif => "'elif'".to_owned(),

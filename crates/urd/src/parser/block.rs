@@ -12,7 +12,7 @@ use crate::{
             Ast, Decorator, DecoratorParam, EventConstraint, ImportSymbol, MatchArm, MatchPattern,
             StructField,
         },
-        expr::{comma_separated_exprs, declaration, expr, type_annotation},
+        expr::{comma_separated_exprs, declaration, expr, extern_declaration, type_annotation},
     },
     runtime::value::RuntimeValue,
 };
@@ -265,6 +265,7 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
     terminator_statement()
         .or(let_call_statement())
         .or(assignment())
+        .or(extern_declaration())
         .or(declaration())
         .or(if_parser(block.clone()))
         .or(return_statement())
@@ -505,6 +506,11 @@ pub fn match_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 /// Parser for decorator definitions: `decorator name<event: kind>(params...) { body }`
 pub fn decorator_def<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     decorator_def_parser(code_block()).boxed()
+}
+
+/// Parser for extern declarations (`extern const/global name: Type`)
+pub fn extern_decl<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
+    extern_declaration().boxed()
 }
 
 fn menu_parser<'tok, I: UrdInput<'tok>>(

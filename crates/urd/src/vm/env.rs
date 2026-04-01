@@ -191,6 +191,70 @@ impl Environment {
     pub fn enums(&self) -> &HashMap<String, Vec<String>> {
         &self.enums
     }
+
+    /// Inject a runtime-provided extern value into the environment.
+    ///
+    /// Must be called by the host runtime **before** the first [`crate::vm::Vm::next`]
+    /// call for every name declared with `extern const` or `extern global` in the script.
+    ///
+    /// - [`DeclKind::Constant`] — stores in the root scope and marks the name as
+    ///   immutable (same semantics as a script-level `const`).
+    /// - [`DeclKind::Global`] — stores in the global map (same semantics as `global`).
+    ///
+    /// # Panics
+    /// Panics in debug builds if `kind` is [`DeclKind::Variable`] — `extern let`
+    /// is not a valid construct.
+    pub fn provide_extern(&mut self, name: &str, value: RuntimeValue, kind: &DeclKind) {
+        match kind {
+            DeclKind::Global => {
+                self.globals.insert(name.to_string(), value);
+            }
+            DeclKind::Constant => {
+                // Store in the root (outermost) scope so it is visible everywhere.
+                if let Some(root_scope) = self.scopes.first_mut() {
+                    root_scope.insert(name.to_string(), value);
+                }
+                self.constants.insert(name.to_string());
+            }
+            DeclKind::Variable => {
+                debug_assert!(false, "provide_extern: DeclKind::Variable is not supported");
+            }
+        }
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provide_extern_const_is_immutable() {
+        let mut env = Environment::new();
+        env.provide_extern("MAX", RuntimeValue::Int(100), &DeclKind::Constant);
+        // Should be readable
+        assert!(env.get("MAX").is_ok());
+        assert_eq!(env.get("MAX").unwrap(), RuntimeValue::Int(100));
+        // Should be marked as constant (can't be overwritten)
+        assert!(
+            env.set("MAX", RuntimeValue::Int(999), &DeclKind::Variable)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn provide_extern_global_is_mutable() {
+        let mut env = Environment::new();
+        env.provide_extern("score", RuntimeValue::Int(0), &DeclKind::Global);
+        assert!(env.get("score").is_ok());
+        // Global externs can be reassigned via set
+        assert!(
+            env.set("score", RuntimeValue::Int(42), &DeclKind::Global)
+                .is_ok()
+        );
+        assert_eq!(env.get("score").unwrap(), RuntimeValue::Int(42));
+    }
 }
 
 // ─── CallFrame ────────────────────────────────────────────────────────────────

@@ -8,7 +8,8 @@
 //! ## Algorithm
 //!
 //! 1. Walk the outermost `Block`'s direct children and collect the names of
-//!    every `Declaration { kind: Constant, .. }` into a `HashSet<String>`
+//!    every `Declaration { kind: Constant, .. }` or
+//!    `ExternDeclaration { kind: Constant, .. }` into a `HashSet<String>`
 //!    (`const_names`).
 //! 2. Walk the entire AST.  For every `BinOp { op: Assign, left, .. }` where
 //!    `left` is a bare `Value(IdentPath([name]))` (single-segment ident), check
@@ -99,12 +100,25 @@ fn collect_const_names(ast: &Ast) -> HashSet<String> {
     let mut names = HashSet::new();
 
     for stmt in stmts {
+        // Regular const declaration
         if let AstContent::Declaration {
             kind: DeclKind::Constant,
             decl_name,
             ..
         } = stmt.content()
             && let AstContent::Value(RuntimeValue::IdentPath(path)) = decl_name.content()
+            && path.len() == 1
+        {
+            names.insert(path[0].clone());
+        }
+
+        // Extern const declaration
+        if let AstContent::ExternDeclaration {
+            kind: DeclKind::Constant,
+            name,
+            ..
+        } = stmt.content()
+            && let AstContent::Value(RuntimeValue::IdentPath(path)) = name.content()
             && path.len() == 1
         {
             names.insert(path[0].clone());
@@ -373,5 +387,49 @@ label start {
         let ast = Ast::value(RuntimeValue::Int(42));
         let errors = check(&ast);
         assert!(errors.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Extern declaration cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extern_const_reassignment_is_flagged() {
+        let ast = parse(
+            r#"
+extern const MAX: int
+label start {
+  MAX = 999
+  end!()
+}
+"#,
+        );
+        let errors = check(&ast);
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::ConstReassignment { name, .. } => {
+                assert_eq!(name, "MAX");
+            }
+            other => panic!("expected ConstReassignment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extern_global_reassignment_is_not_flagged() {
+        // extern global can be reassigned
+        let ast = parse(
+            r#"
+extern global score: int
+label start {
+  score = 42
+  end!()
+}
+"#,
+        );
+        let errors = check(&ast);
+        assert!(
+            errors.is_empty(),
+            "extern global should allow reassignment, got: {errors:?}"
+        );
     }
 }

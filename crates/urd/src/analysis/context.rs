@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::parser::ast::{Ast, AstContent, DeclKind, StructField, TypeAnnotation, walk_ast};
+use crate::parser::ast::{Ast, AstContent, StructField, TypeAnnotation, walk_ast};
 use crate::runtime::value::RuntimeValue;
 
 // ---------------------------------------------------------------------------
@@ -159,7 +159,8 @@ fn collect_structs(root: &Ast, structs: &mut HashMap<String, Vec<StructField>>) 
 }
 
 /// Examines the *direct* children of the outermost block in `root` and records
-/// every [`AstContent::Declaration`] that carries a type annotation into `vars`.
+/// every [`AstContent::Declaration`] or [`AstContent::ExternDeclaration`] that
+/// carries a type annotation into `vars`.
 ///
 /// Two root shapes are accepted:
 /// - `root` is itself a `Block` -- its direct children are scanned.
@@ -178,21 +179,26 @@ fn collect_top_level_vars(root: &Ast, vars: &mut HashMap<String, TypeAnnotation>
     };
 
     for stmt in stmts {
-        if let AstContent::Declaration {
-            decl_name,
-            type_annotation: Some(ann),
-            kind,
-            ..
-        } = stmt.content()
-        {
-            // Accept global, const, and let declarations equally.
-            // The match is here only to satisfy the exhaustiveness checker.
-            match kind {
-                DeclKind::Global | DeclKind::Constant | DeclKind::Variable => {}
+        match stmt.content() {
+            AstContent::Declaration {
+                decl_name,
+                type_annotation: Some(ann),
+                ..
+            } => {
+                if let Some(name) = extract_decl_name(decl_name) {
+                    vars.insert(name, ann.clone());
+                }
             }
-            if let Some(name) = extract_decl_name(decl_name) {
-                vars.insert(name, ann.clone());
+            AstContent::ExternDeclaration {
+                name,
+                type_annotation: Some(ann),
+                ..
+            } => {
+                if let Some(var_name) = extract_decl_name(name) {
+                    vars.insert(var_name, ann.clone());
+                }
             }
+            _ => {}
         }
     }
 }
@@ -445,6 +451,29 @@ mod tests {
         let root = Ast::labeled_block("main".to_owned(), Ast::block(vec![decl]));
         let ctx = AnalysisContext::build(&root);
         assert_eq!(ctx.top_level_vars.get("x"), Some(&TypeAnnotation::Float));
+    }
+
+    #[test]
+    fn build_collects_typed_extern_declaration() {
+        let decl = Ast::extern_decl(
+            DeclKind::Constant,
+            ident("narrator"),
+            Some(TypeAnnotation::Named(vec!["Character".to_owned()])),
+        );
+        let root = Ast::block(vec![decl]);
+        let ctx = AnalysisContext::build(&root);
+        assert_eq!(
+            ctx.top_level_vars.get("narrator"),
+            Some(&TypeAnnotation::Named(vec!["Character".to_owned()]))
+        );
+    }
+
+    #[test]
+    fn build_ignores_untyped_extern_declaration() {
+        let decl = Ast::extern_decl(DeclKind::Constant, ident("narrator"), None);
+        let root = Ast::block(vec![decl]);
+        let ctx = AnalysisContext::build(&root);
+        assert!(!ctx.top_level_vars.contains_key("narrator"));
     }
 
     // -----------------------------------------------------------------------

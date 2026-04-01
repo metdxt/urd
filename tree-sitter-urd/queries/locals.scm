@@ -57,6 +57,18 @@
   name: (identifier_path
     . (identifier) @local.definition))
 
+; `extern const name` — external constant binding, declared but defined elsewhere.
+(extern_declaration
+  kind: "const"
+  name: (identifier_path
+    . (identifier) @local.definition))
+
+; `extern global name` — external global, declared but defined elsewhere.
+(extern_declaration
+  kind: "global"
+  name: (identifier_path
+    . (identifier) @local.definition))
+
 ; `let name = jump target and return`  — subroutine-call result binding.
 (let_call_statement
   name: (identifier) @local.definition)

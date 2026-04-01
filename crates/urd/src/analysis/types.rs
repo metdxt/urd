@@ -265,6 +265,20 @@ fn check_node(
             check_node(body, ctx, span, scope, errors);
         }
 
+        // ── Extern declaration ────────────────────────────────────────────
+        AstContent::ExternDeclaration {
+            name,
+            type_annotation,
+            ..
+        } => {
+            // No initialiser to type-check — we trust the runtime to provide a
+            // correctly-typed value. Just register the type so subsequent
+            // assignments to this variable can be validated.
+            if let (Some(ann), Some(var_name)) = (type_annotation, extract_decl_name(name)) {
+                scope.declare(var_name, ann.clone());
+            }
+        }
+
         // ── Leaf / no-op nodes ────────────────────────────────────────────
         AstContent::Value(_)
         | AstContent::Return { value: None }
@@ -1232,5 +1246,37 @@ mod tests {
         let outer_decl = typed_decl("x", TypeAnnotation::Int, int_lit(0));
         let ast = Ast::block(vec![outer_decl, inner_block]);
         assert_no_errors(&check(&ast, &ctx));
+    }
+
+    // ── Extern declaration ────────────────────────────────────────────────────
+
+    #[test]
+    fn extern_declaration_registers_type_in_scope() {
+        let ctx = make_ctx(&[]);
+        // extern const x: int — then reassign x = true (mismatch)
+        let extern_decl = Ast::extern_decl(
+            crate::parser::ast::DeclKind::Constant,
+            ident("x"),
+            Some(TypeAnnotation::Int),
+        );
+        let assign = Ast::assign_op(ident("x"), bool_lit(true));
+        let ast = Ast::block(vec![extern_decl, assign]);
+        let errors = check(&ast, &ctx);
+        // The assign should produce a TypeMismatch because x is typed Int
+        assert_eq!(errors.len(), 1, "expected 1 TypeMismatch, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::TypeMismatch { variable, .. } => assert_eq!(variable, "x"),
+            other => panic!("expected TypeMismatch, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extern_declaration_without_annotation_no_error() {
+        let ctx = make_ctx(&[]);
+        let extern_decl =
+            Ast::extern_decl(crate::parser::ast::DeclKind::Global, ident("score"), None);
+        let ast = Ast::block(vec![extern_decl]);
+        let errors = check(&ast, &ctx);
+        assert_no_errors(&errors);
     }
 }

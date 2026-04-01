@@ -82,6 +82,7 @@ module.exports = grammar({
     _statement: ($) =>
       choice(
         $.declaration,
+        $.extern_declaration,
         $.let_call_statement,
         $.assignment,
         $.subscript_assignment,
@@ -456,6 +457,14 @@ module.exports = grammar({
         optional(field("type", $.type_annotation)),
         "=",
         field("value", $._expr),
+      ),
+
+    extern_declaration: ($) =>
+      seq(
+        "extern",
+        field("kind", choice("const", "global")),
+        field("name", $.identifier_path),
+        optional(field("type", $.type_annotation)),
       ),
 
     // -----------------------------------------------------------------------

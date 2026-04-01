@@ -198,6 +198,7 @@ fn check_node(
         | AstContent::EnumDecl { .. }
         | AstContent::StructDecl { .. }
         | AstContent::Import { .. }
+        | AstContent::ExternDeclaration { .. }
         | AstContent::Return { value: None } => {}
     }
 }

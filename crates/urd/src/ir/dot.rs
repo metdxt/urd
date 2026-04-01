@@ -440,6 +440,7 @@ pub fn render_dot(graph: &IrGraph) -> String {
             | IrNodeKind::ExitScope { .. }
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::ExternDecl { .. }
             | IrNodeKind::Dialogue { .. } => {
                 let next_idx = graph
                     .graph
@@ -785,6 +786,15 @@ fn node_attrs(
             "#E6E6FA",
             format!("def_decorator\n@{name} ({} params)", params.len()),
         ),
+
+        IrNodeKind::ExternDecl { name, kind } => {
+            let kw = match kind {
+                crate::parser::ast::DeclKind::Constant => "extern const",
+                crate::parser::ast::DeclKind::Global => "extern global",
+                crate::parser::ast::DeclKind::Variable => "extern let",
+            };
+            ("box", "#c8e6c9", format!("{kw} {name}"))
+        }
 
         IrNodeKind::Nop => {
             // Nop nodes should never reach node_attrs — they are skipped before

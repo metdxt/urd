@@ -107,6 +107,11 @@ pub enum VmError {
     /// A language feature that is not yet implemented was encountered.
     #[error("not yet implemented: {0}")]
     NotImplemented(String),
+
+    /// A value declared with `extern const` or `extern global` was not injected
+    /// by the host runtime before script execution started.
+    #[error("extern value '{0}' was not provided by the host runtime before execution")]
+    ExternNotProvided(String),
 }
 
 // ─── Decorator validation helper ─────────────────────────────────────────────
@@ -560,6 +565,15 @@ impl Vm {
                     state.cursor = next_of(graph, node_idx);
                 }
 
+                // ── Extern declaration validation ────────────────────────────
+                IrNodeKind::ExternDecl { name, .. } => {
+                    // Verify the host runtime injected a value for this extern.
+                    if state.env.get(name).is_err() {
+                        return VmStep::Error(VmError::ExternNotProvided(name.clone()));
+                    }
+                    state.cursor = next_of(graph, node_idx);
+                }
+
                 // ── Dialogue event ───────────────────────────────────────────
                 IrNodeKind::Dialogue {
                     speakers,
@@ -668,6 +682,16 @@ impl Vm {
     /// Returns a reference to the compiled [`IrGraph`].
     pub fn graph(&self) -> &IrGraph {
         &self.graph
+    }
+
+    /// Inject a runtime-provided extern value into the VM's environment.
+    ///
+    /// This must be called for every name declared `extern const` or `extern global`
+    /// in the script **before** the first [`Vm::next`] call.
+    ///
+    /// See [`Environment::provide_extern`] for storage semantics.
+    pub fn provide_extern(&mut self, name: &str, value: RuntimeValue, kind: &DeclKind) {
+        self.state.env.provide_extern(name, value, kind);
     }
 }
 
@@ -2046,5 +2070,74 @@ mod tests {
             has_jump,
             "plain `jump label` must emit a Jump node; graph = {graph:?}"
         );
+    }
+
+    #[test]
+    fn test_extern_const_provided_runs_ok() {
+        use crate::compiler::Compiler;
+        use crate::compiler::loader::parse_source;
+        use crate::parser::ast::DeclKind;
+        use crate::runtime::value::RuntimeValue;
+        use crate::vm::Vm;
+        use crate::vm::registry::DecoratorRegistry;
+
+        let src = r#"
+extern const narrator: str
+label start {
+    narrator: "Hello"
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile(&ast).expect("compile");
+        let mut vm = Vm::new(graph, DecoratorRegistry::default()).expect("vm");
+        vm.provide_extern(
+            "narrator",
+            RuntimeValue::Str(ParsedString::new_plain("Narrator")),
+            &DeclKind::Constant,
+        );
+        // Should run without error
+        let step = vm.next(None);
+        assert!(
+            !matches!(step, VmStep::Error(_)),
+            "unexpected error: {:?}",
+            step
+        );
+    }
+
+    #[test]
+    fn test_extern_not_provided_returns_error() {
+        use crate::compiler::Compiler;
+        use crate::compiler::loader::parse_source;
+        use crate::vm::Vm;
+        use crate::vm::VmError;
+        use crate::vm::registry::DecoratorRegistry;
+
+        let src = r#"
+extern const narrator: str
+label start {
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile(&ast).expect("compile");
+        let mut vm = Vm::new(graph, DecoratorRegistry::default()).expect("vm");
+        // Do NOT call provide_extern — should error
+
+        // Step until we hit an error or end
+        let mut found_error = false;
+        for _ in 0..10 {
+            match vm.next(None) {
+                VmStep::Error(VmError::ExternNotProvided(name)) => {
+                    assert_eq!(name, "narrator");
+                    found_error = true;
+                    break;
+                }
+                VmStep::Error(e) => panic!("unexpected error: {:?}", e),
+                VmStep::Ended => break,
+                VmStep::Event(_) => {}
+            }
+        }
+        assert!(found_error, "expected ExternNotProvided error");
     }
 }
