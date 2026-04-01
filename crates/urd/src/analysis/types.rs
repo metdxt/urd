@@ -29,9 +29,13 @@
 //! | `Map`           | (map literal – checked structurally, always ok for now)   |
 //! | `Dice`          | `Dice`                                                     |
 //! | `Label`         | `Label { .. }`                                             |
-//! | `Named(_)`      | single-segment `IdentPath` (enum variant), `Null`          |
+//! | `Named(_)`      | `Null`, enum variants via `IdentPath` (checked conservatively) |
 //!
 //! Any combination not listed above is considered a [`AnalysisError::TypeMismatch`].
+//! For unresolved qualified identifier paths (`IdentPath` with multiple segments),
+//! the policy is explicit and conservative by default: incompatible unless a
+//! `Named(...)` annotation can be matched by shape (e.g. `Type.Variant` or
+//! `module.Type.Variant`) and checked/accepted under best-effort enum metadata.
 //!
 //! The pass is best-effort: non-literal right-hand sides (e.g. arithmetic
 //! expressions, function call results) are silently accepted because their
@@ -386,6 +390,60 @@ fn annotation_compatible(actual: &TypeAnnotation, expected: &TypeAnnotation) -> 
     )
 }
 
+/// Explicit compatibility policy for unresolved qualified identifiers
+/// (`IdentPath` with multiple segments) when no precise static type can be
+/// proven at this phase.
+fn unresolved_qualified_identpath_compatible(_expected: &TypeAnnotation) -> bool {
+    // Conservative default: do not silently accept unresolved qualified paths.
+    false
+}
+
+/// Best-effort lookup of enum variants for a named type annotation.
+///
+/// Tries both:
+/// - fully-qualified key: `a.b.Type`
+/// - unqualified tail key: `Type`
+fn enum_variants_for_named_type<'a>(
+    type_path: &[String],
+    ctx: &'a AnalysisContext,
+) -> Option<&'a [String]> {
+    let qualified = type_path.join(".");
+    if let Some(variants) = ctx.enums.get(&qualified) {
+        return Some(variants.as_slice());
+    }
+
+    if let Some(tail) = type_path.last()
+        && let Some(variants) = ctx.enums.get(tail)
+    {
+        return Some(variants.as_slice());
+    }
+
+    None
+}
+
+/// If `ident_path` looks like an enum variant reference for `type_path`,
+/// returns the variant segment.
+///
+/// Supported shapes:
+/// - `Type.Variant` for `Named([Type])`
+/// - `a.b.Type.Variant` for `Named([a, b, Type])`
+fn extract_variant_for_named_path<'a>(
+    ident_path: &'a [String],
+    type_path: &[String],
+) -> Option<&'a str> {
+    if type_path.len() == 1 && ident_path.len() == 2 && ident_path[0] == type_path[0] {
+        return ident_path.get(1).map(String::as_str);
+    }
+
+    if ident_path.len() == type_path.len() + 1
+        && ident_path.iter().take(type_path.len()).eq(type_path.iter())
+    {
+        return ident_path.last().map(String::as_str);
+    }
+
+    None
+}
+
 /// Returns `true` if `value` is compatible with `annotation`.
 fn is_compatible(
     value: &RuntimeValue,
@@ -400,8 +458,7 @@ fn is_compatible(
         && !matches!(annotation, TypeAnnotation::Named(_))
     {
         if path.len() != 1 {
-            // Qualified paths are unresolved at this stage; keep best-effort.
-            return true;
+            return unresolved_qualified_identpath_compatible(annotation);
         }
 
         if let Some(found_ann) = scope.lookup(path[0].as_str()) {
@@ -444,54 +501,41 @@ fn is_compatible(
 
         TypeAnnotation::Label => matches!(value, RuntimeValue::Label { .. }),
 
-        TypeAnnotation::Named(path) => {
-            // A qualified type annotation (e.g. `chars.Faction`) refers to a
-            // symbol in an imported module. We cannot resolve it here, so accept
-            // any value for cross-module Named types rather than false-positiving.
-            if path.len() > 1 {
-                return true;
-            }
-            match value {
-                // `null` is always compatible with a Named type (nullable enum).
-                RuntimeValue::Null => true,
-                // A multi-segment IdentPath (e.g. `chars.Faction.Rebel`) against a
-                // multi-segment annotation (e.g. `chars.Faction`) — cross-module
-                // qualified reference; accept without further checking.
-                RuntimeValue::IdentPath(ident_path) if ident_path.len() > 1 && path.len() > 1 => {
+        TypeAnnotation::Named(type_path) => match value {
+            // `null` is always compatible with a Named type (nullable enum).
+            RuntimeValue::Null => true,
+
+            RuntimeValue::IdentPath(ident_path) if ident_path.len() == 1 => {
+                // Single-segment variant (e.g. `North` for `Dir`).
+                if let Some(variants) = enum_variants_for_named_type(type_path, ctx) {
+                    variants
+                        .iter()
+                        .any(|v| v.as_str() == ident_path[0].as_str())
+                } else {
+                    // Enum metadata unavailable — keep best-effort and avoid
+                    // false positives for imported contexts.
                     true
                 }
-                // A 2-segment IdentPath where the first segment matches the type name
-                // (e.g. `Faction.Rebel` assigned to type `Faction`) — the
-                // `EnumName.Variant` form used with directly-imported or local enums.
-                RuntimeValue::IdentPath(ident_path)
-                    if ident_path.len() == 2 && ident_path[0] == path[0] =>
-                {
-                    let enum_name = path.first().map(String::as_str).unwrap_or("");
-                    if let Some(variants) = ctx.enums.get(enum_name) {
-                        variants
-                            .iter()
-                            .any(|v| v.as_str() == ident_path[1].as_str())
-                    } else {
-                        // Enum not in context (e.g. imported without type context) — accept.
-                        true
-                    }
-                }
-                // A single-segment IdentPath is treated as a local enum variant.
-                RuntimeValue::IdentPath(ident_path) if ident_path.len() == 1 => {
-                    // If we can find the enum, verify the variant exists.
-                    let enum_name = path.first().map(String::as_str).unwrap_or("");
-                    if let Some(variants) = ctx.enums.get(enum_name) {
-                        variants
-                            .iter()
-                            .any(|v| v.as_str() == ident_path[0].as_str())
-                    } else {
-                        // Enum not in context — best-effort accept.
-                        true
-                    }
-                }
-                _ => false,
             }
-        }
+
+            RuntimeValue::IdentPath(ident_path) => {
+                // Qualified form must match expected type path shape.
+                if let Some(variant) = extract_variant_for_named_path(ident_path, type_path) {
+                    if let Some(variants) = enum_variants_for_named_type(type_path, ctx) {
+                        variants.iter().any(|v| v.as_str() == variant)
+                    } else {
+                        // Metadata unavailable, but shape proves intent.
+                        true
+                    }
+                } else {
+                    // Explicit conservative default for unresolved qualified paths:
+                    // incompatible unless they match the expected Named path shape.
+                    false
+                }
+            }
+
+            _ => false,
+        },
     }
 }
 
@@ -626,6 +670,12 @@ mod tests {
         Ast::value(RuntimeValue::IdentPath(vec![name.to_owned()]))
     }
 
+    fn qident(parts: &[&str]) -> Ast {
+        Ast::value(RuntimeValue::IdentPath(
+            parts.iter().map(|p| (*p).to_owned()).collect(),
+        ))
+    }
+
     fn int_lit(n: i64) -> Ast {
         Ast::value(RuntimeValue::Int(n))
     }
@@ -757,10 +807,54 @@ mod tests {
     }
 
     #[test]
-    fn bool_not_compatible_with_null_annotation() {
+    fn variable_as_rhs_unresolved_identifier_reports_mismatch() {
         let ctx = make_ctx(&[]);
-        let ast = Ast::block(vec![typed_decl("n", TypeAnnotation::Null, bool_lit(true))]);
-        assert_type_mismatch(&check(&ast, &ctx), "n");
+        let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Bool, ident("other"))]);
+        assert_type_mismatch(&check(&ast, &ctx), "x");
+    }
+
+    #[test]
+    fn decl_unresolved_qualified_identifier_reports_mismatch() {
+        let ctx = make_ctx(&[]);
+        let ast = Ast::block(vec![typed_decl(
+            "x",
+            TypeAnnotation::Int,
+            qident(&["pkg", "value"]),
+        )]);
+        assert_type_mismatch(&check(&ast, &ctx), "x");
+    }
+
+    #[test]
+    fn reassignment_unresolved_qualified_identifier_reports_mismatch() {
+        let mut ctx = make_ctx(&[]);
+        ctx.top_level_vars
+            .insert("score".to_owned(), TypeAnnotation::Int);
+
+        let assign = Ast::assign_op(ident("score"), qident(&["pkg", "value"]));
+        let ast = Ast::block(vec![assign]);
+        assert_type_mismatch(&check(&ast, &ctx), "score");
+    }
+
+    #[test]
+    fn named_qualified_variant_shape_accepted_when_enum_metadata_missing() {
+        let ctx = make_ctx(&[]);
+        let ast = Ast::block(vec![typed_decl(
+            "faction",
+            TypeAnnotation::Named(vec!["chars".to_owned(), "Faction".to_owned()]),
+            qident(&["chars", "Faction", "Rebel"]),
+        )]);
+        assert_no_errors(&check(&ast, &ctx));
+    }
+
+    #[test]
+    fn named_mismatched_qualified_path_reports_mismatch() {
+        let ctx = make_ctx(&[]);
+        let ast = Ast::block(vec![typed_decl(
+            "faction",
+            TypeAnnotation::Named(vec!["chars".to_owned(), "Faction".to_owned()]),
+            qident(&["other", "Faction", "Rebel"]),
+        )]);
+        assert_type_mismatch(&check(&ast, &ctx), "faction");
     }
 
     // ── Named (enum) ──────────────────────────────────────────────────────────

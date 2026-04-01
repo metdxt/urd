@@ -342,8 +342,9 @@ impl WorkspaceIndex {
 /// Recursively walk `ast` and collect every `StructDecl` and `EnumDecl` into
 /// the provided maps.
 ///
-/// Each name is inserted under two keys:
+/// Each name is inserted under:
 /// - a qualified key `"alias.Name"` — for references written as `chars.Character`
+///   (only when `alias` is non-empty)
 /// - an unqualified key `"Name"` — for bare references
 ///
 /// Existing entries are never overwritten (first-write-wins), so caller order
@@ -362,17 +363,23 @@ fn collect_type_defs_from_ast(
             }
         }
         AstContent::StructDecl { name, fields } => {
-            // Store under both qualified ("chars.Character") and unqualified ("Character") keys.
-            let qualified = format!("{alias}.{name}");
-            structs.entry(qualified).or_insert_with(|| fields.clone());
+            // Store under qualified ("chars.Character") and unqualified
+            // ("Character") keys, but never generate malformed ".Character".
+            if !alias.is_empty() {
+                let qualified = format!("{alias}.{name}");
+                structs.entry(qualified).or_insert_with(|| fields.clone());
+            }
             structs
                 .entry(name.clone())
                 .or_insert_with(|| fields.clone());
         }
         AstContent::EnumDecl { name, variants } => {
             // `variants` is already a `Vec<String>` — just clone it directly.
-            let qualified = format!("{alias}.{name}");
-            enums.entry(qualified).or_insert_with(|| variants.clone());
+            // Avoid malformed ".Faction" when alias is empty.
+            if !alias.is_empty() {
+                let qualified = format!("{alias}.{name}");
+                enums.entry(qualified).or_insert_with(|| variants.clone());
+            }
             enums
                 .entry(name.clone())
                 .or_insert_with(|| variants.clone());
@@ -1095,6 +1102,71 @@ mod tests {
         assert!(
             enums.contains_key("Faction"),
             "whole-module import must expose 'Faction' enum"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn imported_type_context_skips_dot_prefixed_keys_when_alias_is_empty() {
+        let dir = tmp_dir();
+
+        write_tmp(
+            &dir,
+            "chars.urd",
+            "struct Character {\n    name: str\n}\n\
+             enum Faction {\n    Guild\n}\n",
+        );
+
+        // main.urd just needs to exist on disk so import resolution has a base dir.
+        let main_uri = write_tmp(&dir, "main.urd", "label start {\n  end!()\n}\n");
+
+        // Build an AST with a whole-module import whose alias is intentionally empty.
+        // This is a regression guard: type-context key generation must not produce ".Type".
+        let main_ast = Ast::import(
+            "chars.urd".to_string(),
+            vec![urd::parser::ast::ImportSymbol {
+                original: None,
+                alias: String::new(),
+            }],
+        );
+
+        let index = WorkspaceIndex::new();
+        index.update(&main_uri, &main_ast);
+
+        let (structs, enums, _labels) = index.imported_type_context(&main_uri);
+
+        assert!(
+            structs.contains_key("Character"),
+            "must keep unqualified struct key; got {:?}",
+            structs.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            enums.contains_key("Faction"),
+            "must keep unqualified enum key; got {:?}",
+            enums.keys().collect::<Vec<_>>()
+        );
+
+        assert!(
+            !structs.contains_key(".Character"),
+            "must not emit malformed '.Character' key; got {:?}",
+            structs.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !enums.contains_key(".Faction"),
+            "must not emit malformed '.Faction' key; got {:?}",
+            enums.keys().collect::<Vec<_>>()
+        );
+
+        assert!(
+            structs.keys().all(|k| !k.starts_with('.')),
+            "no struct key may start with '.': {:?}",
+            structs.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            enums.keys().all(|k| !k.starts_with('.')),
+            "no enum key may start with '.': {:?}",
+            enums.keys().collect::<Vec<_>>()
         );
 
         let _ = std::fs::remove_dir_all(&dir);

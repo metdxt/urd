@@ -32,6 +32,12 @@ fn ident(name: &str) -> Ast {
     Ast::value(RuntimeValue::IdentPath(vec![name.to_owned()]))
 }
 
+fn qident(parts: &[&str]) -> Ast {
+    Ast::value(RuntimeValue::IdentPath(
+        parts.iter().map(|p| (*p).to_owned()).collect(),
+    ))
+}
+
 fn int_lit(n: i64) -> Ast {
     Ast::value(RuntimeValue::Int(n))
 }
@@ -510,6 +516,14 @@ fn reassignment_str_to_int_variable_is_error() {
     assert_type_mismatch(&types::check(&ast, &ctx), "name");
 }
 
+#[test]
+fn reassignment_unresolved_qualified_path_to_typed_var_reports_mismatch() {
+    let ctx = make_ctx(&[], &[("score", TypeAnnotation::Int)]);
+    let assign = Ast::assign_op(ident("score"), qident(&["pkg", "value"]));
+    let ast = Ast::block(vec![assign]);
+    assert_type_mismatch(&types::check(&ast, &ctx), "score");
+}
+
 // ---------------------------------------------------------------------------
 // Declaration then reassignment in same block
 // ---------------------------------------------------------------------------
@@ -568,6 +582,17 @@ fn call_result_initialiser_is_silently_accepted() {
 fn variable_as_rhs_unresolved_identifier_reports_mismatch() {
     let ctx = make_ctx(&[], &[]);
     let ast = Ast::block(vec![typed_decl("x", TypeAnnotation::Bool, ident("other"))]);
+    assert_type_mismatch(&types::check(&ast, &ctx), "x");
+}
+
+#[test]
+fn decl_unresolved_qualified_path_to_typed_var_reports_mismatch() {
+    let ctx = make_ctx(&[], &[]);
+    let ast = Ast::block(vec![typed_decl(
+        "x",
+        TypeAnnotation::Int,
+        qident(&["pkg", "value"]),
+    )]);
     assert_type_mismatch(&types::check(&ast, &ctx), "x");
 }
 

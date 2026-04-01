@@ -24,8 +24,8 @@
 //! - [`possible_typo`]: An identifier closely resembles a known name (edit distance ≤ 2).
 //!
 //! ### Opt-in
-//! - [`loop_detection`]: Infinite dialogue loops (SCC with no escaping terminal path).
-//!   Enable per-label with the `@lint(check_loops)` decorator.
+//! - `loop_detection`: **not active yet**. The module exists as a placeholder,
+//!   but the pass is intentionally not executed until a real implementation lands.
 //!
 //! All passes always run to completion; errors from one pass do not suppress the others.
 
@@ -772,7 +772,8 @@ fn run_passes(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     errors.extend(possible_typo::check(ast, ctx));
 
     // ── Opt-in ────────────────────────────────────────────────────────────
-    errors.extend(loop_detection::check(ast));
+    // `loop_detection` is intentionally disabled here because the pass is
+    // currently a stub/placeholder and would be misleading as an active check.
 
     errors
 }
@@ -791,8 +792,8 @@ fn run_passes(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
 /// `empty_dialogue` → `duplicate_menu_dest` → `overwritten_assign` →
 /// `unused_var` → `dead_branch` → `possible_typo`
 ///
-/// **Opt-in:** `loop_detection` (only fires for labels decorated with
-/// `@lint(check_loops)`)
+/// **Opt-in:** none currently (`loop_detection` exists but is intentionally
+/// not executed until its implementation is complete)
 pub fn analyze(ast: &Ast) -> Vec<AnalysisError> {
     let ctx = AnalysisContext::build(ast);
     run_passes(ast, &ctx)
