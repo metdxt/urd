@@ -771,11 +771,16 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
 }
 
 /// Build hover markdown for a known [`Symbol`].
+///
+/// All code snippets are wrapped in ```` ```urd ```` fenced blocks so that the
+/// editor applies Urd syntax highlighting (via the registered Tree-sitter
+/// grammar) the same way Rust's rust-analyzer highlights Rust snippets.
 fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
     match sym.kind {
         SymbolKind::Label => {
-            format!("**label** `{}`", sym.name)
+            format!("```urd\nlabel {}\n```", sym.name)
         }
+
         SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Global => {
             let keyword = match sym.kind {
                 SymbolKind::Variable => "let",
@@ -783,22 +788,17 @@ fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
                 SymbolKind::Global => "global",
                 _ => unreachable!(),
             };
-            // Signature line: `const name: Type`
+            // Build the full declaration: `keyword name: Type = value`
             let sig = if let Some(ta) = &sym.type_annotation {
-                format!(
-                    "**{keyword}** `{}`: `{}`",
-                    sym.name,
-                    format_type_annotation(ta)
-                )
+                format!("{keyword} {}: {}", sym.name, format_type_annotation(ta))
             } else {
-                format!("**{keyword}** `{}`", sym.name)
+                format!("{keyword} {}", sym.name)
             };
-            // Append the actual value when it can be rendered concisely.
-            let base = if let Some(val_ast) = find_decl_value(root, &sym.name) {
-                // Local declaration found — render its value directly from AST.
+            let full_decl = if let Some(val_ast) = find_decl_value(root, &sym.name) {
+                // Local declaration — render value directly from the AST.
                 let val_str = format_ast_value(val_ast);
                 if val_str != "…" {
-                    format!("{sig} = `{val_str}`")
+                    format!("{sig} = {val_str}")
                 } else {
                     sig
                 }
@@ -807,14 +807,14 @@ fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
                 .as_deref()
                 .and_then(|d| d.splitn(2, " = ").nth(1))
             {
-                // Imported symbol: the value was pre-rendered into `detail` by
-                // collect_symbols_recursive when the imported file was parsed.
-                format!("{sig} = `{val}`")
+                // Imported symbol — value was pre-rendered into `detail` at
+                // collect_symbols_recursive time.
+                format!("{sig} = {val}")
             } else {
                 sig
             };
-            // If the type annotation is a Named type, look it up in the symbol
-            // list and append the struct/enum definition as additional context.
+            // If the type is a Named type, append its struct/enum definition
+            // as a second highlighted code block.
             if let Some(TypeAnnotation::Named(_)) = &sym.type_annotation {
                 let type_name = sym
                     .type_annotation
@@ -825,45 +825,49 @@ fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
                     s.name == type_name && matches!(s.kind, SymbolKind::Struct | SymbolKind::Enum)
                 }) && let Some(detail) = &type_sym.detail
                 {
-                    return format!("{base}\n\n```\n{detail}\n```");
+                    return format!("```urd\n{full_decl}\n```\n\n```urd\n{detail}\n```");
                 }
             }
-            base
+            format!("```urd\n{full_decl}\n```")
         }
+
         SymbolKind::Enum => {
-            // Try to include the variants.
             if let Some(detail) = &sym.detail {
-                format!("**enum** `{}`\n\n```\n{detail}\n```", sym.name)
+                format!("```urd\n{detail}\n```")
             } else {
-                format!("**enum** `{}`", sym.name)
+                format!("```urd\nenum {}\n```", sym.name)
             }
         }
+
         SymbolKind::EnumVariant => {
             if let Some(detail) = &sym.detail {
-                format!("**variant** `{detail}`")
+                format!("```urd\n{detail}\n```")
             } else {
-                format!("**variant** `{}`", sym.name)
+                format!("```urd\n{}\n```", sym.name)
             }
         }
+
         SymbolKind::Struct => {
             if let Some(detail) = &sym.detail {
-                format!("**struct** `{}`\n\n```\n{detail}\n```", sym.name)
+                format!("```urd\n{detail}\n```")
             } else {
-                format!("**struct** `{}`", sym.name)
+                format!("```urd\nstruct {}\n```", sym.name)
             }
         }
+
         SymbolKind::Decorator => {
             if let Some(detail) = &sym.detail {
-                format!("**decorator** `{}`\n\n```\n{detail}\n```", sym.name)
+                format!("```urd\n{detail}\n```")
             } else {
-                format!("**decorator** `{}`", sym.name)
+                format!("```urd\ndecorator {}\n```", sym.name)
             }
         }
+
         SymbolKind::Import => {
             if let Some(detail) = &sym.detail {
-                format!("```\n{detail}\n```")
+                format!("```urd\n{detail}\n```")
             } else {
-                format!("**import** `{}`", sym.name)
+                format!("```urd\nimport {}\n```", sym.name)
             }
         }
     }
