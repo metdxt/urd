@@ -1,234 +1,410 @@
-# errors.urd — deliberately contains type errors to demonstrate Urd's error reporting.
-# The script is otherwise a fully playable sci-fi dialogue scenario aboard a starship.
+# errors.urd — A comprehensive demonstration of every Urd lint pass.
+#
+# Scenario: Detective Yara Voss investigates a reactor sabotage aboard the
+# deep-space station Nexus-7.  The script is narratively coherent but contains
+# one deliberate instance of every diagnostic the analyser can emit.
+# Each error or warning is preceded by a comment naming its lint.
+#
+# ── Error lints ───────────────────────────────────────────────────────────────
+#   TypeMismatch          — wrong primitive type in a typed declaration
+#   StructMismatch        — missing or wrongly-typed struct fields
+#   TopLevelFlow          — flow statement at the top level
+#   DuplicateEntry        — two labels decorated with @entry
+#   ConstReassignment     — assignment to a const binding
+#   EmptyMenu             — menu block with zero options
+#   NonExhaustiveMatch    — match missing one or more enum variants
+#   UndefinedLabel        — jump to a non-existent label
+#   DeadEnd               — execution path with no terminator
+#
+# ── Warning lints ─────────────────────────────────────────────────────────────
+#   UnreachableLabel      — label never targeted by any jump or @entry
+#   SingleOptionMenu      — menu with exactly one choice
+#   EmptyDialogue         — blank or whitespace-only dialogue line
+#   DuplicateMenuDest     — two menu options with structurally identical bodies
+#   OverwrittenAssignment — value written then overwritten without being read
+#   UnusedVariable        — let/const declared but never subsequently read
+#   AlwaysDeadBranch      — if condition is a compile-time constant
+#   PossibleTypo          — identifier resembles a known name (edit distance ≤ 2)
+#               · Speaker:  <detectve>  →  detective
+#               · Label:    confrontaion  →  confrontation
+#               · Variable: clue_found  →  clues_found
 
-# ── Struct definitions ────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# TYPE DEFINITIONS
+# ══════════════════════════════════════════════════════════════════════════════
 
-# A named character that can appear in dialogue.
-struct Character {
-    name: str
-    name_color: str
+struct Suspect {
+    name:   str
+    motive: str
+    alibi:  bool
 }
 
-# A snapshot report produced when hull diagnostics are run.
-struct SystemReport {
-    status: str
-    integrity: int
-    recommendation: str
+struct EvidenceLog {
+    location:  str
+    severity:  int
+    timestamp: str
 }
 
-# ── Characters ────────────────────────────────────────────────────────────────
-const aria:        Character = :{ name: "ARIA",        name_color: "cyan"   }
-const commander:   Character = :{ name: "Commander",   name_color: "yellow" }
-const nav_console: Character = :{ name: "NAV CONSOLE", name_color: "gray"   }
+enum SuspectStatus { Clear, Suspicious, Detained }
+enum StationSector { Ops, Engineering, MedBay, Cargo }
 
-# ── Intentional struct errors (for error-reporting demos) ─────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# CHARACTERS
+# ══════════════════════════════════════════════════════════════════════════════
 
-# error: missing required field `name_color`
-let broken_crew: Character = :{ name: "Unknown" }
+const detective = :{ name: "Detective Voss", name_color: "yellow" }
+const captain   = :{ name: "Captain Reyes",  name_color: "cyan"   }
+const engineer  = :{ name: "Engineer Kade",  name_color: "green"  }
+const ai_core   = :{ name: "NEXUS",          name_color: "blue"   }
+const suspect   = :{ name: "Mira Chen",      name_color: "red"    }
 
-# error: field `integrity` expected int, got str; field `status` expected str, got int
-let garbled_report: SystemReport = :{ status: 99, integrity: "nominal", recommendation: "proceed" }
+# ══════════════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ── Global state ───────────────────────────────────────────────────────────────
-global hull_integrity: int = 100
-global oxygen_level: int    = 80
-global power_cells: int     = 3
-global docking_clear: bool  = false
+const STATION_NAME:    str  = "Nexus-7"
+const MAX_ALERT_LEVEL: int  = 5
 
-# ── Intentional primitive type errors (for error-reporting demos) ─────────────
-let mood: int   = "cheerful"  # error: expected int, got string
-let score: bool = 42          # error: expected bool, got int
+# DEBUG_MODE is deliberately `false` — the analyser const-folds it when
+# checking if conditions, producing an AlwaysDeadBranch warning later.
+const DEBUG_MODE: bool = false
 
-# ── Heading enum ──────────────────────────────────────────────────────────────
-enum Direction { North, South, East, West }
+# ══════════════════════════════════════════════════════════════════════════════
+# GLOBAL STATE
+# ══════════════════════════════════════════════════════════════════════════════
 
-let heading: Direction = North
+global clues_found:    int           = 0
+global alert_level:    int           = 1
+global suspect_status: SuspectStatus = Clear
+global access_granted: bool          = false
 
-# ── Labels ────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# ── ERROR: TypeMismatch ───────────────────────────────────────────────────────
+# `priority` is annotated as int but initialised with a string literal.
+# ══════════════════════════════════════════════════════════════════════════════
 
-label signal_lost {
-    <aria>: {
-        "Commander, I am losing signal integrity."
-        "Static is bleeding across all communication channels."
-        "If you can still hear me, the emergency beacon is on deck seven."
-        "Follow the red guide-strips on the floor. You will find your way."
-    }
-}
+let priority: int = "urgent"
+# error: TypeMismatch — 'priority' expects Int, got str
 
-label hello {
-    if docking_clear {
-        return
+# ══════════════════════════════════════════════════════════════════════════════
+# ── ERROR: StructMismatch (missing field) ─────────────────────────────────────
+# `prime_witness` is missing the required `alibi` field.
+# ══════════════════════════════════════════════════════════════════════════════
+
+let prime_witness: Suspect = :{ name: "Lon Darek", motive: "inheritance" }
+# error: StructMismatch — missing required field 'alibi: bool'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── ERROR: StructMismatch (wrong field type) ──────────────────────────────────
+# `first_log` has `severity` as a string; the struct declares it as int.
+# ══════════════════════════════════════════════════════════════════════════════
+
+let first_log: EvidenceLog = :{ location: "Airlock B", severity: "critical", timestamp: "02:14" }
+# error: StructMismatch — field 'severity' expects Int, got str
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── ERROR: TopLevelFlow ───────────────────────────────────────────────────────
+# Assignments are flow statements and are only permitted inside labeled blocks.
+# Only definitions (let/const/global, enum, struct, decorator, import, label)
+# may appear at the top level.
+# ══════════════════════════════════════════════════════════════════════════════
+
+alert_level = 3
+# error: TopLevelFlow — assignment not allowed at the top level
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LABELS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@entry
+label start {
+    # ── WARNING: AlwaysDeadBranch ─────────────────────────────────────────────
+    # `DEBUG_MODE` is a `const bool = false`.  The analyser folds it to a
+    # known value at analysis time — the `then` branch is permanently dead.
+
+    if DEBUG_MODE {
+        <ai_core>: "Diagnostic mode enabled. Skipping intro sequence."
+        # warning: AlwaysDeadBranch — then branch is dead; condition is always false
     } else {
-
+        jump briefing
     }
 }
 
-jump intro
+# ══════════════════════════════════════════════════════════════════════════════
+# ── ERROR: DuplicateEntry ─────────────────────────────────────────────────────
+# Only one label may carry the @entry decorator.
+# ══════════════════════════════════════════════════════════════════════════════
 
-label intro {
-    <aria>: {
-        "Good morning, Commander."
-        "All primary systems are nominal."
-        "Shall we chart a course through the debris field?"
+@entry
+label emergency_start {
+    <ai_core>: "Backup entry point engaged. Station is in lockdown."
+    end!()
+}
+# error: DuplicateEntry — label 'emergency_start' carries a duplicate @entry
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── WARNING: UnreachableLabel ─────────────────────────────────────────────────
+# Nothing in the script ever jumps to `archived_debrief`.  This scene is
+# dead content the player can never reach.
+# ══════════════════════════════════════════════════════════════════════════════
+
+label archived_debrief {
+    <captain>: {
+        "This debrief was recorded before the incident was classified."
+        "It has since been sealed by order of the station council."
     }
+    end!()
+}
+# warning: UnreachableLabel — 'archived_debrief' is never jumped to
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+label briefing {
+    # ── ERROR: ConstReassignment ──────────────────────────────────────────────
+    # `MAX_ALERT_LEVEL` is declared with `const` and cannot be reassigned.
+
+    MAX_ALERT_LEVEL = 10
+    # error: ConstReassignment — 'MAX_ALERT_LEVEL' is a constant
+
+    <captain>: {
+        "Detective Voss.  Someone sabotaged the {STATION_NAME} reactor core."
+        "Station security is locked down.  Current alert level: {alert_level}."
+        "You have forty-eight hours before we reach the frontier gate."
+        "Find the saboteur."
+    }
+
+    <detective>: "Understood, Captain.  Where do I start?"
+
+    <captain>: {
+        "Three sectors are still accessible: Ops, Engineering, and the Med Bay."
+        "The Cargo hold is sealed pending structural review."
+    }
+
+    # ── WARNING: OverwrittenAssignment ────────────────────────────────────────
+    # `case_ref` is initialised to 0, then unconditionally overwritten to
+    # `clues_found + 100` before the initial value is ever read.
+
+    let case_ref: int = 0
+    case_ref = clues_found + 100
+    # warning: OverwrittenAssignment — 'case_ref' value 0 is overwritten before being read
+
+    # ── WARNING: UnusedVariable ───────────────────────────────────────────────
+    # `dossier_id` is declared and given a value but never read anywhere in
+    # this label.
+
+    let dossier_id: int = 4419
+    # warning: UnusedVariable — 'dossier_id' is declared but never read
+
+    <detective>: "Case opened.  Internal reference: {case_ref}."
+
+    jump sector_nav
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+label sector_nav {
+    <ai_core>: "Please select the sector you wish to investigate, Detective."
+
+    # ── WARNING: DuplicateMenuDestination ─────────────────────────────────────
+    # "Inspect Operations" and "Return to Operations" have structurally
+    # identical bodies — both unconditionally jump to `sector_ops`.
+    # The second option is redundant; the player's choice is illusory.
 
     menu {
-        "Proceed to the debris field" {
-            jump nav_briefing
-        }
-        "Check hull integrity first" {
-            jump hull_check
-        }
-        "Abort mission" {
-            jump abort
-        }
-        "Test" {
-            jump test_label
-        }
+        "Inspect Operations"         { jump sector_ops         }
+        "Inspect Engineering"        { jump sector_engineering  }
+        "Inspect Medical Bay"        { jump sector_medbay       }
+        "Return to Operations"       { jump sector_ops          }
+        # warning: DuplicateMenuDestination — identical body to "Inspect Operations"
     }
 }
 
-label hull_check {
-    <aria>: "Hull integrity reading: {hull_integrity} percent."
+# ══════════════════════════════════════════════════════════════════════════════
 
-    if hull_integrity >= 80 {
-        # A well-formed SystemReport — all fields present with correct types.
-        let report: SystemReport = :{ status: "nominal", integrity: hull_integrity, recommendation: "cleared to proceed" }
+label sector_ops {
+    <detective>: "The Operations hub is quiet.  Emergency lighting casts long shadows."
 
-        <aria>: {
-            "All structural panels are within tolerance."
-            "We are cleared to proceed."
-        }
+    <ai_core>: "Atmospheric processors nominal.  No anomalies logged in the last six hours."
+
+    # ── WARNING: PossibleTypo (variable) ──────────────────────────────────────
+    # `clue_found` is not declared anywhere in the script.  Edit distance to
+    # the global `clues_found` is 1.  The analyser suggests the likely intended
+    # name.
+
+    if clue_found > 0 {
+        # warning: PossibleTypo (variable) — 'clue_found', did you mean 'clues_found'?
+        <detective>: "Some ground has already been covered here."
+    }
+
+    clues_found = clues_found + 1
+
+    if clues_found >= 3 {
+        jump confrontation
     } else {
-        # error: missing required field `recommendation`
-        let report: SystemReport = :{ status: "critical", integrity: hull_integrity }
-
-        <aria>: {
-            "Hull integrity is below safe operational thresholds."
-            "I strongly recommend docking for repairs before we continue."
-        }
+        jump interrogation
     }
-
-    jump intro
 }
 
-label nav_briefing {
-    <nav_console>: {
-        "PLOTTING COURSE."
-        "FOUR CORRIDORS AVAILABLE: NORTH, SOUTH, EAST, WEST."
-        "AWAITING HEADING SELECTION FROM FLIGHT OFFICER."
+# ══════════════════════════════════════════════════════════════════════════════
+
+label sector_engineering {
+    <detective>: "Scorch marks line the entire reactor access corridor."
+
+    <engineer>: {
+        "Someone bypassed the coolant override manually."
+        "You would need a level-three access card to reach that panel."
+        "I do not know who else has clearance."
     }
+
+    clues_found = clues_found + 2
+
+    jump evidence_room
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+label sector_medbay {
+    <detective>: "The med bay smells of antiseptic and something else — anxiety."
+
+    <ai_core>: "Medical records are sealed per station protocol, Detective."
+
+    # ── ERROR: EmptyMenu ──────────────────────────────────────────────────────
+    # This menu has no options at all.  The player would be presented with a
+    # choice screen they can never interact with.  This section is unfinished.
 
     menu {
-        "Set heading: North" {
-            heading = North
-            jump nav_route
-        }
-        "Set heading: South" {
-            heading = South
-            jump nav_route
-        }
-        "Set heading: East" {
-            heading = East
-            jump nav_route
-        }
-        "Set heading: West" {
-            heading = West
-            jump nav_route
-        }
     }
+    # error: EmptyMenu — menu has no options
+
+    jump interrogation
 }
 
-label nav_route {
-    match heading {
-        North {
-            <aria>: {
-                "North corridor confirmed."
-                "Magnetic interference is low. Sensors are fully operational."
-            }
-            jump debris_field
-        }
-        South {
-            <aria>: {
-                "South corridor confirmed."
-                "Residual heat signatures detected. Likely cooling vents ahead."
-                "Proceed with caution."
-            }
-            jump debris_field
-        }
-        East {
-            <aria>: {
-                "East corridor confirmed."
-                "Faint distress beacon detected on long-range scan."
-                "We may not be alone out here, Commander."
-            }
-            jump debris_field
-        }
+# ══════════════════════════════════════════════════════════════════════════════
+
+label evidence_room {
+    <detective>: "The secondary evidence locker has been forced open."
+
+    <engineer>: {
+        "The lock was cut cleanly.  Professional work."
+        "Whoever did this knew exactly what they were looking for."
     }
+
+    <detective>: "Log it and seal the compartment."
+
+    # error: DeadEnd — execution falls off the end with no jump, return, or end!
 }
+# ── ERROR: DeadEnd ────────────────────────────────────────────────────────────
+# There is no jump, return, or end!() after the last dialogue line.
+# Execution reaches the end of the label with no recognised terminator.
 
-label debris_field {
-    <aria>: {
-        "Entering debris field."
-        "Reducing thrust to one-quarter impulse."
-        "Collision avoidance systems are active."
-    }
+# ══════════════════════════════════════════════════════════════════════════════
 
-    if power_cells > 1 {
-        <aria>: "Shields at full power. We can handle some turbulence."
-        power_cells = power_cells - 1
-        jump clear_passage
-    } else {
-        <aria>: {
-            "Power reserves are critically low."
-            "I am rerouting auxiliary systems to navigation."
-        }
-        jump low_power
-    }
-}
+label interrogation {
+    <detective>: "Time to speak with the station's persons of interest."
 
-label low_power {
-    <aria>: {
-        "Emergency protocols engaged."
-        "Life support is now running on backup power cells."
-        "Estimated reserve: forty minutes."
-    }
+    # ── WARNING: SingleOptionMenu ─────────────────────────────────────────────
+    # A menu with only one option gives the player no real agency.  This
+    # should be rewritten as a plain dialogue line followed by a direct jump.
 
     menu {
-        "Make for the docking bay immediately" {
-            docking_clear = true
-            jump clear_passage
-        }
-        "Broadcast a distress signal first" {
-            jump signal_lost
-        }
+        "Question Mira Chen" { jump question_mira }
+        # warning: SingleOptionMenu — only one option; not a real choice
     }
 }
 
-label clear_passage {
-    <aria>: {
-        "We are through the debris field."
-        "Hull integrity holding. No breaches detected."
+# ══════════════════════════════════════════════════════════════════════════════
+
+label question_mira {
+    # ── WARNING: PossibleTypo (speaker) ───────────────────────────────────────
+    # `detectve` appears exactly once across the whole file while `detective`
+    # appears many times.  Edit distance is 1 — very likely a misspelling.
+
+    <detectve>: "Where were you at 02:00 station time, Ms Chen?"
+    # warning: PossibleTypo (speaker) — 'detectve', did you mean 'detective'?
+
+    <suspect>: {
+        "I was in my quarters.  NEXUS can confirm it —"
+        "I logged a maintenance request at 01:58."
+        "Check the system logs."
     }
-    jump victory
+
+    <detective>: "I will do exactly that."
+
+    # ── ERROR: UndefinedLabel ─────────────────────────────────────────────────
+    # ── WARNING: PossibleTypo (label) ─────────────────────────────────────────
+    # `confrontaion` does not exist as a label.  Edit distance to the defined
+    # label `confrontation` is 1.  Both UndefinedLabel and PossibleTypo fire.
+
+    jump confrontaion
+    # error:   UndefinedLabel — label 'confrontaion' does not exist
+    # warning: PossibleTypo (label) — 'confrontaion', did you mean 'confrontation'?
 }
 
-label victory {
-    <commander>: {
-        "We made it through."
-        "Log the route and seal the sensor readings."
-        "The crew will want to know exactly what is out there."
+# ══════════════════════════════════════════════════════════════════════════════
+
+label confrontation {
+    <detective>: "Ms Chen.  I have enough to bring you in for formal questioning."
+
+    <suspect>: "This is an outrage.  I demand to see the captain immediately."
+
+    <detective>: "You will.  Right after this."
+
+    # ── ERROR: NonExhaustiveMatch ─────────────────────────────────────────────
+    # `suspect_status` is of type `SuspectStatus` which declares three variants:
+    # Clear, Suspicious, and Detained.  Only two are handled — `Detained` is
+    # absent, so the match is non-exhaustive.
+
+    match suspect_status {
+        Clear {
+            <detective>: "The evidence does not hold.  You are free to go — for now."
+            jump ending_cleared
+        }
+        Suspicious {
+            <detective>: "I am placing you under investigative hold, Ms Chen."
+            suspect_status = Detained
+            jump ending_guilty
+        }
+        # error: NonExhaustiveMatch — variant 'Detained' is not covered
     }
-    <aria>: "Mission data archived. All telemetry has been transmitted to command."
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+label ending_cleared {
+    <captain>: {
+        "Voss.  You cleared the prime suspect."
+        "The saboteur is still somewhere on this station."
+    }
+
+    # ── WARNING: EmptyDialogue ────────────────────────────────────────────────
+    # This dialogue line has an empty string body.  The player sees a blank
+    # line attributed to Detective Voss — almost certainly a copy-paste error.
+
+    <detective>: ""
+    # warning: EmptyDialogue — 'detective' says nothing here
+
+    <detective>: "Then I keep looking until I find them."
+
     jump _end
 }
 
-label abort {
-    <commander>: "Stand down. We will try again when conditions improve."
-    <aria>: "Understood. Returning to standby mode. Whenever you are ready, Commander."
+# ══════════════════════════════════════════════════════════════════════════════
+
+label ending_guilty {
+    <captain>: {
+        "Outstanding work, Detective."
+        "The station council will handle the rest."
+    }
+
+    <detective>: "Justice, Captain.  That is all."
+
     jump _end
 }
 
-# ── Terminal label — all paths converge here ──────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Terminal label — all successful paths converge here.
+# ══════════════════════════════════════════════════════════════════════════════
+
 label _end {
+    end!()
 }
