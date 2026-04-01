@@ -168,7 +168,7 @@
 "@" @punctuation.special
 
 (decorator
-  name: (identifier) @attribute)
+  name: (decorator_name) @attribute)
 
 (decorator_definition
   name: (identifier) @attribute)
