@@ -2534,7 +2534,7 @@
           "name": "name",
           "content": {
             "type": "SYMBOL",
-            "name": "identifier"
+            "name": "decorator_name"
           }
         },
         {
@@ -2612,6 +2612,10 @@
           ]
         }
       ]
+    },
+    "decorator_name": {
+      "type": "SYMBOL",
+      "name": "identifier"
     },
     "decorated_statement": {
       "type": "SEQ",

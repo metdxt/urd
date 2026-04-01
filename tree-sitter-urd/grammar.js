@@ -625,11 +625,13 @@ module.exports = grammar({
     decorator: ($) =>
       seq(
         "@",
-        field("name", $.identifier),
+        field("name", $.decorator_name),
         optional(
           seq("(", commaSep(field("argument", $._expr)), optional(","), ")"),
         ),
       ),
+
+    decorator_name: ($) => $.identifier,
 
     // One or more @decorator lines followed by a decoratable statement.
     decorated_statement: ($) =>
