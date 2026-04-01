@@ -10,6 +10,7 @@
 //! - [`dead_end`]: Execution paths with no recognised terminator.
 //! - [`menu_structure`]: Empty menus (no options at all).
 //! - [`const_reassign`]: Assignment to a `const`-declared binding.
+//! - [`undefined_var`]: Variable reference with no visible declaration.
 //!
 //! ### Warnings
 //! - [`labels`]: `jump` / `let-call` to an undefined label.
@@ -44,6 +45,7 @@ pub mod overwritten_assign;
 pub mod possible_typo;
 pub mod top_level;
 pub mod types;
+pub mod undefined_var;
 pub mod unreachable_label;
 pub mod unused_var;
 
@@ -326,6 +328,17 @@ pub enum AnalysisError {
         span: SimpleSpan,
     },
 
+    // ── Errors (continued) ────────────────────────────────────────────────
+    /// A variable was referenced but was never declared in any visible scope.
+    UndefinedVariable {
+        /// The name of the variable as written in the source.
+        name: String,
+        /// Closest declared name in scope (Levenshtein ≤ 2), if any.
+        suggestion: Option<String>,
+        /// Source span of the offending reference.
+        span: SimpleSpan,
+    },
+
     // ── Opt-in ────────────────────────────────────────────────────────────
     /// A set of labels forms a cycle with no escaping path to a terminator.
     ///
@@ -364,6 +377,7 @@ impl AnalysisError {
             AnalysisError::AlwaysDeadBranch { span, .. } => *span,
             AnalysisError::PossibleTypo { span, .. } => *span,
             AnalysisError::InfiniteDialogueLoop { span, .. } => *span,
+            AnalysisError::UndefinedVariable { span, .. } => *span,
         }
     }
 
@@ -548,6 +562,15 @@ impl AnalysisError {
                      escaping path to a terminator"
                 )
             }
+
+            AnalysisError::UndefinedVariable {
+                name, suggestion, ..
+            } => match suggestion {
+                Some(s) => format!(
+                    "Undefined variable '{name}': not declared in any visible scope — did you mean '{s}'?"
+                ),
+                None => format!("Undefined variable '{name}': not declared in any visible scope"),
+            },
         }
     }
 
@@ -651,6 +674,13 @@ impl AnalysisError {
             AnalysisError::InfiniteDialogueLoop { label, .. } => {
                 format!("label '{label}' anchors an infinite loop")
             }
+
+            AnalysisError::UndefinedVariable {
+                name, suggestion, ..
+            } => match suggestion {
+                Some(s) => format!("'{name}' — did you mean '{s}'?"),
+                None => format!("'{name}' is not declared"),
+            },
         }
     }
 }
@@ -761,6 +791,7 @@ fn run_passes(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     errors.extend(dead_end::check(ast));
     errors.extend(menu_structure::check(ast));
     errors.extend(const_reassign::check(ast));
+    errors.extend(undefined_var::check(ast, ctx));
 
     // ── Warnings ──────────────────────────────────────────────────────────
     errors.extend(labels::check(ast, ctx));

@@ -52,7 +52,7 @@ label start {
         "The village of Greyhollow sits at the end of a road that most"
         "maps don't bother drawing."
     }
-    player: "Hello"
+
     narrator: {
         "It is the kind of place that people arrive at by accident"
         "and leave by necessity."

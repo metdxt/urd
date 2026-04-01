@@ -4,8 +4,6 @@
 //!
 //! - **Speaker names** in dialogue lines (e.g. `zra:` instead of `zara:`).
 //! - **Jump target labels** (e.g. `jump staart` instead of `jump start`).
-//! - **Variable references** (e.g. `if visted_cave` instead of `if visited_cave`).
-//!
 //! Uses Levenshtein edit distance (≤ 2) plus frequency / existence guards to
 //! keep false-positive rates low.
 
@@ -24,13 +22,12 @@ use crate::runtime::value::RuntimeValue;
 
 /// Run the possible-typo detection pass over `ast`.
 ///
-/// Combines three independent sub-checks — speakers, labels, variables — and
-/// returns all discovered [`AnalysisError::PossibleTypo`] warnings.
+/// Combines two independent sub-checks — speakers and labels — and returns all
+/// discovered [`AnalysisError::PossibleTypo`] warnings.
 pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
     errors.extend(check_speaker_typos(ast));
     errors.extend(check_label_typos(ast, ctx));
-    errors.extend(check_variable_typos(ast, ctx));
     errors
 }
 
@@ -155,98 +152,6 @@ fn check_label_typos(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-check 3: Variable typos
-// ---------------------------------------------------------------------------
-
-/// Detect single-segment identifiers used in value positions that are not
-/// declared anywhere and are very close (edit distance ≤ 2) to a declared
-/// variable name.
-fn check_variable_typos(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
-    // Universe of "known" names that should NOT be flagged as typos.
-    let known_vars = collect_all_declared_vars(ast);
-    let enum_variants: HashSet<String> = ctx.enums.values().flatten().cloned().collect();
-    let known_var_list: Vec<String> = known_vars.iter().cloned().collect();
-
-    // Collect every single-segment IdentPath used in a non-LHS, non-speaker position.
-    let mut refs: Vec<(String, SimpleSpan)> = Vec::new();
-    collect_var_refs(ast, false, &mut refs);
-
-    let mut errors = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    for (name, span) in refs {
-        // ----- exclusion guards -------------------------------------------------
-        // Too short: too many false positives for short names.
-        if name.len() <= 2 {
-            continue;
-        }
-        // Common wildcard / placeholder.
-        if name == "_" {
-            continue;
-        }
-        // Built-in terminators.
-        if name == "end!" || name == "todo!" {
-            continue;
-        }
-        // Already declared — not a typo.
-        if known_vars.contains(&name) {
-            continue;
-        }
-        // A label name used as a value — different kind of error.
-        if ctx.labels.contains(&name) {
-            continue;
-        }
-        // An enum variant — correct usage, not a typo.
-        if enum_variants.contains(&name) {
-            continue;
-        }
-        // Already emitted a warning for this identifier.
-        if seen.contains(&name) {
-            continue;
-        }
-        // -----------------------------------------------------------------------
-
-        if let Some((dist, suggestion)) = closest_match(&name, known_var_list.iter())
-            && dist <= 2
-        {
-            seen.insert(name.clone());
-            errors.push(AnalysisError::PossibleTypo {
-                written: name,
-                suggestion,
-                kind: TypoKind::Variable,
-                span,
-            });
-        }
-    }
-
-    errors
-}
-
-// ---------------------------------------------------------------------------
-// Helper: collect all declared variable / const / global names
-// ---------------------------------------------------------------------------
-
-/// Walk the entire AST and collect the name of every `Declaration` and
-/// `LetCall` binding, regardless of nesting depth.
-fn collect_all_declared_vars(ast: &Ast) -> HashSet<String> {
-    let mut vars = HashSet::new();
-    walk_ast(ast, &mut |node| match node.content() {
-        AstContent::Declaration { decl_name, .. } => {
-            if let AstContent::Value(RuntimeValue::IdentPath(path)) = decl_name.content()
-                && path.len() == 1
-            {
-                vars.insert(path[0].clone());
-            }
-        }
-        AstContent::LetCall { name, .. } => {
-            vars.insert(name.clone());
-        }
-        _ => {}
-    });
-    vars
-}
-
-// ---------------------------------------------------------------------------
 // Helper: walk AST collecting non-LHS IdentPath references
 // ---------------------------------------------------------------------------
 
@@ -256,7 +161,7 @@ fn collect_all_declared_vars(ast: &Ast) -> HashSet<String> {
 ///
 /// `in_lhs` signals that the current subtree is the write target of an
 /// assignment or declaration and should therefore be skipped.
-fn collect_var_refs(node: &Ast, in_lhs: bool, refs: &mut Vec<(String, SimpleSpan)>) {
+pub(crate) fn collect_var_refs(node: &Ast, in_lhs: bool, refs: &mut Vec<(String, SimpleSpan)>) {
     match node.content() {
         // ── Leaf: single-segment identifier in a value (read) position ─────────
         AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 && !in_lhs => {
@@ -324,8 +229,17 @@ fn collect_var_refs(node: &Ast, in_lhs: bool, refs: &mut Vec<(String, SimpleSpan
             collect_var_refs(body, false, refs);
         }
 
+        // ── Map literal: keys are static field names, not variable reads ─────────
+        // `:{ name: "Narrator", name_color: "#aaa" }` — `name` and `name_color`
+        // are struct-field-style keys, never variable references.
+        AstContent::Map(pairs) => {
+            for (_, value) in pairs {
+                collect_var_refs(value, false, refs);
+            }
+        }
+
         // ── Default: recurse into every child with in_lhs = false ───────────────
-        // Covers: BinOp (non-assign), UnaryOp, ExprList, Block, List, Map, If,
+        // Covers: BinOp (non-assign), UnaryOp, ExprList, Block, List, If,
         // LabeledBlock, Menu, MenuOption, Return, Subscript, etc.
         _ => {
             for child in node.children() {
@@ -344,7 +258,7 @@ fn collect_var_refs(node: &Ast, in_lhs: bool, refs: &mut Vec<(String, SimpleSpan
 ///
 /// Returns `None` if the iterator yields no items.  Ties are broken in favour
 /// of the first candidate encountered.
-fn closest_match<'a>(
+pub(crate) fn closest_match<'a>(
     name: &str,
     candidates: impl Iterator<Item = &'a String>,
 ) -> Option<(usize, String)> {
@@ -371,7 +285,7 @@ fn closest_match<'a>(
 /// Returns `0` when `a == b`, and increases by one for each insertion,
 /// deletion, or single-character substitution required to transform `a`
 /// into `b`.
-fn levenshtein(a: &str, b: &str) -> usize {
+pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let m = a.len();
@@ -673,191 +587,12 @@ label caller {
         );
     }
 
-    // ── Variable typo tests ───────────────────────────────────────────────────
-
-    #[test]
-    fn variable_typo_detected() {
-        // "visited_cave" is declared; "visted_cave" (one deletion) is used in a condition.
-        let src = r#"
-let visited_cave: bool = false
-label check {
-    if visted_cave {
-        end!()
-    } else {
-        end!()
-    }
-}
-"#;
-        let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_variable_typos(&ast, &ctx);
-        assert!(
-            errors.iter().any(|e| matches!(
-                e,
-                AnalysisError::PossibleTypo {
-                    written,
-                    suggestion,
-                    kind: TypoKind::Variable,
-                    ..
-                } if written == "visted_cave" && suggestion == "visited_cave"
-            )),
-            "expected PossibleTypo(Variable, \"visted_cave\" → \"visited_cave\"), got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn short_variable_names_not_flagged() {
-        // Names with ≤ 2 characters must never produce a PossibleTypo, regardless
-        // of how close they are to a declared variable.
-        let src = r#"
-let visited_cave: bool = false
-label check {
-    if vc {
-        end!()
-    } else {
-        end!()
-    }
-}
-"#;
-        let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_variable_typos(&ast, &ctx);
-        let flagged_vc: Vec<_> = errors
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    AnalysisError::PossibleTypo {
-                        kind: TypoKind::Variable,
-                        written,
-                        ..
-                    } if written == "vc"
-                )
-            })
-            .collect();
-        assert!(
-            flagged_vc.is_empty(),
-            "expected short identifier 'vc' not to be flagged, got: {flagged_vc:?}"
-        );
-    }
-
-    #[test]
-    fn correctly_used_variable_not_flagged() {
-        // Using a variable that is actually declared should produce no warning.
-        let src = r#"
-let health: int = 100
-label check {
-    if health {
-        end!()
-    } else {
-        end!()
-    }
-}
-"#;
-        let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_variable_typos(&ast, &ctx);
-        let flagged: Vec<_> = errors
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    AnalysisError::PossibleTypo {
-                        kind: TypoKind::Variable,
-                        ..
-                    }
-                )
-            })
-            .collect();
-        assert!(
-            flagged.is_empty(),
-            "expected no variable typos for a correctly used variable, got: {flagged:?}"
-        );
-    }
-
-    #[test]
-    fn variable_typo_no_close_match_not_flagged() {
-        // An undeclared name with no close match should not produce a PossibleTypo.
-        let src = r#"
-let health: int = 100
-label check {
-    if completelydifferent {
-        end!()
-    } else {
-        end!()
-    }
-}
-"#;
-        let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_variable_typos(&ast, &ctx);
-        let flagged: Vec<_> = errors
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    AnalysisError::PossibleTypo {
-                        kind: TypoKind::Variable,
-                        written,
-                        ..
-                    } if written == "completelydifferent"
-                )
-            })
-            .collect();
-        assert!(
-            flagged.is_empty(),
-            "expected no variable typos for a name with no close match, got: {flagged:?}"
-        );
-    }
-
-    // ── Deduplication test ────────────────────────────────────────────────────
-
-    #[test]
-    fn duplicate_variable_typo_emitted_only_once() {
-        // The same typo appearing in two places should only produce one warning.
-        let src = r#"
-let visited_cave: bool = false
-label check {
-    if visted_cave {
-        end!()
-    } else {
-        if visted_cave {
-            end!()
-        } else {
-            end!()
-        }
-    }
-}
-"#;
-        let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_variable_typos(&ast, &ctx);
-        let count = errors
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    AnalysisError::PossibleTypo {
-                        kind: TypoKind::Variable,
-                        written,
-                        ..
-                    } if written == "visted_cave"
-                )
-            })
-            .count();
-        assert_eq!(
-            count, 1,
-            "expected exactly one warning for repeated typo, got {count}"
-        );
-    }
-
     // ── Integration: check() aggregates all three sub-checks ─────────────────
 
     #[test]
     fn check_collects_all_sub_check_results() {
-        // One typo of each kind in a single script.
+        // One typo of each kind (speaker + label) in a single script.
         let src = r#"
-let visited_cave: bool = false
 label start {
     end!()
 }
@@ -866,7 +601,6 @@ label main_scene {
     zara: "Line two."
     zara: "Line three."
     zra: "Oops, typo speaker."
-    if visted_cave { end!() } else { end!() }
     jump staart
 }
 "#;
@@ -898,24 +632,11 @@ label main_scene {
                 )
             })
             .count();
-        let var_count = errors
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    AnalysisError::PossibleTypo {
-                        kind: TypoKind::Variable,
-                        ..
-                    }
-                )
-            })
-            .count();
 
         assert_eq!(
             speaker_count, 1,
             "expected 1 speaker typo, got {speaker_count}"
         );
         assert_eq!(label_count, 1, "expected 1 label typo, got {label_count}");
-        assert_eq!(var_count, 1, "expected 1 variable typo, got {var_count}");
     }
 }

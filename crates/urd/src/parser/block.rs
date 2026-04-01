@@ -398,7 +398,8 @@ pub fn dialogue<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     // use a keyword prefix, so a bare `ident, ...: content` pattern is unambiguous).
     let speaker_path = select! {
         Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
-    };
+    }
+    .map_with(|ast, extra| ast.with_span(extra.span()));
 
     let speakers = speaker_path
         .separated_by(just(Token::Comma))

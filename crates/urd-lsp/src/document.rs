@@ -144,9 +144,10 @@ impl Document {
         for err in &self.analysis_errors {
             let span = err.span();
             let range = byte_span_to_lsp_range(&src, span);
-            let severity = match err {
-                AnalysisError::DeadEnd { .. } => DiagnosticSeverity::WARNING,
-                _ => DiagnosticSeverity::ERROR,
+            let severity = if err.is_warning() {
+                DiagnosticSeverity::WARNING
+            } else {
+                DiagnosticSeverity::ERROR
             };
             diags.push(Diagnostic {
                 range,
