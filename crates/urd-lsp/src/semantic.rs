@@ -64,6 +64,9 @@ pub struct Symbol {
     pub detail: Option<String>,
     /// Optional documentation comment attached to this symbol via `##` syntax.
     pub doc_comment: Option<String>,
+    /// `true` when this symbol was declared with the `extern` keyword, meaning
+    /// its value is provided by the host runtime rather than the script itself.
+    pub is_extern: bool,
 }
 
 // ── Semantic token types ─────────────────────────────────────────────────────
@@ -306,6 +309,25 @@ pub fn collect_symbols(ast: &Ast) -> Vec<Symbol> {
     symbols
 }
 
+fn make_symbol(
+    name: String,
+    kind: SymbolKind,
+    span: SimpleSpan,
+    type_annotation: Option<TypeAnnotation>,
+    detail: Option<String>,
+    doc_comment: Option<String>,
+) -> Symbol {
+    Symbol {
+        name,
+        kind,
+        span,
+        type_annotation,
+        detail,
+        doc_comment,
+        is_extern: false,
+    }
+}
+
 fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
     match ast.content() {
         // ── Declarations (let / const / global) ──────────────────────────
@@ -347,14 +369,14 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                     }
                     (None, None) => format!("{} {}", format_decl_kind(kind), name),
                 });
-                out.push(Symbol {
+                out.push(make_symbol(
                     name,
-                    kind: sym_kind,
-                    span: ast.span(),
-                    type_annotation: type_annotation.clone(),
+                    sym_kind,
+                    ast.span(),
+                    type_annotation.clone(),
                     detail,
-                    doc_comment: ast.doc_comment.clone(),
-                });
+                    ast.doc_comment.clone(),
+                ));
             }
             // Walk the definition expression (it may contain nested blocks).
             collect_symbols_recursive(decl_name, out);
@@ -364,38 +386,38 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
 
         // ── Labeled blocks ───────────────────────────────────────────────
         AstContent::LabeledBlock { label, block } => {
-            out.push(Symbol {
-                name: label.clone(),
-                kind: SymbolKind::Label,
-                span: ast.span(),
-                type_annotation: None,
-                detail: Some(format!("label {label}")),
-                doc_comment: ast.doc_comment.clone(),
-            });
+            out.push(make_symbol(
+                label.clone(),
+                SymbolKind::Label,
+                ast.span(),
+                None,
+                Some(format!("label {label}")),
+                ast.doc_comment.clone(),
+            ));
             collect_symbols_recursive(block, out);
         }
 
         // ── Enum declarations ────────────────────────────────────────────
         AstContent::EnumDecl { name, variants } => {
             let variant_list = variants.join(", ");
-            out.push(Symbol {
-                name: name.clone(),
-                kind: SymbolKind::Enum,
-                span: ast.span(),
-                type_annotation: None,
-                detail: Some(format!("enum {name} {{ {variant_list} }}")),
-                doc_comment: ast.doc_comment.clone(),
-            });
+            out.push(make_symbol(
+                name.clone(),
+                SymbolKind::Enum,
+                ast.span(),
+                None,
+                Some(format!("enum {name} {{ {variant_list} }}")),
+                ast.doc_comment.clone(),
+            ));
             // Each variant is also a symbol (for completion / references).
             for variant in variants {
-                out.push(Symbol {
-                    name: variant.clone(),
-                    kind: SymbolKind::EnumVariant,
-                    span: ast.span(),
-                    type_annotation: None,
-                    detail: Some(format!("{name}.{variant}")),
-                    doc_comment: None,
-                });
+                out.push(make_symbol(
+                    variant.clone(),
+                    SymbolKind::EnumVariant,
+                    ast.span(),
+                    None,
+                    Some(format!("{name}.{variant}")),
+                    None,
+                ));
             }
         }
 
@@ -405,26 +427,26 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 .iter()
                 .map(|f| format!("{}: {}", f.name, format_type_annotation(&f.type_annotation)))
                 .collect();
-            out.push(Symbol {
-                name: name.clone(),
-                kind: SymbolKind::Struct,
-                span: ast.span(),
-                type_annotation: None,
-                detail: Some(format!("struct {name} {{ {} }}", field_list.join(", "))),
-                doc_comment: ast.doc_comment.clone(),
-            });
+            out.push(make_symbol(
+                name.clone(),
+                SymbolKind::Struct,
+                ast.span(),
+                None,
+                Some(format!("struct {name} {{ {} }}", field_list.join(", "))),
+                ast.doc_comment.clone(),
+            ));
             // Expose each field as a discoverable symbol so that rename can
             // recognise field names.  The zero-length span keeps these
             // invisible to offset-based lookups (hover, find-symbol-at).
             for field in fields {
-                out.push(Symbol {
-                    name: field.name.clone(),
-                    kind: SymbolKind::Variable,
-                    span: SimpleSpan::new((), 0..0),
-                    type_annotation: Some(field.type_annotation.clone()),
-                    detail: Some(format!("{}.{}", name, field.name)),
-                    doc_comment: None,
-                });
+                out.push(make_symbol(
+                    field.name.clone(),
+                    SymbolKind::Variable,
+                    SimpleSpan::new((), 0..0),
+                    Some(field.type_annotation.clone()),
+                    Some(format!("{}.{}", name, field.name)),
+                    None,
+                ));
             }
         }
 
@@ -450,17 +472,17 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                     }
                 })
                 .collect();
-            out.push(Symbol {
-                name: name.clone(),
-                kind: SymbolKind::Decorator,
-                span: ast.span(),
-                type_annotation: None,
-                detail: Some(format!(
+            out.push(make_symbol(
+                name.clone(),
+                SymbolKind::Decorator,
+                ast.span(),
+                None,
+                Some(format!(
                     "decorator {name}{constraint_str}({})",
                     param_list.join(", ")
                 )),
-                doc_comment: ast.doc_comment.clone(),
-            });
+                ast.doc_comment.clone(),
+            ));
             collect_symbols_recursive(body, out);
         }
 
@@ -476,27 +498,60 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                     }
                     Some(orig) => Some(format!("import {orig} as {} from \"{path}\"", entry.alias)),
                 };
-                out.push(Symbol {
-                    name: entry.alias.clone(),
-                    kind: SymbolKind::Import,
-                    span: ast.span(),
-                    type_annotation: None,
+                out.push(make_symbol(
+                    entry.alias.clone(),
+                    SymbolKind::Import,
+                    ast.span(),
+                    None,
                     detail,
-                    doc_comment: ast.doc_comment.clone(),
-                });
+                    ast.doc_comment.clone(),
+                ));
             }
         }
 
         // ── LetCall (let name = jump label and return) ───────────────────
         AstContent::LetCall { name, target: _ } => {
-            out.push(Symbol {
-                name: name.clone(),
-                kind: SymbolKind::Variable,
-                span: ast.span(),
-                type_annotation: None,
-                detail: Some(format!("let {name} = jump ... and return")),
-                doc_comment: ast.doc_comment.clone(),
-            });
+            out.push(make_symbol(
+                name.clone(),
+                SymbolKind::Variable,
+                ast.span(),
+                None,
+                Some(format!("let {name} = jump ... and return")),
+                ast.doc_comment.clone(),
+            ));
+        }
+
+        // ── Extern declarations (extern const / extern global) ───────────
+        AstContent::ExternDeclaration {
+            kind,
+            name,
+            type_annotation,
+        } => {
+            if let Some(var_name) = ident_name_from_ast(name) {
+                let sym_kind = match kind {
+                    DeclKind::Constant => SymbolKind::Constant,
+                    DeclKind::Global => SymbolKind::Global,
+                    DeclKind::Variable => SymbolKind::Variable,
+                };
+                let detail = Some(match type_annotation {
+                    Some(ta) => format!(
+                        "extern {} {}: {}",
+                        format_decl_kind(kind),
+                        var_name,
+                        format_type_annotation(ta)
+                    ),
+                    None => format!("extern {} {}", format_decl_kind(kind), var_name),
+                });
+                out.push(Symbol {
+                    name: var_name,
+                    kind: sym_kind,
+                    span: ast.span(),
+                    type_annotation: type_annotation.clone(),
+                    detail,
+                    doc_comment: ast.doc_comment.clone(),
+                    is_extern: true,
+                });
+            }
         }
 
         // ── Everything else: just recurse into children ──────────────────
@@ -674,6 +729,15 @@ fn find_definition_recursive(ast: &Ast, name: &str) -> Option<SimpleSpan> {
             None
         }
 
+        AstContent::ExternDeclaration {
+            name: decl_name, ..
+        } => {
+            if ident_name_from_ast(decl_name).as_deref() == Some(name) {
+                return Some(ast.span());
+            }
+            None
+        }
+
         _ => find_definition_in_children(ast.content(), name),
     }
 }
@@ -844,13 +908,21 @@ fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
                 SymbolKind::Global => "global",
                 _ => unreachable!(),
             };
-            // Build the full declaration: `keyword name: Type = value`
-            let sig = if let Some(ta) = &sym.type_annotation {
-                format!("{keyword} {}: {}", sym.name, format_type_annotation(ta))
+            let prefix = if sym.is_extern {
+                format!("extern {keyword}")
             } else {
-                format!("{keyword} {}", sym.name)
+                keyword.to_owned()
             };
-            let full_decl = if let Some(val_ast) = find_decl_value(root, &sym.name) {
+            // Build the full declaration: `[extern] keyword name: Type = value`
+            let sig = if let Some(ta) = &sym.type_annotation {
+                format!("{prefix} {}: {}", sym.name, format_type_annotation(ta))
+            } else {
+                format!("{prefix} {}", sym.name)
+            };
+            let full_decl = if sym.is_extern {
+                // Extern declarations have no initialiser — show only the signature.
+                sig
+            } else if let Some(val_ast) = find_decl_value(root, &sym.name) {
                 // Local declaration — render value directly from the AST.
                 let val_str = format_ast_value(val_ast);
                 if val_str != "…" {
@@ -1287,6 +1359,9 @@ fn hover_from_ast_children(
                 }
             }
             None
+        }
+        AstContent::ExternDeclaration { name, .. } => {
+            hover_from_ast(name, symbols, src, byte_offset, root)
         }
         _ => None,
     }
@@ -2173,6 +2248,7 @@ mod tests {
             type_annotation: None,
             detail: None,
             doc_comment: None,
+            is_extern: false,
         }];
         assert!(find_symbol_at_offset(&syms, 5).is_none());
         assert!(find_symbol_at_offset(&syms, 25).is_none());
@@ -2514,6 +2590,7 @@ mod tests {
         // Build an imported symbol that looks like what aliased_symbols() returns
         // for `const hero: Character = :{ name: "Hero" }` in a remote file.
         let imported_sym = Symbol {
+            is_extern: false,
             name: "hero".to_string(),
             kind: SymbolKind::Constant,
             span: SimpleSpan::new((), 0..0),
@@ -2534,6 +2611,7 @@ mod tests {
         // Also add a local Import sentinel (as collect_symbols would add for
         // `import (hero) from "chars.urd"`).
         syms.push(Symbol {
+            is_extern: false,
             name: "hero".to_string(),
             kind: SymbolKind::Import,
             span: SimpleSpan::new((), 0..5),
@@ -3025,6 +3103,130 @@ mod tests {
         assert!(
             info.contains("Some docs"),
             "hover should contain the doc comment text; got: {info}"
+        );
+    }
+
+    #[test]
+    fn collect_symbols_finds_extern_const() {
+        let src = "extern const narrator: Character\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "narrator").unwrap();
+        assert_eq!(sym.kind, SymbolKind::Constant);
+        assert_eq!(
+            sym.type_annotation,
+            Some(TypeAnnotation::Named(vec!["Character".to_owned()]))
+        );
+        assert!(
+            sym.detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("extern const narrator"),
+            "detail should show extern keyword; got: {:?}",
+            sym.detail
+        );
+    }
+
+    #[test]
+    fn collect_symbols_finds_extern_global() {
+        let src = "extern global score: int\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "score").unwrap();
+        assert_eq!(sym.kind, SymbolKind::Global);
+        assert_eq!(sym.type_annotation, Some(TypeAnnotation::Int));
+        assert!(
+            sym.detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("extern global score"),
+            "detail should show extern global; got: {:?}",
+            sym.detail
+        );
+    }
+
+    #[test]
+    fn collect_symbols_finds_extern_without_annotation() {
+        let src = "extern const narrator\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "narrator").unwrap();
+        assert_eq!(sym.kind, SymbolKind::Constant);
+        assert!(sym.type_annotation.is_none());
+        assert!(
+            sym.detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("extern const narrator"),
+            "detail should still show name; got: {:?}",
+            sym.detail
+        );
+    }
+
+    #[test]
+    fn find_definition_extern_const() {
+        let src = "extern const narrator: Character\n";
+        let ast = parse(src);
+        let span = find_definition(&ast, "narrator");
+        assert!(span.is_some(), "should find definition for extern const");
+    }
+
+    #[test]
+    fn find_definition_extern_global() {
+        let src = "extern global score: int\n";
+        let ast = parse(src);
+        let span = find_definition(&ast, "score");
+        assert!(span.is_some(), "should find definition for extern global");
+    }
+
+    #[test]
+    fn hover_extern_const_shows_type() {
+        let src = "extern const narrator: Character\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("narrator").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        assert!(
+            info.contains("narrator"),
+            "hover should show name; got: {info}"
+        );
+        assert!(
+            info.contains("Character"),
+            "hover should show type annotation; got: {info}"
+        );
+        assert!(
+            info.contains("extern"),
+            "hover should show extern keyword; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_extern_global_shows_type() {
+        let src = "extern global score: int\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("score").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        assert!(
+            info.contains("score"),
+            "hover should show name; got: {info}"
+        );
+        assert!(
+            info.contains("int"),
+            "hover should show type annotation; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_extern_with_doc_comment() {
+        let src = "## The active narrator character\nextern const narrator: Character\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("narrator: Character").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        assert!(
+            info.contains("The active narrator character"),
+            "hover should include doc comment; got: {info}"
         );
     }
 

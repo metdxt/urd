@@ -29,7 +29,7 @@ struct Character {
     name: str
     name_color: str
 }
-
+extern const player: Character
 const narrator: Character = :{ name: "Narrator", name_color: "#a0a0b0" }
 const hero:     Character = :{ name: "Hero",      name_color: "#f5c542" }
 const guard:    Character = :{ name: "Guard",     name_color: "#8888aa" }
@@ -52,7 +52,7 @@ label start {
         "The village of Greyhollow sits at the end of a road that most"
         "maps don't bother drawing."
     }
-
+    player: "Hello"
     narrator: {
         "It is the kind of place that people arrive at by accident"
         "and leave by necessity."
