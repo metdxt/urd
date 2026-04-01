@@ -10,10 +10,11 @@
 //!    one-way jump graph, run SCC using petgraph, then perform escape analysis
 //!    on IR control flow for each cyclic SCC.
 //!
-//! A diagnostic is emitted for each opted-in label that belongs to a cyclic SCC
-//! where no path can escape to:
-//! - a terminator (`return`, `end!`, `todo!`),
-//! - or a label outside that SCC.
+//! A diagnostic is emitted for each opted-in label that:
+//! - belongs to a cyclic SCC where no path can escape to a terminator
+//!   (`return`, `end!`, `todo!`) or a label outside that SCC, **or**
+//! - is not itself part of a cycle but all paths from it lead exclusively
+//!   into such trapped SCCs (i.e. the label is a "feeder" into a black hole).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -60,8 +61,13 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
 
     let mut out = Vec::new();
 
-    for comp in sccs {
-        if !is_cyclic_component(&jump_graph, &comp) {
+    // ── Pass 1: find all trapped SCCs (cyclic, no escape path). ─────────────
+    // Collect the set of label names that are members of a trapped SCC so
+    // that Pass 2 can reason about whether a feeder label flows only into them.
+    let mut trapped_labels: HashSet<String> = HashSet::new();
+
+    for comp in &sccs {
+        if !is_cyclic_component(&jump_graph, comp) {
             continue;
         }
 
@@ -71,11 +77,6 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
             .collect();
 
         if comp_labels.is_empty() {
-            continue;
-        }
-
-        let has_opt_in = comp_labels.iter().any(|l| opt_in.contains_key(l));
-        if !has_opt_in {
             continue;
         }
 
@@ -90,6 +91,12 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
             continue;
         }
 
+        // This SCC is trapped.  Record all its member labels.
+        for label in &comp_labels {
+            trapped_labels.insert(label.clone());
+        }
+
+        // Report any opted-in members immediately.
         for label in &comp_labels {
             if let Some(&span) = opt_in.get(label) {
                 out.push(AnalysisError::InfiniteDialogueLoop {
@@ -97,6 +104,43 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
                     span,
                 });
             }
+        }
+    }
+
+    // ── Pass 2: feeder labels ────────────────────────────────────────────────
+    // An opt-in label that is NOT itself part of a trapped SCC may still be
+    // inescapable if every path it can take leads only into trapped labels.
+    // Walk the label jump-graph from each such label; if every reachable
+    // non-trapped label is a dead-end (no outgoing edges) or all successors
+    // are trapped, the label is a feeder and must be reported.
+    let already_reported: HashSet<String> = out
+        .iter()
+        .filter_map(|e| match e {
+            AnalysisError::InfiniteDialogueLoop { label, .. } => Some(label.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // Build a quick label→NodeIndex lookup for the jump graph.
+    let label_to_jump_node: HashMap<String, NodeIndex> = jump_graph
+        .node_indices()
+        .filter_map(|idx| jump_graph.node_weight(idx).map(|l| (l.clone(), idx)))
+        .collect();
+
+    for (label, &span) in &opt_in {
+        if already_reported.contains(label) {
+            continue;
+        }
+
+        let Some(&start_idx) = label_to_jump_node.get(label) else {
+            continue;
+        };
+
+        if label_inevitably_enters_trap(start_idx, &jump_graph, &trapped_labels) {
+            out.push(AnalysisError::InfiniteDialogueLoop {
+                label: label.clone(),
+                span,
+            });
         }
     }
 
@@ -248,6 +292,125 @@ fn build_label_jump_graph(
     }
 
     g
+}
+
+/// Return `true` if every path reachable from `start` in the label jump-graph
+/// inevitably enters a trapped SCC with no way out.
+///
+/// Strategy: collect all non-trapped nodes reachable from `start`.  Within
+/// that subgraph, a node is an "escape" if it has no outgoing edges (it
+/// terminates without looping) or if it belongs to a non-trivial cycle among
+/// non-trapped nodes (meaning those labels interact among themselves, which
+/// means their IR bodies contain real control flow including possible returns —
+/// the existing pass already verified they are not trapped).  If ANY such
+/// escape node exists the start label is not inevitably trapped.
+///
+/// In practice the check is: within the non-trapped reachable subgraph,
+/// does every node have at least one successor?  If any non-trapped reachable
+/// node has zero successors (a terminal label) the path escapes.  If the
+/// subgraph contains a cycle entirely within non-trapped nodes, those labels
+/// were already cleared by Pass 1's escape analysis, so we treat that cycle
+/// as an escape too.
+fn label_inevitably_enters_trap(
+    start: NodeIndex,
+    g: &StableDiGraph<String, ()>,
+    trapped_labels: &HashSet<String>,
+) -> bool {
+    // If the start node itself has no successors, it cannot loop.
+    if g.edges(start).count() == 0 {
+        return false;
+    }
+
+    // Collect all non-trapped nodes reachable from start (including start).
+    let mut reachable_non_trapped: HashSet<NodeIndex> = HashSet::new();
+    {
+        let mut stack = vec![start];
+        while let Some(cur) = stack.pop() {
+            if !reachable_non_trapped.insert(cur) {
+                continue;
+            }
+            for e in g.edges(cur) {
+                let succ = e.target();
+                let succ_label = g.node_weight(succ).map(String::as_str).unwrap_or("");
+                // Don't expand trapped nodes — they are black holes.
+                if !trapped_labels.contains(succ_label) && !reachable_non_trapped.contains(&succ) {
+                    stack.push(succ);
+                }
+            }
+        }
+    }
+
+    // Within the non-trapped subgraph, check for any escape node.
+    for &node in &reachable_non_trapped {
+        let label = g.node_weight(node).map(String::as_str).unwrap_or("");
+        if trapped_labels.contains(label) {
+            continue;
+        }
+
+        // Count successors that are also non-trapped.
+        let non_trapped_succs: Vec<NodeIndex> = g
+            .edges(node)
+            .map(|e| e.target())
+            .filter(|succ| {
+                let sl = g.node_weight(*succ).map(String::as_str).unwrap_or("");
+                !trapped_labels.contains(sl)
+            })
+            .collect();
+
+        let all_succs: Vec<NodeIndex> = g.edges(node).map(|e| e.target()).collect();
+
+        if all_succs.is_empty() {
+            // Terminal label — this is an escape path (falls through / returns).
+            return false;
+        }
+
+        // If this non-trapped node has a successor that is also non-trapped
+        // AND that successor is not start itself forming a trivial self-trap,
+        // AND the non-trapped subgraph contains a cycle (node reachable from
+        // its own successor) — those nodes were already cleared by Pass 1,
+        // meaning their IR bodies have real escape paths.  Treat as escape.
+        for &succ in &non_trapped_succs {
+            // If the successor can reach back to a non-trapped node (i.e.
+            // there's a cycle within non-trapped nodes), that cycle was vetted
+            // by Pass 1 and is not a true trap — it's an escape.
+            if can_reach_within(succ, node, g, trapped_labels) {
+                return false;
+            }
+        }
+    }
+
+    // No escape node found — every path leads into a trapped SCC.
+    true
+}
+
+/// Return `true` if `target` is reachable from `from` following only
+/// non-trapped nodes in `g`.
+fn can_reach_within(
+    from: NodeIndex,
+    target: NodeIndex,
+    g: &StableDiGraph<String, ()>,
+    trapped_labels: &HashSet<String>,
+) -> bool {
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
+    let mut queue: VecDeque<NodeIndex> = VecDeque::new();
+    queue.push_back(from);
+
+    while let Some(cur) = queue.pop_front() {
+        if cur == target {
+            return true;
+        }
+        if !visited.insert(cur) {
+            continue;
+        }
+        let label = g.node_weight(cur).map(String::as_str).unwrap_or("");
+        if trapped_labels.contains(label) {
+            continue;
+        }
+        for e in g.edges(cur) {
+            queue.push_back(e.target());
+        }
+    }
+    false
 }
 
 fn is_cyclic_component(g: &StableDiGraph<String, ()>, comp: &[NodeIndex]) -> bool {
@@ -530,5 +693,124 @@ label b {
 
         let labels = loop_labels(&check(&ast));
         assert_eq!(labels, vec!["a".to_owned(), "b".to_owned()]);
+    }
+
+    // ── Feeder-label tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn feeder_label_into_trapped_cycle_is_reported() {
+        // `start` jumps to `a` which cycles with `b` — inescapable.
+        // Only `start` has @lint(check_loops).
+        let ast = parse(
+            r#"
+@lint(check_loops)
+label start {
+  jump a
+}
+
+label a {
+  jump b
+}
+
+label b {
+  jump a
+}
+"#,
+        );
+
+        let labels = loop_labels(&check(&ast));
+        assert_eq!(labels, vec!["start".to_owned()]);
+    }
+
+    #[test]
+    fn feeder_label_with_escape_is_not_reported() {
+        // `start` can jump to `a` (trapped) or `exit` (escapes).
+        let ast = parse(
+            r#"
+@lint(check_loops)
+label start {
+  menu {
+    "loop path" { jump a }
+    "escape"    { jump exit }
+  }
+}
+
+label a {
+  jump b
+}
+
+label b {
+  jump a
+}
+
+label exit {
+  end!()
+}
+"#,
+        );
+
+        let labels = loop_labels(&check(&ast));
+        assert!(labels.is_empty(), "expected no errors, got: {labels:?}");
+    }
+
+    #[test]
+    fn feeder_chain_all_opt_in_reported() {
+        // start -> mid -> (a <-> b).  start and mid both have @lint.
+        let ast = parse(
+            r#"
+@lint(check_loops)
+label start {
+  jump mid
+}
+
+@lint(check_loops)
+label mid {
+  jump a
+}
+
+label a {
+  jump b
+}
+
+label b {
+  jump a
+}
+"#,
+        );
+
+        let labels = loop_labels(&check(&ast));
+        assert_eq!(labels, vec!["mid".to_owned(), "start".to_owned()]);
+    }
+
+    #[test]
+    fn feeder_into_non_trapped_cycle_not_reported() {
+        // `a <-> b` has an escape path (jump exit inside a), so it is not a
+        // trapped SCC.  `start` feeding into it should therefore not be flagged.
+        let ast = parse(
+            r#"
+@lint(check_loops)
+label start {
+  jump a
+}
+
+label a {
+  menu {
+    "loop" { jump b }
+    "exit" { jump exit }
+  }
+}
+
+label b {
+  jump a
+}
+
+label exit {
+  end!()
+}
+"#,
+        );
+
+        let labels = loop_labels(&check(&ast));
+        assert!(labels.is_empty(), "expected no errors, got: {labels:?}");
     }
 }
