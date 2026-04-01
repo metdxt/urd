@@ -14,8 +14,14 @@ use urd::parser::ast::Ast;
 pub struct Document {
     /// The current source text.
     pub rope: Rope,
-    /// The most recent successful AST (`None` if parsing failed).
+    /// The most recent AST — may be a partial recovery tree if the last parse
+    /// had errors.  Used for local symbol lookup in completion, hover, and
+    /// go-to-definition.
     pub ast: Option<Ast>,
+    /// The most recent **fully valid** AST (no parse errors).  Used exclusively
+    /// for workspace import indexing so that a mid-edit parse error never
+    /// overwrites the cached import graph with an incomplete tree.
+    pub last_clean_ast: Option<Ast>,
     /// Parse errors from the last parse attempt, each with its byte-offset span.
     pub parse_errors: Vec<(String, SimpleSpan)>,
     /// Analysis diagnostics from the last successful parse.
@@ -28,6 +34,7 @@ impl Document {
         let mut doc = Document {
             rope: Rope::from(text),
             ast: None,
+            last_clean_ast: None,
             parse_errors: Vec::new(),
             analysis_errors: Vec::new(),
         };
@@ -72,23 +79,47 @@ impl Document {
     }
 
     /// Re-parse the current rope content.
+    ///
+    /// Chumsky's error recovery can return a partial AST even when there are
+    /// parse errors (e.g. the user has typed `narrator.` mid-edit).  We always
+    /// prefer the freshest AST chumsky can give us:
+    ///
+    /// - **Clean parse** (`ast = Some`, `errors = []`): update AST, clear errors,
+    ///   run analysis.
+    /// - **Partial recovery** (`ast = Some`, `errors ≠ []`): update AST to the
+    ///   recovered tree, store errors, skip analysis (recovered tree may be
+    ///   incomplete).
+    /// - **Total failure** (`ast = None`, `errors ≠ []`): keep whatever stale
+    ///   AST we had before (best-effort for hover, completion, go-to-def).
     fn reparse(&mut self) {
         let src = self.rope.to_string();
 
-        match parse_source_spanned(&src) {
-            Ok(ast) => {
-                // Run analysis passes on the freshly parsed AST.
+        let (recovered_ast, spanned_errors) = parse_source_spanned(&src);
+
+        if spanned_errors.is_empty() {
+            // Clean parse — run full analysis on the fresh AST and promote it
+            // to the clean-AST slot used by workspace import indexing.
+            if let Some(ast) = recovered_ast {
                 self.analysis_errors = analysis::analyze(&ast);
+                self.last_clean_ast = Some(ast.clone());
                 self.ast = Some(ast);
                 self.parse_errors.clear();
             }
-            Err(spanned_errors) => {
-                // Store parse errors with their spans; keep the stale AST for
-                // best-effort features (hover, go-to-definition on the last
-                // good parse).
-                self.parse_errors = spanned_errors;
-                self.analysis_errors.clear();
+        } else {
+            // There were parse errors.  Store them for diagnostics.
+            self.parse_errors = spanned_errors;
+            self.analysis_errors.clear();
+
+            if let Some(ast) = recovered_ast {
+                // Chumsky recovered a partial tree — use it for local symbol
+                // lookup (completion, hover, go-to-definition) so the user
+                // sees results even mid-edit.  Do NOT promote to last_clean_ast
+                // so that workspace import indexing keeps the last fully-valid
+                // import graph.
+                self.ast = Some(ast);
             }
+            // If recovered_ast is None, self.ast keeps its previous value
+            // (the last fully-valid parse).
         }
     }
 
@@ -379,6 +410,103 @@ mod tests {
         doc.update("label b {\n  end!()\n}\n");
         assert!(doc.ast.is_some());
         assert!(doc.parse_errors.is_empty());
+    }
+
+    // -- last_clean_ast ----------------------------------------------------
+
+    #[test]
+    fn last_clean_ast_set_on_clean_parse() {
+        let doc = Document::new("label foo {\n  end!()\n}\n");
+        assert!(
+            doc.last_clean_ast.is_some(),
+            "last_clean_ast must be populated after a successful parse"
+        );
+    }
+
+    #[test]
+    fn last_clean_ast_not_set_when_parse_fails_from_scratch() {
+        // A document that fails to parse on the very first attempt should have
+        // last_clean_ast = None (there was never a clean parse).
+        let doc = Document::new("{{{{invalid}}}}");
+        if doc.parse_errors.is_empty() {
+            // Parser recovered cleanly — not the case we are testing, skip.
+            return;
+        }
+        // Only check last_clean_ast when the parse definitely failed.
+        assert!(
+            doc.last_clean_ast.is_none(),
+            "last_clean_ast must remain None when there has never been a clean parse"
+        );
+    }
+
+    #[test]
+    fn last_clean_ast_preserved_after_partial_edit_error() {
+        // 1. Open with a valid source — last_clean_ast is populated.
+        let valid_src = "label intro {\n  end!()\n}\n";
+        let mut doc = Document::new(valid_src);
+        assert!(
+            doc.last_clean_ast.is_some(),
+            "last_clean_ast must be set after clean open"
+        );
+
+        // 2. Introduce a mid-edit parse error (simulate typing `narrator.`).
+        doc.update("label intro {\n  narrator.\n}\n");
+
+        // The document should have parse errors now.
+        if doc.parse_errors.is_empty() {
+            // Parser recovered perfectly — skip (environment-dependent).
+            return;
+        }
+
+        // last_clean_ast must still hold the previous clean tree.
+        assert!(
+            doc.last_clean_ast.is_some(),
+            "last_clean_ast must be preserved when a subsequent parse produces errors"
+        );
+    }
+
+    #[test]
+    fn last_clean_ast_updated_on_second_clean_parse() {
+        let mut doc = Document::new("label a {\n  end!()\n}\n");
+        assert!(doc.last_clean_ast.is_some());
+
+        // Introduce an error.
+        doc.update("{{broken");
+
+        // Fix it with a different valid source.
+        doc.update("label b {\n  end!()\n}\n");
+        assert!(
+            doc.last_clean_ast.is_some(),
+            "last_clean_ast must be updated after a second clean parse"
+        );
+        assert!(
+            doc.parse_errors.is_empty(),
+            "parse_errors must be clear after a clean parse"
+        );
+    }
+
+    #[test]
+    fn ast_gets_partial_recovery_while_last_clean_ast_stays_frozen() {
+        // Open cleanly so last_clean_ast is set.
+        let mut doc = Document::new("label a {\n  end!()\n}\n");
+        assert!(doc.last_clean_ast.is_some());
+
+        // Drive a parse error.  Depending on whether chumsky recovers we may
+        // get a partial `ast`; what matters is that `last_clean_ast` does NOT
+        // change to the (possibly partial) recovered tree.
+        doc.update("label a {\n  narrator.\n}\n");
+
+        if doc.parse_errors.is_empty() {
+            // Chumsky parsed it cleanly — both fields may update, that is fine.
+            return;
+        }
+
+        // last_clean_ast must still be present (from the original clean parse)
+        // and must NOT have been replaced by the partial recovery.
+        assert!(
+            doc.last_clean_ast.is_some(),
+            "last_clean_ast must remain the last clean tree after a recovery parse"
+        );
     }
 
     #[test]

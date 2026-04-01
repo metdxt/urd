@@ -649,9 +649,23 @@ pub fn parse_source(src: &str) -> Result<Ast, String> {
     ast.ok_or_else(|| "parser produced no output".to_string())
 }
 
-/// Parse a raw Urd source string, returning errors with their byte-offset
-/// [`SimpleSpan`]s (used by the LSP for precise diagnostic ranges).
-pub fn parse_source_spanned(src: &str) -> Result<Ast, Vec<(String, SimpleSpan)>> {
+/// Parse a raw Urd source string, returning both the (possibly partial)
+/// recovered AST and any parse errors with their byte-offset [`SimpleSpan`]s.
+///
+/// Chumsky's error recovery can produce a usable AST even when parts of the
+/// source are invalid (e.g. the user is mid-edit and has typed `narrator.`
+/// which is not yet a complete expression).  Discarding that recovered AST
+/// meant the LSP had no symbol information during any incomplete edit.
+///
+/// Now both are always returned:
+/// - `Option<Ast>`:  `Some` when chumsky recovered a (partial) tree, `None`
+///   when the source was so broken that no tree could be built at all.
+/// - `Vec<(String, SimpleSpan)>`: empty on a clean parse, non-empty otherwise.
+///
+/// Callers that previously matched on `Ok(ast)` / `Err(errors)` should now
+/// use the tuple directly: prefer the fresh AST when present, fall back to a
+/// stale cached AST only when `Option<Ast>` is `None`.
+pub fn parse_source_spanned(src: &str) -> (Option<Ast>, Vec<(String, SimpleSpan)>) {
     use chumsky::{input::Stream, prelude::*};
 
     use crate::lexer::{Token, lex_src};
@@ -666,14 +680,10 @@ pub fn parse_source_spanned(src: &str) -> Result<Ast, Vec<(String, SimpleSpan)>>
 
     let (ast, errors) = script().parse(stream).into_output_errors();
 
-    if !errors.is_empty() {
-        return Err(errors.iter().map(|e| (e.to_string(), *e.span())).collect());
-    }
+    let spanned_errors = errors
+        .iter()
+        .map(|e| (e.to_string(), *e.span()))
+        .collect::<Vec<_>>();
 
-    ast.ok_or_else(|| {
-        vec![(
-            "parser produced no output".to_string(),
-            SimpleSpan::new((), 0..0),
-        )]
-    })
+    (ast, spanned_errors)
 }

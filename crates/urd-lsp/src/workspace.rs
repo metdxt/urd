@@ -809,7 +809,296 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ── end-to-end completion simulation ─────────────────────────────────
+    //
+    // This test reproduces the full `on_change` + `completion` sequence that
+    // runs in the real LSP, using real file I/O, to pinpoint exactly where
+    // cross-file struct-field completion fails when a symbol import is used.
+
+    #[test]
+    fn end_to_end_narrator_dot_completion_with_symbol_import() {
+        use crate::completion::{TypeContext, completion_items};
+        use crate::document::Document;
+        use crate::semantic::collect_symbols;
+
+        let dir = tmp_dir();
+
+        // characters.urd — defines Character struct + narrator const.
+        write_tmp(
+            &dir,
+            "characters.urd",
+            "struct Character {\n\
+             \tname: str\n\
+             \tname_color: str\n\
+             }\n\
+             const narrator: Character = :{ name: \"Narrator\", name_color: \"#fff\" }\n",
+        );
+
+        // main.urd — clean version (symbol import, no narrator. yet).
+        let clean_src = "import (narrator) from \"characters.urd\"\n\
+                         label prologue {\n\
+                         \tnarrator: { \"hello\" }\n\
+                         \tend!()\n\
+                         }\n";
+
+        let main_uri = write_tmp(&dir, "main.urd", clean_src);
+
+        // ── Simulate on_change with clean source ──────────────────────────
+        let mut doc = Document::new(clean_src);
+        assert!(
+            doc.parse_errors.is_empty(),
+            "clean source must parse without errors"
+        );
+        assert!(
+            doc.last_clean_ast.is_some(),
+            "clean parse must set last_clean_ast"
+        );
+
+        let index = WorkspaceIndex::new();
+        // Use last_clean_ast (as on_change does).
+        if let Some(ast) = &doc.last_clean_ast {
+            index.update(&main_uri, ast);
+        }
+
+        // ── Simulate on_change after typing `narrator.` ───────────────────
+        let broken_src = "import (narrator) from \"characters.urd\"\n\
+                          label prologue {\n\
+                          \tnarrator: { \"hello\" }\n\
+                          \tnarrator.\n\
+                          }\n";
+        doc.update(broken_src);
+
+        // The broken source should have parse errors.
+        // last_clean_ast must still hold the previous clean tree.
+        assert!(
+            doc.last_clean_ast.is_some(),
+            "last_clean_ast must survive parse error"
+        );
+
+        // workspace.update uses last_clean_ast — import cache stays intact.
+        if let Some(ast) = &doc.last_clean_ast {
+            index.update(&main_uri, ast);
+        }
+
+        // ── Simulate completion request ────────────────────────────────────
+        // Use doc.ast (may be partial recovery) for local symbols.
+        let ast = doc
+            .ast
+            .as_ref()
+            .expect("doc.ast must be Some (partial or clean)");
+        let mut symbols = collect_symbols(ast);
+        let imported = index.imported_symbols(&main_uri);
+
+        // Diagnostics: what is in the symbol lists?
+        // Collect diagnostic snapshots before consuming the vecs.
+        let local_narrator: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.name == "narrator")
+            .cloned()
+            .collect();
+        let imported_narrator: Vec<_> = imported
+            .iter()
+            .filter(|s| s.name == "narrator")
+            .cloned()
+            .collect();
+        println!("local narrator symbols: {local_narrator:#?}");
+        println!("imported narrator symbols: {imported_narrator:#?}");
+
+        symbols.extend(imported);
+
+        let (imported_structs, imported_enums, _) = index.imported_type_context(&main_uri);
+        println!(
+            "type_ctx structs: {:?}",
+            imported_structs.keys().collect::<Vec<_>>()
+        );
+
+        let type_ctx = TypeContext {
+            structs: imported_structs,
+            enums: imported_enums,
+        };
+
+        // Cursor is at end of "narrator." on line 4.
+        let byte_offset = broken_src.len(); // end of file = after the dot
+        // Find the actual offset of the dot.
+        let dot_offset = broken_src.rfind("narrator.").unwrap() + "narrator.".len();
+
+        let items = completion_items(ast, &symbols, dot_offset, broken_src, &type_ctx);
+        let names: Vec<&str> = items.iter().map(|(n, _)| n.as_str()).collect();
+        println!("completion items: {names:?}");
+
+        assert!(
+            names.contains(&"name"),
+            "must offer 'name' field for narrator. — got {names:?}\n\
+             local_narrator={local_narrator:#?}\n\
+             imported_narrator={imported_narrator:#?}"
+        );
+        assert!(
+            names.contains(&"name_color"),
+            "must offer 'name_color' field for narrator. — got {names:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = byte_offset; // suppress unused warning
+    }
+
     // ── hover_info ────────────────────────────────────────────────────────
+
+    // ── imported_type_context with symbol imports ─────────────────────────
+    //
+    // Regression test for the cross-file struct-field completion bug:
+    // when a file uses a *symbol* import (`import (narrator) from "chars.urd"`)
+    // rather than a whole-module import (`import "chars.urd" as chars`),
+    // `imported_type_context` must still return the struct fields so that
+    // the TypeContext fallback in `items_struct_fields` can resolve them.
+
+    #[test]
+    fn symbol_import_preserves_struct_fields_in_type_context() {
+        let dir = tmp_dir();
+
+        // characters.urd — defines Character struct and narrator const.
+        write_tmp(
+            &dir,
+            "characters.urd",
+            "struct Character {\n    name: str\n    name_color: str\n}\n\
+             const narrator: Character = :{ name: \"Narrator\", name_color: \"#fff\" }\n",
+        );
+
+        // main.urd — imports narrator by name (symbol import, NOT whole-module).
+        let main_uri = write_tmp(
+            &dir,
+            "main.urd",
+            "import (narrator) from \"characters.urd\"\n\
+             label start {\n  end!()\n}\n",
+        );
+
+        let main_src = std::fs::read_to_string(main_uri.to_file_path().unwrap()).unwrap();
+        let main_ast = parse_source(&main_src).unwrap();
+
+        let index = WorkspaceIndex::new();
+        index.update(&main_uri, &main_ast);
+
+        // imported_type_context must expose the Character struct fields
+        // even though we only imported narrator (not the whole module).
+        let (structs, enums, _labels) = index.imported_type_context(&main_uri);
+        assert!(
+            structs.contains_key("Character"),
+            "imported_type_context must contain 'Character' after symbol import of narrator; \
+             got keys: {:?}",
+            structs.keys().collect::<Vec<_>>()
+        );
+
+        let fields = &structs["Character"];
+        let field_names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            field_names.contains(&"name"),
+            "Character fields must include 'name'; got {field_names:?}"
+        );
+        assert!(
+            field_names.contains(&"name_color"),
+            "Character fields must include 'name_color'; got {field_names:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn symbol_import_narrator_has_named_type_annotation_in_imported_symbols() {
+        let dir = tmp_dir();
+
+        write_tmp(
+            &dir,
+            "characters.urd",
+            "struct Character {\n    name: str\n    name_color: str\n}\n\
+             const narrator: Character = :{ name: \"Narrator\", name_color: \"#fff\" }\n",
+        );
+
+        let main_uri = write_tmp(
+            &dir,
+            "main.urd",
+            "import (narrator) from \"characters.urd\"\n\
+             label start {\n  end!()\n}\n",
+        );
+
+        let main_src = std::fs::read_to_string(main_uri.to_file_path().unwrap()).unwrap();
+        let main_ast = parse_source(&main_src).unwrap();
+
+        let index = WorkspaceIndex::new();
+        index.update(&main_uri, &main_ast);
+
+        let imported = index.imported_symbols(&main_uri);
+
+        // `narrator` must appear in the imported symbols under its direct name.
+        let narrator_sym = imported.iter().find(|s| s.name == "narrator");
+        assert!(
+            narrator_sym.is_some(),
+            "narrator must be present in imported symbols; got: {:?}",
+            imported.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        let sym = narrator_sym.unwrap();
+        assert_eq!(
+            sym.kind,
+            crate::semantic::SymbolKind::Constant,
+            "narrator must be a Constant, got {:?}",
+            sym.kind
+        );
+
+        // The type annotation must be Named(["Character"]) so that dot
+        // completion can resolve `narrator.` to StructFieldAccess.
+        assert_eq!(
+            sym.type_annotation,
+            Some(urd::parser::ast::TypeAnnotation::Named(vec![
+                "Character".to_string()
+            ])),
+            "narrator must carry Named([\"Character\"]) type annotation; got {:?}",
+            sym.type_annotation
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whole_module_import_still_provides_type_context() {
+        let dir = tmp_dir();
+
+        write_tmp(
+            &dir,
+            "chars.urd",
+            "struct Character {\n    name: str\n}\n\
+             enum Faction {\n    Guild\n    Empire\n}\n",
+        );
+
+        let main_uri = write_tmp(
+            &dir,
+            "main.urd",
+            "import \"chars.urd\" as chars\nlabel start {\n  end!()\n}\n",
+        );
+
+        let main_src = std::fs::read_to_string(main_uri.to_file_path().unwrap()).unwrap();
+        let main_ast = parse_source(&main_src).unwrap();
+
+        let index = WorkspaceIndex::new();
+        index.update(&main_uri, &main_ast);
+
+        let (structs, enums, _) = index.imported_type_context(&main_uri);
+
+        assert!(
+            structs.contains_key("Character"),
+            "whole-module import must expose 'Character'; keys={:?}",
+            structs.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            structs.contains_key("chars.Character"),
+            "whole-module import must expose qualified 'chars.Character'; keys={:?}",
+            structs.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            enums.contains_key("Faction"),
+            "whole-module import must expose 'Faction' enum"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn hover_info_qualified_returns_some() {

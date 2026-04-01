@@ -782,6 +782,30 @@ fn hover_from_ast(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
     }
 }
 
+/// Language keywords used by [`is_keyword_or_syntax`] to suppress hover tooltips.
+const KEYWORDS: &[&str] = &[
+    "label",
+    "let",
+    "const",
+    "global",
+    "if",
+    "match",
+    "jump",
+    "return",
+    "enum",
+    "struct",
+    "decorator",
+    "import",
+    "menu",
+    "end!",
+    "true",
+    "false",
+    "null",
+    "and",
+    "or",
+    "not",
+];
+
 /// Return `true` when `byte_offset` sits on a language keyword, operator, or
 /// punctuation — anything that doesn't benefit from a hover tooltip.
 fn is_keyword_or_syntax(src: &str, byte_offset: usize) -> bool {
@@ -990,97 +1014,7 @@ fn hover_from_ast_children(
     }
 }
 
-// ── 5. completion_items ──────────────────────────────────────────────────────
-
-/// URD language keywords offered as completion candidates.
-const KEYWORDS: &[&str] = &[
-    "label",
-    "let",
-    "const",
-    "global",
-    "if",
-    "else",
-    "match",
-    "jump",
-    "return",
-    "enum",
-    "struct",
-    "decorator",
-    "import",
-    "menu",
-    "end!",
-    "true",
-    "false",
-    "null",
-    "and",
-    "or",
-    "not",
-];
-
-/// Produce a list of completion candidates relevant at `byte_offset`.
-///
-/// The returned tuples are `(label, kind)` pairs.  The caller maps them to
-/// LSP `CompletionItem`s.
-pub fn completion_items(
-    _ast: &Ast,
-    symbols: &[Symbol],
-    byte_offset: usize,
-    src: &str,
-) -> Vec<(String, SymbolKind)> {
-    let mut items: Vec<(String, SymbolKind)> = Vec::new();
-
-    // Detect dot-triggered completion: check if the byte immediately before
-    // the cursor is '.', and if so, find the prefix (the alias name).
-    let dot_prefix: Option<String> = if byte_offset > 0 {
-        let before = &src[..byte_offset];
-        if let Some(without_dot) = before.strip_suffix('.') {
-            // Find the word before the dot.
-            let start = without_dot
-                .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            let prefix = &without_dot[start..];
-            if !prefix.is_empty() {
-                Some(prefix.to_string())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    if let Some(prefix) = &dot_prefix {
-        // Dot-triggered: only return symbols from that module, with the prefix stripped.
-        let qualified_prefix = format!("{prefix}.");
-        for sym in symbols {
-            if let Some(local_name) = sym.name.strip_prefix(&qualified_prefix)
-                && !items.iter().any(|(n, k)| n == local_name && *k == sym.kind)
-            {
-                items.push((local_name.to_string(), sym.kind));
-            }
-        }
-    } else {
-        // Normal completion: all symbols.
-        for sym in symbols {
-            // Avoid duplicates (enum variants may share names).
-            if !items.iter().any(|(n, k)| n == &sym.name && *k == sym.kind) {
-                items.push((sym.name.clone(), sym.kind));
-            }
-        }
-        // Add keywords as Label kind (closest semantic match; the caller can
-        // remap to `CompletionItemKind::Keyword`).
-        for kw in KEYWORDS {
-            items.push(((*kw).to_string(), SymbolKind::Variable));
-        }
-    }
-
-    items
-}
-
-// ── 6. find_references ───────────────────────────────────────────────────────
+// ── 5. find_references ───────────────────────────────────────────────────────
 
 /// Find all spans in the AST that reference `name`, including both definitions
 /// and usages (IdentPath values, jump labels, let-call targets, etc.).
@@ -2002,25 +1936,6 @@ mod tests {
         assert!(
             text.contains("let") && text.contains("name"),
             "hover should mention 'let' and 'name', got: {text}"
-        );
-    }
-
-    // ── completion_items ─────────────────────────────────────────────────
-
-    #[test]
-    fn completion_includes_symbols_and_keywords() {
-        let ast = parse("let x = 1\nlabel a {\n  end!()\n}\n");
-        let syms = collect_symbols(&ast);
-        let items = completion_items(&ast, &syms, 0, "");
-        let names: Vec<&str> = items.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(
-            names.contains(&"x"),
-            "completion should include variable 'x'"
-        );
-        assert!(names.contains(&"a"), "completion should include label 'a'");
-        assert!(
-            names.contains(&"if"),
-            "completion should include keyword 'if'"
         );
     }
 

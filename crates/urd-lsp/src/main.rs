@@ -4,6 +4,7 @@
 //! Provides real-time diagnostics, code completion, hover information, go-to-definition,
 //! find references, document symbols, and semantic token highlighting.
 
+mod completion;
 mod document;
 mod semantic;
 mod workspace;
@@ -19,9 +20,10 @@ use tracing::{debug, info};
 use document::{Document, byte_span_to_lsp_range, position_to_byte_offset};
 use urd::analysis::AnalysisError;
 
+use completion::{TypeContext, completion_items};
 use semantic::{
     SemanticTokenType as UrdTokenType, Symbol, SymbolKind as UrdSymbolKind, collect_symbols,
-    completion_items, find_definition, find_references, find_rename_spans, hover_info,
+    find_definition, find_references, find_rename_spans, hover_info,
     semantic_tokens as compute_semantic_tokens,
 };
 use workspace::WorkspaceIndex;
@@ -183,8 +185,16 @@ impl Backend {
 
         // Re-index imports so cross-file features stay up to date.
         // This must happen before we gather the imported type context below.
+        //
+        // Use `last_clean_ast` — the most recent *fully valid* parse — rather
+        // than `ast`, which may be a partial recovery tree produced during a
+        // mid-edit parse error.  A partial recovery tree often contains no
+        // import nodes, which would cause `workspace.update` to replace the
+        // previously-valid import cache with an empty list, making
+        // `imported_type_context` return nothing and breaking struct-field and
+        // enum-variant completion for the rest of the edit session.
         if let Some(doc) = self.documents.get(&uri)
-            && let Some(ast) = &doc.ast
+            && let Some(ast) = &doc.last_clean_ast
         {
             self.workspace.update(&uri, ast);
         }
@@ -224,7 +234,7 @@ impl LanguageServer for Backend {
 
                 // ── Completion ────────────────────────────────────────────
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".into(), ":".into(), " ".into()]),
+                    trigger_characters: Some(vec![".".into(), ":".into(), " ".into(), "@".into()]),
                     resolve_provider: Some(false),
                     ..Default::default()
                 }),
@@ -376,24 +386,76 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
 
+        debug!(
+            "completion: request received for {uri} at line={} char={}",
+            pos.line, pos.character
+        );
+
         let doc = match self.documents.get(&uri) {
             Some(d) => d,
-            None => return Ok(None),
+            None => {
+                debug!("completion: no document found for {uri} — returning None");
+                return Ok(None);
+            }
         };
 
+        let has_parse_errors = !doc.parse_errors.is_empty();
         let ast = match &doc.ast {
-            Some(a) => a,
-            None => return Ok(None),
+            Some(a) => {
+                debug!(
+                    "completion: using {} AST (parse_errors={})",
+                    if has_parse_errors { "stale" } else { "fresh" },
+                    doc.parse_errors.len()
+                );
+                a
+            }
+            None => {
+                debug!(
+                    "completion: doc.ast is None (document was never successfully parsed) — returning None"
+                );
+                return Ok(None);
+            }
         };
 
         let src = doc.rope.to_string();
         let byte_offset = position_to_byte_offset(&src, pos);
 
+        debug!(
+            "completion: src_len={} byte_offset={} src_tail={:?}",
+            src.len(),
+            byte_offset,
+            src.get(byte_offset.saturating_sub(20)..byte_offset)
+                .unwrap_or("")
+        );
+
         // Combine local symbols with aliased symbols from imported modules.
         let mut symbols = collect_symbols(ast);
-        symbols.extend(self.workspace.imported_symbols(&uri));
+        let imported = self.workspace.imported_symbols(&uri);
+        debug!(
+            "completion: local_symbols={} imported_symbols={}",
+            symbols.len(),
+            imported.len()
+        );
+        symbols.extend(imported);
 
-        let candidates = completion_items(ast, &symbols, byte_offset, &src);
+        // Build a TypeContext from the workspace so that struct fields and enum
+        // variants resolve even when the defining module was only partially
+        // imported (e.g. `import (narrator) from "characters.urd"`).
+        let (imported_structs, imported_enums, _) = self.workspace.imported_type_context(&uri);
+        debug!(
+            "completion: type_ctx structs={} ({:?}) enums={}",
+            imported_structs.len(),
+            imported_structs.keys().collect::<Vec<_>>(),
+            imported_enums.len(),
+        );
+        let type_ctx = TypeContext {
+            structs: imported_structs,
+            enums: imported_enums,
+        };
+
+        let candidates = completion_items(ast, &symbols, byte_offset, &src, &type_ctx);
+
+        debug!("completion: {} candidates generated", candidates.len());
 
         let items: Vec<CompletionItem> = candidates
             .into_iter()
@@ -407,8 +469,10 @@ impl LanguageServer for Backend {
             .collect();
 
         if items.is_empty() {
+            debug!("completion: returning None (empty list)");
             Ok(None)
         } else {
+            debug!("completion: returning {} items", items.len());
             Ok(Some(CompletionResponse::Array(items)))
         }
     }
