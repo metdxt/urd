@@ -130,6 +130,104 @@ fn format_decl_kind(kind: &DeclKind) -> &'static str {
     }
 }
 
+/// Pretty-print an AST expression node as a compact value string suitable for
+/// hover display (e.g. `42`, `"Narrator"`, `:{ name: "Narrator", name_color: "#a0a0b0" }`).
+///
+/// Complex sub-expressions that cannot be rendered concisely are shown as `…`.
+fn format_ast_value(ast: &Ast) -> String {
+    match ast.content() {
+        AstContent::Value(RuntimeValue::Null) => "null".into(),
+        AstContent::Value(RuntimeValue::Bool(b)) => b.to_string(),
+        AstContent::Value(RuntimeValue::Int(n)) => n.to_string(),
+        AstContent::Value(RuntimeValue::Float(f)) => f.to_string(),
+        AstContent::Value(RuntimeValue::Str(s)) => format!("\"{s}\""),
+        AstContent::Value(RuntimeValue::Dice(count, sides)) => format!("{count}d{sides}"),
+        AstContent::Value(RuntimeValue::IdentPath(parts)) => parts.join("."),
+        AstContent::Map(pairs) => {
+            let fields: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| {
+                    let key = if let AstContent::Value(RuntimeValue::IdentPath(parts)) = k.content()
+                    {
+                        parts.last().cloned().unwrap_or_default()
+                    } else {
+                        format_ast_value(k)
+                    };
+                    format!("{key}: {}", format_ast_value(v))
+                })
+                .collect();
+            format!(":{{ {} }}", fields.join(", "))
+        }
+        AstContent::List(items) => {
+            let parts: Vec<String> = items.iter().map(format_ast_value).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        AstContent::UnaryOp { op, expr } => {
+            use urd::parser::ast::UnaryOperator;
+            let op_str = match op {
+                UnaryOperator::Negate => "-",
+                UnaryOperator::Not => "not ",
+                UnaryOperator::BitwiseNot => "~",
+            };
+            format!("{op_str}{}", format_ast_value(expr))
+        }
+        AstContent::BinOp { op, left, right } => {
+            use urd::parser::ast::Operator;
+            let op_str = match op {
+                Operator::Plus => "+",
+                Operator::Minus => "-",
+                Operator::Multiply => "*",
+                Operator::Divide => "/",
+                Operator::DoubleSlash => "//",
+                Operator::Percent => "%",
+                Operator::Equals => "==",
+                Operator::NotEquals => "!=",
+                Operator::And => "and",
+                Operator::Or => "or",
+                _ => return format!("({} … {})", format_ast_value(left), format_ast_value(right)),
+            };
+            format!(
+                "({} {op_str} {})",
+                format_ast_value(left),
+                format_ast_value(right)
+            )
+        }
+        // Calls, blocks, and other complex nodes are rendered as an ellipsis.
+        _ => "…".into(),
+    }
+}
+
+/// Walk `ast` to find the right-hand side of the declaration whose name is
+/// `name`, returning a reference to its `decl_defs` node.
+///
+/// Searches the outermost block and all label-wrapped blocks (matching the
+/// same scope as [`collect_symbols`]).
+fn find_decl_value<'a>(ast: &'a Ast, name: &str) -> Option<&'a Ast> {
+    match ast.content() {
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                if let Some(v) = find_decl_value(stmt, name) {
+                    return Some(v);
+                }
+            }
+            None
+        }
+        AstContent::LabeledBlock { block, .. } => find_decl_value(block, name),
+        AstContent::Declaration {
+            decl_name,
+            decl_defs,
+            ..
+        } => {
+            if ident_name_from_ast(decl_name).as_deref() == Some(name) {
+                Some(decl_defs)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Extract the identifier name from a `Value(IdentPath(...))` AST node,
 /// returning the **last** segment (the leaf name).
 fn ident_name_from_ast(ast: &Ast) -> Option<String> {
@@ -179,7 +277,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
             kind,
             decl_name,
             type_annotation,
-            decl_defs: _,
+            decl_defs,
         } => {
             if let Some(name) = ident_name_from_ast(decl_name) {
                 let sym_kind = match kind {
@@ -187,13 +285,31 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                     DeclKind::Constant => SymbolKind::Constant,
                     DeclKind::Global => SymbolKind::Global,
                 };
-                let detail = type_annotation.as_ref().map(|ta| {
-                    format!(
+                // Render the value and embed it in `detail` so that when this
+                // symbol is imported into another file, hover_for_symbol can
+                // still display the value without needing the defining AST.
+                let val_str = {
+                    let s = format_ast_value(decl_defs);
+                    if s == "…" { None } else { Some(s) }
+                };
+                let detail = Some(match (type_annotation.as_ref(), val_str.as_deref()) {
+                    (Some(ta), Some(vs)) => format!(
+                        "{} {}: {} = {}",
+                        format_decl_kind(kind),
+                        name,
+                        format_type_annotation(ta),
+                        vs
+                    ),
+                    (Some(ta), None) => format!(
                         "{} {}: {}",
                         format_decl_kind(kind),
                         name,
                         format_type_annotation(ta)
-                    )
+                    ),
+                    (None, Some(vs)) => {
+                        format!("{} {} = {}", format_decl_kind(kind), name, vs)
+                    }
+                    (None, None) => format!("{} {}", format_decl_kind(kind), name),
                 });
                 out.push(Symbol {
                     name,
@@ -632,7 +748,7 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
 
         // For containers, try the AST walk first for a more specific hit.
         // An empty string means "position claimed but nothing to display".
-        if let Some(h) = hover_from_ast(ast, symbols, src, byte_offset) {
+        if let Some(h) = hover_from_ast(ast, symbols, src, byte_offset, ast) {
             if !h.is_empty() {
                 return Some(h);
             }
@@ -651,11 +767,11 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
 
     // Fall back: try to find an AST node at offset and describe it.
     // Filter out empty strings (meaning "position claimed, nothing to show").
-    hover_from_ast(ast, symbols, src, byte_offset).filter(|h| !h.is_empty())
+    hover_from_ast(ast, symbols, src, byte_offset, ast).filter(|h| !h.is_empty())
 }
 
 /// Build hover markdown for a known [`Symbol`].
-fn hover_for_symbol(sym: &Symbol, _ast: &Ast, symbols: &[Symbol]) -> String {
+fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
     match sym.kind {
         SymbolKind::Label => {
             format!("**label** `{}`", sym.name)
@@ -667,7 +783,8 @@ fn hover_for_symbol(sym: &Symbol, _ast: &Ast, symbols: &[Symbol]) -> String {
                 SymbolKind::Global => "global",
                 _ => unreachable!(),
             };
-            let base = if let Some(ta) = &sym.type_annotation {
+            // Signature line: `const name: Type`
+            let sig = if let Some(ta) = &sym.type_annotation {
                 format!(
                     "**{keyword}** `{}`: `{}`",
                     sym.name,
@@ -675,6 +792,26 @@ fn hover_for_symbol(sym: &Symbol, _ast: &Ast, symbols: &[Symbol]) -> String {
                 )
             } else {
                 format!("**{keyword}** `{}`", sym.name)
+            };
+            // Append the actual value when it can be rendered concisely.
+            let base = if let Some(val_ast) = find_decl_value(root, &sym.name) {
+                // Local declaration found — render its value directly from AST.
+                let val_str = format_ast_value(val_ast);
+                if val_str != "…" {
+                    format!("{sig} = `{val_str}`")
+                } else {
+                    sig
+                }
+            } else if let Some(val) = sym
+                .detail
+                .as_deref()
+                .and_then(|d| d.splitn(2, " = ").nth(1))
+            {
+                // Imported symbol: the value was pre-rendered into `detail` by
+                // collect_symbols_recursive when the imported file was parsed.
+                format!("{sig} = `{val}`")
+            } else {
+                sig
             };
             // If the type annotation is a Named type, look it up in the symbol
             // list and append the struct/enum definition as additional context.
@@ -734,7 +871,13 @@ fn hover_for_symbol(sym: &Symbol, _ast: &Ast, symbols: &[Symbol]) -> String {
 
 /// Walk the AST to find the innermost node at `byte_offset` and produce hover
 /// text for it (used as a fallback when no collected symbol matches).
-fn hover_from_ast(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) -> Option<String> {
+fn hover_from_ast(
+    ast: &Ast,
+    symbols: &[Symbol],
+    src: &str,
+    byte_offset: usize,
+    root: &Ast,
+) -> Option<String> {
     if !span_contains(ast.span(), byte_offset) && ast.span().start != ast.span().end {
         return None;
     }
@@ -744,8 +887,18 @@ fn hover_from_ast(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
             let name = parts.join(".");
             // Look up the identifier in the symbol table to show its
             // definition / type info instead of a bare "identifier" hover.
-            if let Some(sym) = symbols.iter().find(|s| s.name == name) {
-                return Some(hover_for_symbol(sym, ast, symbols));
+            //
+            // Prefer value-kinded symbols (Constant / Variable / Global) over
+            // Import-kinded declaration nodes.  A directly-imported symbol
+            // like `import (hero) from "chars.urd"` produces BOTH an Import
+            // sentinel in the local symbol list AND a Constant symbol in the
+            // imported list; we want the richer Constant.
+            let sym = symbols
+                .iter()
+                .find(|s| s.name == name && !matches!(s.kind, SymbolKind::Import))
+                .or_else(|| symbols.iter().find(|s| s.name == name));
+            if let Some(sym) = sym {
+                return Some(hover_for_symbol(sym, root, symbols));
             }
             Some(format!("**identifier** `{name}`"))
         }
@@ -757,7 +910,7 @@ fn hover_from_ast(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
             // source text around `byte_offset` directly: scan backwards for
             // an unescaped `{` and forwards for `}`.  If both are found
             // before hitting a `"` boundary we're inside an interpolation.
-            if let Some(info) = interpolation_hover_at(src, byte_offset, symbols, ast) {
+            if let Some(info) = interpolation_hover_at(src, byte_offset, symbols, ast, root) {
                 return Some(info);
             }
             // Inside a string but not on an interpolation — return an empty
@@ -778,7 +931,7 @@ fn hover_from_ast(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
             Some(String::new())
         }
         // Recurse into children to find the innermost match.
-        _ => hover_from_ast_children(ast.content(), symbols, src, byte_offset),
+        _ => hover_from_ast_children(ast.content(), symbols, src, byte_offset, root),
     }
 }
 
@@ -860,6 +1013,7 @@ fn interpolation_hover_at(
     byte_offset: usize,
     symbols: &[Symbol],
     ast: &Ast,
+    root: &Ast,
 ) -> Option<String> {
     let bytes = src.as_bytes();
     if byte_offset >= bytes.len() {
@@ -911,8 +1065,13 @@ fn interpolation_hover_at(
         return None;
     }
 
-    if let Some(sym) = symbols.iter().find(|s| s.name == path) {
-        return Some(hover_for_symbol(sym, ast, symbols));
+    // Same priority as the IdentPath branch: prefer non-Import symbols.
+    let sym = symbols
+        .iter()
+        .find(|s| s.name == path && !matches!(s.kind, SymbolKind::Import))
+        .or_else(|| symbols.iter().find(|s| s.name == path));
+    if let Some(sym) = sym {
+        return Some(hover_for_symbol(sym, root, symbols));
     }
     Some(format!("**identifier** `{path}`"))
 }
@@ -922,89 +1081,98 @@ fn hover_from_ast_children(
     symbols: &[Symbol],
     src: &str,
     byte_offset: usize,
+    root: &Ast,
 ) -> Option<String> {
     match content {
         AstContent::Block(stmts) | AstContent::ExprList(stmts) | AstContent::List(stmts) => {
             for s in stmts {
-                if let Some(h) = hover_from_ast(s, symbols, src, byte_offset) {
+                if let Some(h) = hover_from_ast(s, symbols, src, byte_offset, root) {
                     return Some(h);
                 }
             }
             None
         }
-        AstContent::BinOp { left, right, .. } => hover_from_ast(left, symbols, src, byte_offset)
-            .or_else(|| hover_from_ast(right, symbols, src, byte_offset)),
-        AstContent::UnaryOp { expr, .. } => hover_from_ast(expr, symbols, src, byte_offset),
+        AstContent::BinOp { left, right, .. } => {
+            hover_from_ast(left, symbols, src, byte_offset, root)
+                .or_else(|| hover_from_ast(right, symbols, src, byte_offset, root))
+        }
+        AstContent::UnaryOp { expr, .. } => hover_from_ast(expr, symbols, src, byte_offset, root),
         AstContent::Declaration {
             decl_name,
             decl_defs,
             ..
-        } => hover_from_ast(decl_name, symbols, src, byte_offset)
-            .or_else(|| hover_from_ast(decl_defs, symbols, src, byte_offset)),
+        } => hover_from_ast(decl_name, symbols, src, byte_offset, root)
+            .or_else(|| hover_from_ast(decl_defs, symbols, src, byte_offset, root)),
         AstContent::Call { func_path, params } => {
-            hover_from_ast(func_path, symbols, src, byte_offset)
-                .or_else(|| hover_from_ast(params, symbols, src, byte_offset))
+            hover_from_ast(func_path, symbols, src, byte_offset, root)
+                .or_else(|| hover_from_ast(params, symbols, src, byte_offset, root))
         }
         AstContent::If {
             condition,
             then_block,
             else_block,
-        } => hover_from_ast(condition, symbols, src, byte_offset)
-            .or_else(|| hover_from_ast(then_block, symbols, src, byte_offset))
+        } => hover_from_ast(condition, symbols, src, byte_offset, root)
+            .or_else(|| hover_from_ast(then_block, symbols, src, byte_offset, root))
             .or_else(|| {
                 else_block
                     .as_ref()
-                    .and_then(|eb| hover_from_ast(eb, symbols, src, byte_offset))
+                    .and_then(|eb| hover_from_ast(eb, symbols, src, byte_offset, root))
             }),
-        AstContent::LabeledBlock { block, .. } => hover_from_ast(block, symbols, src, byte_offset),
+        AstContent::LabeledBlock { block, .. } => {
+            hover_from_ast(block, symbols, src, byte_offset, root)
+        }
         AstContent::Match { scrutinee, arms } => {
-            if let Some(h) = hover_from_ast(scrutinee, symbols, src, byte_offset) {
+            if let Some(h) = hover_from_ast(scrutinee, symbols, src, byte_offset, root) {
                 return Some(h);
             }
             for arm in arms {
                 if let MatchPattern::Value(v) = &arm.pattern
-                    && let Some(h) = hover_from_ast(v, symbols, src, byte_offset)
+                    && let Some(h) = hover_from_ast(v, symbols, src, byte_offset, root)
                 {
                     return Some(h);
                 }
-                if let Some(h) = hover_from_ast(&arm.body, symbols, src, byte_offset) {
+                if let Some(h) = hover_from_ast(&arm.body, symbols, src, byte_offset, root) {
                     return Some(h);
                 }
             }
             None
         }
         AstContent::Dialogue { speakers, content } => {
-            hover_from_ast(speakers, symbols, src, byte_offset)
-                .or_else(|| hover_from_ast(content, symbols, src, byte_offset))
+            hover_from_ast(speakers, symbols, src, byte_offset, root)
+                .or_else(|| hover_from_ast(content, symbols, src, byte_offset, root))
         }
         AstContent::Menu { options } => {
             for opt in options {
-                if let Some(h) = hover_from_ast(opt, symbols, src, byte_offset) {
+                if let Some(h) = hover_from_ast(opt, symbols, src, byte_offset, root) {
                     return Some(h);
                 }
             }
             None
         }
         AstContent::MenuOption { content, .. } => {
-            hover_from_ast(content, symbols, src, byte_offset)
+            hover_from_ast(content, symbols, src, byte_offset, root)
         }
         AstContent::Return { value } => value
             .as_ref()
-            .and_then(|v| hover_from_ast(v, symbols, src, byte_offset)),
-        AstContent::Subscript { object, key } => hover_from_ast(object, symbols, src, byte_offset)
-            .or_else(|| hover_from_ast(key, symbols, src, byte_offset)),
-        AstContent::SubscriptAssign { object, key, value } => {
-            hover_from_ast(object, symbols, src, byte_offset)
-                .or_else(|| hover_from_ast(key, symbols, src, byte_offset))
-                .or_else(|| hover_from_ast(value, symbols, src, byte_offset))
+            .and_then(|v| hover_from_ast(v, symbols, src, byte_offset, root)),
+        AstContent::Subscript { object, key } => {
+            hover_from_ast(object, symbols, src, byte_offset, root)
+                .or_else(|| hover_from_ast(key, symbols, src, byte_offset, root))
         }
-        AstContent::DecoratorDef { body, .. } => hover_from_ast(body, symbols, src, byte_offset),
+        AstContent::SubscriptAssign { object, key, value } => {
+            hover_from_ast(object, symbols, src, byte_offset, root)
+                .or_else(|| hover_from_ast(key, symbols, src, byte_offset, root))
+                .or_else(|| hover_from_ast(value, symbols, src, byte_offset, root))
+        }
+        AstContent::DecoratorDef { body, .. } => {
+            hover_from_ast(body, symbols, src, byte_offset, root)
+        }
         AstContent::Map(pairs) => {
             for (k, v) in pairs {
-                if let Some(h) = hover_from_ast(k, symbols, src, byte_offset) {
+                if let Some(h) = hover_from_ast(k, symbols, src, byte_offset, root) {
                     return Some(h);
                 }
-                if let Some(h) = hover_from_ast(v, symbols, src, byte_offset) {
+                if let Some(h) = hover_from_ast(v, symbols, src, byte_offset, root) {
                     return Some(h);
                 }
             }
@@ -1936,6 +2104,383 @@ mod tests {
         assert!(
             text.contains("let") && text.contains("name"),
             "hover should mention 'let' and 'name', got: {text}"
+        );
+    }
+
+    // ── format_ast_value ─────────────────────────────────────────────────
+
+    #[test]
+    fn format_ast_value_primitives() {
+        use urd::lexer::strings::ParsedString;
+        assert_eq!(format_ast_value(&Ast::value(RuntimeValue::Null)), "null");
+        assert_eq!(
+            format_ast_value(&Ast::value(RuntimeValue::Bool(true))),
+            "true"
+        );
+        assert_eq!(
+            format_ast_value(&Ast::value(RuntimeValue::Bool(false))),
+            "false"
+        );
+        assert_eq!(format_ast_value(&Ast::value(RuntimeValue::Int(42))), "42");
+        assert_eq!(
+            format_ast_value(&Ast::value(RuntimeValue::Dice(2, 6))),
+            "2d6"
+        );
+        assert_eq!(
+            format_ast_value(&Ast::value(RuntimeValue::Str(ParsedString::new_plain(
+                "hello"
+            )))),
+            "\"hello\""
+        );
+        assert_eq!(
+            format_ast_value(&Ast::value(RuntimeValue::IdentPath(vec![
+                "Faction".to_owned(),
+                "Guild".to_owned()
+            ]))),
+            "Faction.Guild"
+        );
+    }
+
+    #[test]
+    fn format_ast_value_list() {
+        let list_ast = Ast::list(vec![
+            Ast::value(RuntimeValue::Int(1)),
+            Ast::value(RuntimeValue::Int(2)),
+            Ast::value(RuntimeValue::Int(3)),
+        ]);
+        assert_eq!(format_ast_value(&list_ast), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn format_ast_value_unary_negate() {
+        let neg = Ast::negate_op(Ast::value(RuntimeValue::Int(5)));
+        assert_eq!(format_ast_value(&neg), "-5");
+    }
+
+    #[test]
+    fn format_ast_value_binary_add() {
+        let add = Ast::add_op(
+            Ast::value(RuntimeValue::Int(1)),
+            Ast::value(RuntimeValue::Int(2)),
+        );
+        assert_eq!(format_ast_value(&add), "(1 + 2)");
+    }
+
+    #[test]
+    fn format_ast_value_complex_yields_ellipsis() {
+        let block = Ast::block(vec![]);
+        assert_eq!(format_ast_value(&block), "…");
+    }
+
+    // ── find_decl_value ───────────────────────────────────────────────────
+
+    #[test]
+    fn find_decl_value_top_level_const() {
+        let src = "const score = 42\n";
+        let ast = parse(src);
+        let val = find_decl_value(&ast, "score");
+        assert!(val.is_some(), "must find value for top-level const 'score'");
+        assert_eq!(format_ast_value(val.unwrap()), "42");
+    }
+
+    #[test]
+    fn find_decl_value_string_literal() {
+        let src = "const greeting = \"hello\"\n";
+        let ast = parse(src);
+        let val = find_decl_value(&ast, "greeting");
+        assert!(val.is_some());
+        let rendered = format_ast_value(val.unwrap());
+        assert!(
+            rendered.contains("hello"),
+            "expected rendered value to contain 'hello', got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn find_decl_value_inside_label() {
+        let src = "label intro {\n  let hp = 100\n  end!()\n}\n";
+        let ast = parse(src);
+        let val = find_decl_value(&ast, "hp");
+        assert!(val.is_some(), "must find 'hp' inside a label block");
+        assert_eq!(format_ast_value(val.unwrap()), "100");
+    }
+
+    #[test]
+    fn find_decl_value_unknown_returns_none() {
+        let src = "const x = 1\n";
+        let ast = parse(src);
+        assert!(
+            find_decl_value(&ast, "nonexistent").is_none(),
+            "must return None for unknown declaration name"
+        );
+    }
+
+    // ── hover with values ─────────────────────────────────────────────────
+
+    #[test]
+    fn hover_shows_int_value_for_const() {
+        let src = "const score = 42\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("score").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        assert!(
+            info.contains("42"),
+            "hover must show the value 42; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_string_value_for_let() {
+        let src = "label a {\n  let title = \"Wanderer\"\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("title").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        assert!(
+            info.contains("Wanderer"),
+            "hover must show the string value 'Wanderer'; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_map_value_for_typed_const() {
+        let src = "struct Character { name: str }\n\
+                   const narrator: Character = :{ name: \"Narrator\" }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("narrator").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        assert!(
+            info.contains("Character"),
+            "hover must mention the type 'Character'; got: {info}"
+        );
+        assert!(
+            info.contains("Narrator"),
+            "hover must show the struct value with 'Narrator'; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_value_does_not_show_ellipsis_for_simple_expr() {
+        let src = "label a {\n  let hp = 100\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("hp").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        assert!(
+            !info.contains('…'),
+            "hover must not show ellipsis for a simple integer literal; got: {info}"
+        );
+        assert!(
+            info.contains("100"),
+            "hover must show the value 100; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_value_when_variable_used_as_dialogue_speaker() {
+        // This is the real-world case from the screenshot: `elder` is declared
+        // at the top of the file and then used as a dialogue speaker further
+        // down.  Hovering on the speaker name must show the declaration value,
+        // not just the type signature — which requires `find_decl_value` to
+        // search from the document ROOT, not from the leaf IdentPath node that
+        // `hover_from_ast` lands on.
+        let src = "struct Character { name: str }\n\
+                   const elder: Character = :{ name: \"Elder Maren\" }\n\
+                   label village_square {\n\
+                   \telder: { \"Stranger! Thank the old gods you've come.\" }\n\
+                   \tend!()\n\
+                   }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        // Hover at the `elder` on the dialogue speaker line (line 4, after the
+        // two declaration lines).
+        let speaker_offset = src.rfind("elder").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, speaker_offset);
+        assert!(
+            info.is_some(),
+            "hovering on dialogue speaker 'elder' must produce hover text"
+        );
+        let text = info.unwrap();
+        assert!(
+            text.contains("Elder Maren"),
+            "hover on dialogue speaker must show the actual value; got: {text}"
+        );
+        assert!(
+            text.contains("Character"),
+            "hover on dialogue speaker must mention the type; got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_value_for_variable_at_declaration_site() {
+        // Hovering on a variable at its own declaration site shows the value.
+        let src = "const base_hp = 100\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        let decl_offset = src.find("base_hp").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, decl_offset).unwrap();
+        assert!(
+            info.contains("100"),
+            "hover on const declaration must show value 100; got: {info}"
+        );
+    }
+
+    #[test]
+    fn detail_includes_value_for_typed_const() {
+        let src = "struct Character { name: str }\n\
+                   const narrator: Character = :{ name: \"Narrator\", name_color: \"#a0a0b0\" }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let narrator = syms.iter().find(|s| s.name == "narrator").unwrap();
+        let detail = narrator.detail.as_deref().unwrap();
+        assert!(
+            detail.contains("= :{"),
+            "detail must embed the map value; got: {detail}"
+        );
+        assert!(
+            detail.contains("Narrator"),
+            "detail must contain the name value; got: {detail}"
+        );
+    }
+
+    #[test]
+    fn detail_includes_value_for_int_const() {
+        let src = "const score = 42\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "score").unwrap();
+        let detail = sym.detail.as_deref().unwrap();
+        assert!(
+            detail.contains("= 42"),
+            "detail must embed the integer value 42; got: {detail}"
+        );
+    }
+
+    #[test]
+    fn detail_omits_value_for_complex_rhs() {
+        // A declaration whose RHS is a call expression renders as "…" — the
+        // detail must NOT include " = …" (the ellipsis is suppressed).
+        let src = "label a {\n  let x = 1\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "x").unwrap();
+        let detail = sym.detail.as_deref().unwrap();
+        assert!(
+            !detail.contains('…'),
+            "detail must not contain ellipsis; got: {detail}"
+        );
+    }
+
+    #[test]
+    fn hover_imported_symbol_shows_value_via_detail_fallback() {
+        // Simulate what happens when `hero` is a directly-imported symbol:
+        // its Symbol was produced by collect_symbols on the imported module,
+        // then aliased (with span=0..0) into the local symbol list.
+        // find_decl_value on the LOCAL root will return None (hero is not
+        // declared locally), so hover_for_symbol must fall back to the
+        // pre-rendered value in sym.detail.
+        use chumsky::span::SimpleSpan;
+
+        // Build an imported symbol that looks like what aliased_symbols() returns
+        // for `const hero: Character = :{ name: "Hero" }` in a remote file.
+        let imported_sym = Symbol {
+            name: "hero".to_string(),
+            kind: SymbolKind::Constant,
+            span: SimpleSpan::new((), 0..0),
+            type_annotation: Some(TypeAnnotation::Named(vec!["Character".to_string()])),
+            // detail was produced by collect_symbols on the IMPORTED file,
+            // so it includes the rendered value.
+            detail: Some(
+                r##"const hero: Character = :{ name: "Hero", name_color: "#f5c542" }"##.to_string(),
+            ),
+        };
+
+        // Local source: hero is used as a dialogue speaker but NOT declared here.
+        let src = "label scene {\n\thero: { \"Hello.\" }\n\tend!()\n}\n";
+        let ast = parse(src);
+        // Combine: local symbols + the imported symbol.
+        let mut syms = collect_symbols(&ast);
+        // Also add a local Import sentinel (as collect_symbols would add for
+        // `import (hero) from "chars.urd"`).
+        syms.push(Symbol {
+            name: "hero".to_string(),
+            kind: SymbolKind::Import,
+            span: SimpleSpan::new((), 0..5),
+            type_annotation: None,
+            detail: Some("import hero from \"chars.urd\"".to_string()),
+        });
+        syms.push(imported_sym);
+
+        // Hover on `hero` in the dialogue speaker position.
+        let speaker_offset = src.find("hero").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, speaker_offset).unwrap();
+
+        assert!(
+            info.contains("Hero"),
+            "hover on imported speaker must show value from detail fallback; got: {info}"
+        );
+        assert!(
+            !info.contains("import hero"),
+            "hover must not show the raw import declaration; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_on_ident_reference_in_speaker_position_shows_value() {
+        // When an IdentPath is the *speaker* in a dialogue node, no symbol
+        // spans that position, so hover_from_ast walks down to the IdentPath
+        // leaf and calls hover_for_symbol.  The root-threading fix ensures
+        // find_decl_value is called with the document root, not the leaf node.
+        // This is a regression test for the bug: previously hover showed
+        // `const elder: Character` without the value; now it must include the
+        // map literal.
+        let src = "struct Character { name: str }\n\
+                   const elder: Character = :{ name: \"Elder Maren\" }\n\
+                   label scene {\n\
+                   \telder: { \"Hello.\" }\n\
+                   \tend!()\n\
+                   }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        // Find the `elder` used as the dialogue speaker (last occurrence).
+        let speaker_offset = src.rfind("elder").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, speaker_offset).unwrap();
+        assert!(
+            info.contains("Elder Maren"),
+            "hover on dialogue speaker must show the actual map value; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_ident_ref_value_is_rendered_when_it_is_a_simple_literal() {
+        // `let x = base_hp` — hovering on `base_hp` inside the declaration
+        // RHS.  The declaration symbol for `x` spans the whole expression, so
+        // find_symbol_at_offset returns `x`; hover shows x's value `base_hp`
+        // (an IdentPath reference, not a literal — rendered as the identifier
+        // name, not as the numeric value 100).  This verifies the value
+        // rendering path doesn't crash and produces meaningful text.
+        let src = "const base_hp = 100\n\
+                   label a {\n\
+                   \tlet x = base_hp\n\
+                   \tend!()\n\
+                   }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        // Hover on `x` (the declaration name).
+        let x_offset = src.find("let x").unwrap() + 4;
+        let info = hover_info(&ast, &syms, src, x_offset).unwrap();
+        // The value of x is `base_hp` (an identifier reference) which should
+        // be rendered as the identifier name.
+        assert!(info.contains('x'), "hover must mention 'x'; got: {info}");
+        assert!(
+            !info.contains('…'),
+            "hover must not show ellipsis for an ident reference value; got: {info}"
         );
     }
 
