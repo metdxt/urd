@@ -117,6 +117,9 @@ fn format_token(token: &Token) -> String {
         // at all (e.g. a stray `§` or a malformed number). Surfacing the
         // underlying lexer message gives the user an actionable clue.
         Token::Error(e) => format!("invalid token: {e}"),
+
+        // ── Documentation comment ─────────────────────────────────────────
+        Token::DocComment(s) => format!("doc comment '## {s}'"),
     }
 }
 

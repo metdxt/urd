@@ -1137,6 +1137,7 @@ mod tests {
             span: SimpleSpan::new((), 4..20),
             type_annotation: ann,
             detail: None,
+            doc_comment: None,
         }
     }
 
@@ -1149,6 +1150,7 @@ mod tests {
             span: SimpleSpan::new((), 0..0),
             type_annotation: Some(ann),
             detail: Some(format!("{struct_name}.{field_name}")),
+            doc_comment: None,
         }
     }
 
@@ -1160,6 +1162,7 @@ mod tests {
             span: SimpleSpan::new((), 4..20),
             type_annotation: None,
             detail: Some(format!("{enum_name}.{variant_name}")),
+            doc_comment: None,
         }
     }
 
@@ -1609,6 +1612,7 @@ mod tests {
                 span: SimpleSpan::new((), 0..0),
                 type_annotation: None,
                 detail: None,
+                doc_comment: None,
             },
             Symbol {
                 name: "chars.Faction".to_string(),
@@ -1616,6 +1620,7 @@ mod tests {
                 span: SimpleSpan::new((), 0..0),
                 type_annotation: None,
                 detail: None,
+                doc_comment: None,
             },
             sym("local_var", SymbolKind::Variable, None),
         ];
@@ -1699,6 +1704,7 @@ mod tests {
                 span: SimpleSpan::new((), 0..0),
                 type_annotation: None,
                 detail: Some("Faction.Guild".to_string()),
+                doc_comment: None,
             },
             Symbol {
                 name: "chars.Empire".to_string(),
@@ -1706,6 +1712,7 @@ mod tests {
                 span: SimpleSpan::new((), 0..0),
                 type_annotation: None,
                 detail: Some("Faction.Empire".to_string()),
+                doc_comment: None,
             },
             Symbol {
                 name: "chars.Rebel".to_string(),
@@ -1713,6 +1720,7 @@ mod tests {
                 span: SimpleSpan::new((), 0..0),
                 type_annotation: None,
                 detail: Some("Faction.Rebel".to_string()),
+                doc_comment: None,
             },
         ];
         let items = items_for_context(
@@ -2295,6 +2303,7 @@ mod tests {
                 span: chumsky::span::SimpleSpan::new((), 0..0),
                 type_annotation: Some(TypeAnnotation::Named(vec!["Character".to_string()])),
                 detail: Some("const narrator: Character".to_string()),
+                doc_comment: None,
             },
             // A few other symbols that should NOT appear in field completion.
             sym("prologue", SymbolKind::Label, None),

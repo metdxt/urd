@@ -62,6 +62,8 @@ pub struct Symbol {
     pub type_annotation: Option<TypeAnnotation>,
     /// Extra detail string for hover display (e.g. enum variants list).
     pub detail: Option<String>,
+    /// Optional documentation comment attached to this symbol via `##` syntax.
+    pub doc_comment: Option<String>,
 }
 
 // ── Semantic token types ─────────────────────────────────────────────────────
@@ -351,6 +353,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                     span: ast.span(),
                     type_annotation: type_annotation.clone(),
                     detail,
+                    doc_comment: ast.doc_comment.clone(),
                 });
             }
             // Walk the definition expression (it may contain nested blocks).
@@ -367,6 +370,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 span: ast.span(),
                 type_annotation: None,
                 detail: Some(format!("label {label}")),
+                doc_comment: ast.doc_comment.clone(),
             });
             collect_symbols_recursive(block, out);
         }
@@ -380,6 +384,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 span: ast.span(),
                 type_annotation: None,
                 detail: Some(format!("enum {name} {{ {variant_list} }}")),
+                doc_comment: ast.doc_comment.clone(),
             });
             // Each variant is also a symbol (for completion / references).
             for variant in variants {
@@ -389,6 +394,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                     span: ast.span(),
                     type_annotation: None,
                     detail: Some(format!("{name}.{variant}")),
+                    doc_comment: None,
                 });
             }
         }
@@ -405,6 +411,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 span: ast.span(),
                 type_annotation: None,
                 detail: Some(format!("struct {name} {{ {} }}", field_list.join(", "))),
+                doc_comment: ast.doc_comment.clone(),
             });
             // Expose each field as a discoverable symbol so that rename can
             // recognise field names.  The zero-length span keeps these
@@ -416,6 +423,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                     span: SimpleSpan::new((), 0..0),
                     type_annotation: Some(field.type_annotation.clone()),
                     detail: Some(format!("{}.{}", name, field.name)),
+                    doc_comment: None,
                 });
             }
         }
@@ -451,6 +459,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                     "decorator {name}{constraint_str}({})",
                     param_list.join(", ")
                 )),
+                doc_comment: ast.doc_comment.clone(),
             });
             collect_symbols_recursive(body, out);
         }
@@ -473,6 +482,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                     span: ast.span(),
                     type_annotation: None,
                     detail,
+                    doc_comment: ast.doc_comment.clone(),
                 });
             }
         }
@@ -485,6 +495,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 span: ast.span(),
                 type_annotation: None,
                 detail: Some(format!("let {name} = jump ... and return")),
+                doc_comment: ast.doc_comment.clone(),
             });
         }
 
@@ -809,10 +820,20 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
 /// All code snippets are wrapped in ```` ```urd ```` fenced blocks so that the
 /// editor applies Urd syntax highlighting (via the registered Tree-sitter
 /// grammar) the same way Rust's rust-analyzer highlights Rust snippets.
+/// Append a doc comment block to a hover string, if one is present.
+fn append_doc_comment(hover: String, sym: &Symbol) -> String {
+    if let Some(doc) = &sym.doc_comment {
+        format!("{hover}\n\n---\n{doc}")
+    } else {
+        hover
+    }
+}
+
 fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
     match sym.kind {
         SymbolKind::Label => {
-            format!("```urd\nlabel {}\n```", sym.name)
+            let hover = format!("```urd\nlabel {}\n```", sym.name);
+            append_doc_comment(hover, sym)
         }
 
         SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Global => {
@@ -859,50 +880,56 @@ fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
                     s.name == type_name && matches!(s.kind, SymbolKind::Struct | SymbolKind::Enum)
                 }) && let Some(detail) = &type_sym.detail
                 {
-                    return format!("```urd\n{full_decl}\n```\n\n```urd\n{detail}\n```");
+                    let hover = format!("```urd\n{full_decl}\n```\n\n```urd\n{detail}\n```");
+                    return append_doc_comment(hover, sym);
                 }
             }
-            format!("```urd\n{full_decl}\n```")
+            append_doc_comment(format!("```urd\n{full_decl}\n```"), sym)
         }
 
         SymbolKind::Enum => {
-            if let Some(detail) = &sym.detail {
+            let hover = if let Some(detail) = &sym.detail {
                 format!("```urd\n{detail}\n```")
             } else {
                 format!("```urd\nenum {}\n```", sym.name)
-            }
+            };
+            append_doc_comment(hover, sym)
         }
 
         SymbolKind::EnumVariant => {
-            if let Some(detail) = &sym.detail {
+            let hover = if let Some(detail) = &sym.detail {
                 format!("```urd\n{detail}\n```")
             } else {
                 format!("```urd\n{}\n```", sym.name)
-            }
+            };
+            append_doc_comment(hover, sym)
         }
 
         SymbolKind::Struct => {
-            if let Some(detail) = &sym.detail {
+            let hover = if let Some(detail) = &sym.detail {
                 format!("```urd\n{detail}\n```")
             } else {
                 format!("```urd\nstruct {}\n```", sym.name)
-            }
+            };
+            append_doc_comment(hover, sym)
         }
 
         SymbolKind::Decorator => {
-            if let Some(detail) = &sym.detail {
+            let hover = if let Some(detail) = &sym.detail {
                 format!("```urd\n{detail}\n```")
             } else {
                 format!("```urd\ndecorator {}\n```", sym.name)
-            }
+            };
+            append_doc_comment(hover, sym)
         }
 
         SymbolKind::Import => {
-            if let Some(detail) = &sym.detail {
+            let hover = if let Some(detail) = &sym.detail {
                 format!("```urd\n{detail}\n```")
             } else {
                 format!("```urd\nimport {}\n```", sym.name)
-            }
+            };
+            append_doc_comment(hover, sym)
         }
     }
 }
@@ -2129,6 +2156,7 @@ mod tests {
             span: SimpleSpan::new((), 10..20),
             type_annotation: None,
             detail: None,
+            doc_comment: None,
         }];
         assert!(find_symbol_at_offset(&syms, 5).is_none());
         assert!(find_symbol_at_offset(&syms, 25).is_none());
@@ -2479,6 +2507,7 @@ mod tests {
             detail: Some(
                 r##"const hero: Character = :{ name: "Hero", name_color: "#f5c542" }"##.to_string(),
             ),
+            doc_comment: None,
         };
 
         // Local source: hero is used as a dialogue speaker but NOT declared here.
@@ -2494,6 +2523,7 @@ mod tests {
             span: SimpleSpan::new((), 0..5),
             type_annotation: None,
             detail: Some("import hero from \"chars.urd\"".to_string()),
+            doc_comment: None,
         });
         syms.push(imported_sym);
 
@@ -2841,6 +2871,145 @@ mod tests {
         assert!(
             has_number,
             "expected at least one Number token, got {toks:?}"
+        );
+    }
+
+    // ── doc comment tests ────────────────────────────────────────────────
+
+    #[test]
+    fn doc_comment_attached_to_label() {
+        let src = "## The intro scene\nlabel intro {\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let intro = syms.iter().find(|s| s.name == "intro").unwrap();
+        assert_eq!(
+            intro.doc_comment.as_deref(),
+            Some("The intro scene"),
+            "doc comment should be attached to the label symbol"
+        );
+    }
+
+    #[test]
+    fn doc_comment_attached_to_variable() {
+        let src = "## The player's health\nlet health = 100\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "health").unwrap();
+        assert_eq!(sym.doc_comment.as_deref(), Some("The player's health"),);
+    }
+
+    #[test]
+    fn doc_comment_multiline_joined_with_newline() {
+        let src = "## First line\n## Second line\nconst MAX = 10\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "MAX").unwrap();
+        assert_eq!(
+            sym.doc_comment.as_deref(),
+            Some("First line\nSecond line"),
+            "multiple ## lines should be joined with newline"
+        );
+    }
+
+    #[test]
+    fn doc_comment_not_attached_when_absent() {
+        let src = "let x = 1\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "x").unwrap();
+        assert!(
+            sym.doc_comment.is_none(),
+            "no doc comment should be attached when none is written"
+        );
+    }
+
+    #[test]
+    fn doc_comment_attached_to_enum() {
+        let src = "## The player's faction\nenum Faction { Guild, Empire }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "Faction").unwrap();
+        assert_eq!(sym.doc_comment.as_deref(), Some("The player's faction"));
+    }
+
+    #[test]
+    fn doc_comment_attached_to_struct() {
+        let src = "## Represents a character\nstruct Character { name: str }\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "Character").unwrap();
+        assert_eq!(sym.doc_comment.as_deref(), Some("Represents a character"));
+    }
+
+    #[test]
+    fn doc_comment_attached_to_decorator() {
+        let src = "## Plays a sound effect\ndecorator sfx(sound: str) {\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "sfx").unwrap();
+        assert_eq!(sym.doc_comment.as_deref(), Some("Plays a sound effect"));
+    }
+
+    #[test]
+    fn hover_shows_doc_comment_for_label() {
+        let src = "## The intro scene\nlabel intro {\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        // Find "intro" after "label " to avoid matching "intro" inside the doc comment text.
+        let offset = src.find("label intro").unwrap() + "label ".len() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        assert!(
+            info.contains("The intro scene"),
+            "hover should include the doc comment; got: {info}"
+        );
+        assert!(
+            info.contains("label intro"),
+            "hover should still include the label signature; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_doc_comment_for_variable() {
+        let src = "## The player's health\nlet health = 100\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        // Find "health" after "let " to avoid matching it inside the doc comment text.
+        let offset = src.find("let health").unwrap() + "let ".len() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        assert!(
+            info.contains("The player's health"),
+            "hover should contain doc comment; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_doc_comment_separated_by_horizontal_rule() {
+        let src = "## Some docs\nconst LIMIT = 42\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("LIMIT").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset).unwrap();
+        // The separator "---" should appear between the code block and the doc text.
+        assert!(
+            info.contains("---"),
+            "hover should contain a horizontal rule separator; got: {info}"
+        );
+        assert!(
+            info.contains("Some docs"),
+            "hover should contain the doc comment text; got: {info}"
+        );
+    }
+
+    #[test]
+    fn regular_comment_does_not_become_doc_comment() {
+        // A single-# comment must NOT be attached as a doc comment.
+        let src = "# not a doc comment\nlet x = 1\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let sym = syms.iter().find(|s| s.name == "x").unwrap();
+        assert!(
+            sym.doc_comment.is_none(),
+            "single-# comment must not be treated as a doc comment"
         );
     }
 }

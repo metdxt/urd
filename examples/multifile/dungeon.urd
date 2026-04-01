@@ -42,6 +42,7 @@ global ally_faction: Faction = Faction.Rebel
 # LSP: document symbols — this label appears in the symbol list
 # ---------------------------------------------------------------------------
 
+## Entry label
 @entry
 label dungeon_entrance {
     # LSP: 'narrator' is a directly imported const — hover shows its definition in characters.urd
@@ -93,6 +94,7 @@ label dungeon_entrance {
 # Combat sequence with the dungeon gatekeeper.
 # ---------------------------------------------------------------------------
 
+## A scene where we fight warden
 label fight_warden {
     shadow_warden: "You will regret this, wanderer."
     narrator: "The Shadow Warden lunges — iron-shod boots crashing against the stone floor."

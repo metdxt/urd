@@ -19,9 +19,30 @@ use crate::{
 
 use super::aliases::{BoxedUrdParser, UrdInput, UrdParser};
 
-/// Parser for a single statement.
+/// Parser for a single statement, optionally preceded by `##` documentation comments.
+///
+/// One or more consecutive `## text` lines immediately before a statement are
+/// collected, joined with `\n`, and attached to the resulting AST node via
+/// [`Ast::with_doc_comment`].  Each doc-comment line must be followed by at
+/// least one newline before the next doc-comment line or the statement itself.
 pub fn statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
-    statement_inner(code_block()).boxed()
+    // Match a single `## text` line followed by at least one newline.
+    let doc_line = select! { Token::DocComment(s) => s }
+        .then_ignore(just(Token::Newline).repeated().at_least(1));
+
+    // Collect zero or more consecutive doc-comment lines.
+    let doc_comment = doc_line.repeated().collect::<Vec<String>>();
+
+    doc_comment
+        .then(statement_inner(code_block()))
+        .map(|(docs, ast)| {
+            if docs.is_empty() {
+                ast
+            } else {
+                ast.with_doc_comment(docs.join("\n"))
+            }
+        })
+        .boxed()
 }
 
 /// Parser for return statement (return expr)
@@ -627,6 +648,11 @@ fn match_parser<'tok, I: UrdInput<'tok>>(
 
 /// Parser for a bare script body (list of statements without braces).
 pub fn script<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
+    // Separators between statements: newlines and semicolons.
+    // Doc comments (## ...) are NOT separators — they are consumed by
+    // `statement()` itself and attached to the following AST node as
+    // `doc_comment`.  Including DocComment here would cause `allow_leading()`
+    // to swallow them before `statement()` ever sees them.
     let separator = just(Token::Newline).or(just(Token::Semicolon));
 
     statement()
@@ -975,6 +1001,60 @@ mod tests {
             matches!(ast.content(), AstContent::StructDecl { .. }),
             "expected AstContent::StructDecl, got {:?}",
             ast.content()
+        );
+    }
+
+    #[test]
+    fn doc_comment_attached_to_statement() {
+        // A single ## line immediately before a statement must be attached as
+        // doc_comment on the resulting AST node.
+        let result = parse_test!(statement(), "## hello world\nlet x = 1");
+        let ast = result.expect("doc comment + statement should parse");
+        assert_eq!(
+            ast.doc_comment.as_deref(),
+            Some("hello world"),
+            "doc comment should be attached; content was {:?}",
+            ast.content()
+        );
+    }
+
+    #[test]
+    fn doc_comment_multiline_attached_to_statement() {
+        // Multiple ## lines are joined with '\n'.
+        let result = parse_test!(statement(), "## first\n## second\nconst X = 1");
+        let ast = result.expect("multiline doc comment + statement should parse");
+        assert_eq!(
+            ast.doc_comment.as_deref(),
+            Some("first\nsecond"),
+            "multiple doc comment lines should be joined; content was {:?}",
+            ast.content()
+        );
+    }
+
+    #[test]
+    fn statement_without_doc_comment_has_none() {
+        let result = parse_test!(statement(), "let y = 2");
+        let ast = result.expect("bare statement should parse");
+        assert!(
+            ast.doc_comment.is_none(),
+            "doc_comment should be None when no ## precedes the statement"
+        );
+    }
+
+    #[test]
+    fn doc_comment_attached_in_script() {
+        use crate::compiler::loader::parse_source;
+        // parse_source goes through script() → statement(); the doc comment
+        // must survive all the way to the child AST node inside the Block.
+        let src = "## The player\nlet player = 1\n";
+        let block = parse_source(src).expect("script with doc comment should parse");
+        // The block contains one child: the declaration.
+        let children = block.children();
+        assert_eq!(children.len(), 1, "expected exactly one statement in block");
+        assert_eq!(
+            children[0].doc_comment.as_deref(),
+            Some("The player"),
+            "doc comment must be attached to the child statement inside the block"
         );
     }
 }

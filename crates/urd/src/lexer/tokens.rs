@@ -19,8 +19,13 @@ use crate::erro::LexerError;
 #[derive(Logos, Display, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
 #[logos(skip r"[ \t\r]+")] // Skip whitespace
-#[logos(skip r"#[^\n]*")] // Skip # line comments
+#[logos(skip r"#[^\n]*")] // Skip # line comments (## doc comments are matched first as tokens)
 pub enum Token {
+    /// Documentation comment token (`## some doc text`).
+    /// The captured string contains the trimmed comment text after the `##`.
+    #[regex(r"##[^\n]*", |lex| lex.slice()[2..].trim().to_string())]
+    DocComment(String),
+
     /// When error occurs on lexer level it is packed into Error kind token.
     /// We want parsing to be recoverable and not fail at the lexing stage.
     Error(LexerError),
@@ -468,6 +473,44 @@ mod tests {
 
         // A `#` inside a string literal is NOT treated as a comment
         let tok = lex(r#""hello # world""#);
+        assert!(matches!(tok, Token::StrLit(_)));
+    }
+
+    #[test]
+    fn doc_comments() {
+        // A standalone ## comment produces a DocComment token with trimmed text
+        let tok = lex("## hello world");
+        assert!(matches!(tok, Token::DocComment(s) if s == "hello world"));
+
+        // Leading/trailing whitespace after ## is trimmed
+        let tok = lex("##   trimmed   ");
+        assert!(matches!(tok, Token::DocComment(s) if s == "trimmed"));
+
+        // An empty ## line yields an empty string
+        let tok = lex("##");
+        assert!(matches!(tok, Token::DocComment(s) if s.is_empty()));
+
+        // A plain # is still skipped (not a doc comment)
+        let tokens: Vec<_> = Token::lexer("# regular comment").collect();
+        assert!(tokens.is_empty());
+
+        // ## does NOT get swallowed by the # skip rule
+        let tokens: Vec<_> = Token::lexer("## doc comment")
+            .filter(|t| !matches!(t, Ok(Token::Newline)))
+            .collect();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(&tokens[0], Ok(Token::DocComment(_))));
+
+        // ## followed by code on the next line: DocComment then Newline then the code token
+        let tokens: Vec<_> = Token::lexer("## doc\n42")
+            .filter(|t| !matches!(t, Ok(Token::Newline)))
+            .collect();
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(&tokens[0], Ok(Token::DocComment(s)) if s == "doc"));
+        assert!(matches!(&tokens[1], Ok(Token::IntLit(42))));
+
+        // A # inside a string literal is still NOT treated as a comment or doc comment
+        let tok = lex(r#""hello ## world""#);
         assert!(matches!(tok, Token::StrLit(_)));
     }
 }

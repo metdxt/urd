@@ -24,15 +24,18 @@ pub struct Ast {
     content: AstContent,
     /// The source span this node was parsed from. Zero span when constructed outside the parser.
     span: SimpleSpan,
+    /// Optional documentation comment (`## ...`) attached to this node.
+    pub doc_comment: Option<String>,
 }
 
 impl PartialEq for Ast {
-    /// Compares two AST nodes for structural equality, **ignoring source spans**.
+    /// Compares two AST nodes for structural equality, **ignoring source spans and doc comments**.
     ///
     /// Spans are source-location metadata injected by the parser; manually-constructed
     /// nodes (e.g. in tests) carry a zero span `0..0`, while parsed nodes carry real
     /// byte-offset spans. Excluding spans from equality makes test assertions robust
-    /// to this difference.
+    /// to this difference. Doc comments are also excluded so that adding or removing
+    /// documentation does not break structural equality checks.
     fn eq(&self, other: &Self) -> bool {
         self.decorators == other.decorators && self.content == other.content
     }
@@ -429,6 +432,7 @@ impl Ast {
             content,
             decorators: vec![],
             span: SimpleSpan::new((), 0..0),
+            doc_comment: None,
         }
     }
 
@@ -438,12 +442,19 @@ impl Ast {
             content,
             decorators,
             span: SimpleSpan::new((), 0..0),
+            doc_comment: None,
         }
     }
 
     /// Attaches decorators to this AST node, replacing any existing ones.
     pub fn with_decorators(mut self, decorators: Vec<Decorator>) -> Self {
         self.decorators = decorators;
+        self
+    }
+
+    /// Attaches a documentation comment to this AST node, returning `self`.
+    pub fn with_doc_comment(mut self, doc: String) -> Self {
+        self.doc_comment = Some(doc);
         self
     }
 
