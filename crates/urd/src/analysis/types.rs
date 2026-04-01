@@ -33,9 +33,12 @@
 //!
 //! Any combination not listed above is considered a [`AnalysisError::TypeMismatch`].
 //! For unresolved qualified identifier paths (`IdentPath` with multiple segments),
-//! the policy is explicit and conservative by default: incompatible unless a
-//! `Named(...)` annotation can be matched by shape (e.g. `Type.Variant` or
-//! `module.Type.Variant`) and checked/accepted under best-effort enum metadata.
+//! the default policy is conservative in identifier-RHS checks: incompatible unless
+//! a `Named(...)` annotation can be matched by enum-path shape (e.g.
+//! `Type.Variant` or `module.Type.Variant`) and accepted under best-effort enum
+//! metadata. (Separate map-literal-to-`Named(...)` struct checks intentionally
+//! defer on unresolved qualified type names to avoid false positives when import
+//! metadata is unavailable.)
 //!
 //! The pass is best-effort: non-literal right-hand sides (e.g. arithmetic
 //! expressions, function call results) are silently accepted because their
@@ -335,9 +338,9 @@ fn check_value_compat(
                         // double-report.
                     } else if path.len() > 1 {
                         // Qualified path (e.g. `chars.Character`) that was NOT
-                        // found in the injected imported context. Skip rather
-                        // than producing a false-positive — the workspace index
-                        // may simply not have been threaded in for this run.
+                        // found in the injected imported context. Intentional
+                        // exception: defer here to avoid false positives when
+                        // import/workspace metadata is unavailable in this run.
                     } else {
                         // Unqualified name that is neither a known struct nor a
                         // known enum — report a mismatch.
@@ -391,10 +394,10 @@ fn annotation_compatible(actual: &TypeAnnotation, expected: &TypeAnnotation) -> 
 }
 
 /// Explicit compatibility policy for unresolved qualified identifiers
-/// (`IdentPath` with multiple segments) when no precise static type can be
-/// proven at this phase.
+/// (`IdentPath` with multiple segments) in identifier-RHS compatibility checks
+/// when no precise static type can be proven at this phase.
 fn unresolved_qualified_identpath_compatible(_expected: &TypeAnnotation) -> bool {
-    // Conservative default: do not silently accept unresolved qualified paths.
+    // Conservative default for identifier-RHS checks: do not silently accept.
     false
 }
 

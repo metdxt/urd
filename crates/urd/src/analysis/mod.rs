@@ -326,10 +326,11 @@ pub enum AnalysisError {
     },
 
     // ── Opt-in ────────────────────────────────────────────────────────────
-    /// A set of labels forms a cycle with no escaping path to a terminator.
+    /// Reserved for a future loop-detection pass:
+    /// a set of labels forms a cycle with no escaping path to a terminator.
     ///
-    /// This diagnostic is **opt-in**: it is only emitted for labels decorated
-    /// with `@lint(check_loops)`.
+    /// This variant is currently not emitted in practice because
+    /// `loop_detection` is a placeholder pass and is not executed.
     InfiniteDialogueLoop {
         /// The label that anchors the detected cycle.
         label: String,
@@ -543,8 +544,8 @@ impl AnalysisError {
 
             AnalysisError::InfiniteDialogueLoop { label, .. } => {
                 format!(
-                    "Infinite dialogue loop: label '{label}' is part of a cycle with no \
-                     escaping path to a terminator"
+                    "Reserved diagnostic (future loop-detection pass): label '{label}' \
+                     would be part of a cycle with no escaping path to a terminator"
                 )
             }
         }
@@ -648,7 +649,7 @@ impl AnalysisError {
             }
 
             AnalysisError::InfiniteDialogueLoop { label, .. } => {
-                format!("label '{label}' anchors an infinite loop")
+                format!("reserved (future pass): label '{label}' would anchor an infinite loop")
             }
         }
     }
