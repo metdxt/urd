@@ -9,8 +9,8 @@ use crate::{
     lexer::Token,
     parser::{
         ast::{
-            Ast, Decorator, DecoratorParam, EventConstraint, FnParam, ImportSymbol, MatchArm,
-            MatchPattern, StructField, TypeAnnotation,
+            Ast, DeclKind, Decorator, DecoratorParam, EventConstraint, FnParam, ImportSymbol,
+            MatchArm, MatchPattern, StructField, TypeAnnotation,
         },
         expr::{comma_separated_exprs, declaration, expr, extern_declaration, type_annotation},
     },
@@ -53,7 +53,12 @@ pub fn return_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         .boxed()
 }
 
-/// Parser for jump statement (`jump label` or `jump label and return`)
+/// Parser for jump statement (`jump label` or `jump label and return`).
+///
+/// Labels may be single-segment (`jump my_scene`) or two-segment
+/// (`jump module.my_scene`) for cross-module jumps.  Three or more segments
+/// produce a diagnostic error with best-effort recovery (the path is
+/// truncated to the first two segments).
 pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     let label = select! {
         // Local jump: `jump label_name`
@@ -61,7 +66,22 @@ pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         // Cross-module jump: `jump module_name.label_name`
         // Encoded as "module_name.label_name" — the compiler detects the dot.
         Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
-    };
+    }
+    .or(select! {
+        Token::IdentPath(path) if path.len() >= 3 => path,
+    }
+    .validate(|path, extra, emitter| {
+        emitter.emit(chumsky::error::Rich::custom(
+            extra.span(),
+            format!(
+                "jump label path `{}` has {} segments; maximum is 2 \
+                 (`module.label` for cross-module jumps)",
+                path.join("."),
+                path.len()
+            ),
+        ));
+        path[..2].join(".") // best-effort recovery: truncate to first two segments
+    }));
 
     just(Token::Jump)
         .ignore_then(label)
@@ -82,7 +102,22 @@ pub fn let_call_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> 
     let label = select! {
         Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
         Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
-    };
+    }
+    .or(select! {
+        Token::IdentPath(path) if path.len() >= 3 => path,
+    }
+    .validate(|path, extra, emitter| {
+        emitter.emit(chumsky::error::Rich::custom(
+            extra.span(),
+            format!(
+                "jump label path `{}` has {} segments; maximum is 2 \
+                 (`module.label` for cross-module jumps)",
+                path.join("."),
+                path.len()
+            ),
+        ));
+        path[..2].join(".") // best-effort recovery: truncate to first two segments
+    }));
 
     just(Token::Let)
         .ignore_then(select! {
@@ -262,10 +297,13 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
     // starts with `let` but is a statement form that must not yield mid-expression.
     // terminator_statement comes early to claim EndBang/TodoBang before the
     // generic expression fallback can consume them.
+    // anon_fn_assignment must precede declaration() because both start with
+    // `let`/`const`/`global`; the `fn` token after `=` distinguishes them.
     terminator_statement()
         .or(let_call_statement())
         .or(assignment())
         .or(extern_declaration())
+        .or(anon_fn_assignment(block.clone()))
         .or(declaration())
         .or(if_parser(block.clone()))
         .or(return_statement())
@@ -356,7 +394,7 @@ fn decorator_params_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
 }
 
 /// Parses `(name: Type, name2, ...)` — the parameter list of a function definition.
-fn fn_params_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
+pub fn fn_params_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
     'tok,
     I,
     Vec<FnParam>,
@@ -380,7 +418,7 @@ fn fn_params_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
 }
 
 /// Parses `-> TypeName` — the return-type annotation on a function definition.
-fn return_type_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
+pub fn return_type_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
     'tok,
     I,
     TypeAnnotation,
@@ -404,16 +442,19 @@ fn return_type_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
 }
 
 /// Parses a full function definition:
-/// `fn name(param: Type, ...) -> RetType { body }`
+/// `fn [name](param: Type, ...) -> RetType { body }`
 ///
-/// The return type and parameters are both optional.
+/// The name is optional; when absent the result is an anonymous function
+/// expression (`FnDef { name: None, ... }`).  The return type and parameters
+/// are also both optional.
 fn fn_def_parser<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
     let name = select! {
         Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
     }
-    .labelled("function name");
+    .labelled("function name")
+    .or_not();
 
     just(Token::Fn)
         .ignore_then(name)
@@ -421,9 +462,57 @@ fn fn_def_parser<'tok, I: UrdInput<'tok>>(
         .then(return_type_parser().or_not())
         .then(block)
         .map_with(|(((name, params), ret_type), body), extra| {
-            Ast::fn_def(Some(name), params, ret_type, body).with_span(extra.span())
+            Ast::fn_def(name, params, ret_type, body).with_span(extra.span())
         })
         .boxed()
+}
+
+/// Parses `let/const/global name [: Type] = fn(params) [-> RetType] { body }` —
+/// an anonymous-function value bound to a variable.
+///
+/// This must be tried *before* the regular [`declaration`] parser because both
+/// start with a `let`/`const`/`global` keyword.  The `fn` token immediately
+/// after `=` uniquely identifies this form.
+///
+/// The `block` parameter is the enclosing [`code_block`] context, threaded
+/// through so that anonymous function bodies can contain nested block constructs
+/// (including further anonymous functions) without triggering construction-time
+/// infinite recursion.
+fn anon_fn_assignment<'tok, I: UrdInput<'tok>>(
+    block: impl UrdParser<'tok, I> + 'tok,
+) -> impl UrdParser<'tok, I> {
+    let decl_word = select! {
+        Token::Const  => DeclKind::Constant,
+        Token::Let    => DeclKind::Variable,
+        Token::Global => DeclKind::Global,
+    };
+
+    let ident = select! {
+        Token::IdentPath(path) if path.len() == 1 => Ast::value(RuntimeValue::IdentPath(path)),
+    }
+    .labelled("variable name");
+
+    let anon_fn = just(Token::Fn)
+        .ignore_then(fn_params_parser())
+        .then(return_type_parser().or_not())
+        .then(block)
+        .map_with(|((params, ret_type), body), extra| {
+            Ast::fn_def(None, params, ret_type, body).with_span(extra.span())
+        });
+
+    decl_word
+        .then(ident)
+        .then(type_annotation().or_not())
+        .then_ignore(just(Token::Assign))
+        .then(anon_fn)
+        .map_with(|(((decl, name), annotation), def), extra| {
+            let span = extra.span();
+            match annotation {
+                Some(ann) => Ast::typed_decl(decl, name, ann, def).with_span(span),
+                None => Ast::decl(decl, name, def).with_span(span),
+            }
+        })
+        .labelled("anonymous function binding")
 }
 
 /// Parses a full decorator definition:
@@ -627,7 +716,8 @@ fn enum_decl_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     let variant = select! {
         Token::IdentPath(path) if path.len() == 1 => path[0].clone()
     }
-    .labelled("enum variant");
+    .labelled("enum variant")
+    .map_with(|name, extra| (name, extra.span()));
 
     let variants = variant
         .separated_by(sep)
@@ -664,9 +754,11 @@ fn struct_decl_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     .labelled("field name");
 
     let field = field_name
+        .map_with(|name, extra| (name, extra.span()))
         .then(type_annotation())
-        .map(|(name, type_annotation)| StructField {
+        .map(|((name, span), type_annotation)| StructField {
             name,
+            span,
             type_annotation,
         })
         .labelled("struct field");
@@ -803,14 +895,14 @@ mod tests {
             "fn def without return type failed: {:?}",
             result
         );
-        if let Ok(ast) = result {
-            if let AstContent::Block(stmts) = ast.content() {
-                assert_eq!(stmts.len(), 1);
-                if let AstContent::FnDef { ret_type, .. } = stmts[0].content() {
-                    assert_eq!(*ret_type, None, "expected no return type");
-                } else {
-                    panic!("expected FnDef, got {:?}", stmts[0].content());
-                }
+        if let Ok(ast) = result
+            && let AstContent::Block(stmts) = ast.content()
+        {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::FnDef { ret_type, .. } = stmts[0].content() {
+                assert_eq!(*ret_type, None, "expected no return type");
+            } else {
+                panic!("expected FnDef, got {:?}", stmts[0].content());
             }
         }
     }
@@ -819,22 +911,22 @@ mod tests {
     fn test_fn_def_no_params() {
         let result = parse_test!(code_block(), "{\n  fn zero() -> int { return 0 }\n}");
         assert!(result.is_ok(), "fn def with no params failed: {:?}", result);
-        if let Ok(ast) = result {
-            if let AstContent::Block(stmts) = ast.content() {
-                assert_eq!(stmts.len(), 1);
-                if let AstContent::FnDef {
-                    params, ret_type, ..
-                } = stmts[0].content()
-                {
-                    assert!(params.is_empty(), "expected empty params");
-                    assert_eq!(
-                        *ret_type,
-                        Some(crate::parser::ast::TypeAnnotation::Int),
-                        "expected int return type"
-                    );
-                } else {
-                    panic!("expected FnDef, got {:?}", stmts[0].content());
-                }
+        if let Ok(ast) = result
+            && let AstContent::Block(stmts) = ast.content()
+        {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::FnDef {
+                params, ret_type, ..
+            } = stmts[0].content()
+            {
+                assert!(params.is_empty(), "expected empty params");
+                assert_eq!(
+                    *ret_type,
+                    Some(crate::parser::ast::TypeAnnotation::Int),
+                    "expected int return type"
+                );
+            } else {
+                panic!("expected FnDef, got {:?}", stmts[0].content());
             }
         }
     }
@@ -951,6 +1043,54 @@ mod tests {
         } else {
             panic!("Expected AstContent::Jump, got {:?}", ast.content());
         }
+    }
+
+    /// PAR-2: a 3-segment label must produce an error whose message mentions
+    /// the segment limit, while still emitting a best-effort recovery value.
+    #[test]
+    fn jump_three_segment_label_emits_max_2_error() {
+        let result = parse_test!(jump_statement(), "jump a.b.c");
+        let Err(errors) = result else {
+            panic!("expected an error for a 3-segment jump label, but parsing succeeded");
+        };
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("maximum is 2") || e.contains("2 segments")),
+            "expected error mentioning 'maximum is 2' or '2 segments', got: {errors:?}"
+        );
+    }
+
+    /// PAR-1: `let f = fn(params) -> ret { body }` should parse as a
+    /// `Declaration` whose RHS is a `FnDef` with `name: None`.
+    #[test]
+    fn anon_fn_declaration_name_is_none() {
+        let result = parse_test!(statement(), "let f = fn(x: int) -> int { return x }");
+        assert!(
+            result.is_ok(),
+            "anon fn declaration should parse: {result:?}"
+        );
+        let ast = result.unwrap();
+        let AstContent::Declaration { decl_defs, .. } = ast.content() else {
+            panic!("expected Declaration, got {:?}", ast.content());
+        };
+        let AstContent::FnDef {
+            name,
+            params,
+            ret_type,
+            ..
+        } = decl_defs.content()
+        else {
+            panic!("expected FnDef in decl_defs, got {:?}", decl_defs.content());
+        };
+        assert_eq!(*name, None, "anonymous fn should have name=None");
+        assert_eq!(params.len(), 1, "expected 1 param");
+        assert_eq!(params[0].name, "x");
+        assert_eq!(
+            params[0].type_annotation,
+            Some(crate::parser::ast::TypeAnnotation::Int)
+        );
+        assert_eq!(*ret_type, Some(crate::parser::ast::TypeAnnotation::Int));
     }
 
     #[test]
@@ -1120,7 +1260,7 @@ mod tests {
 
     #[test]
     fn struct_decl_parses_basic() {
-        use crate::parser::ast::{StructField, TypeAnnotation};
+        use crate::parser::ast::TypeAnnotation;
         let result = parse_test!(
             struct_decl_parser(),
             "struct Player {\n    name: str\n    health: int\n}"
@@ -1128,19 +1268,13 @@ mod tests {
         let ast = result.expect("basic struct decl should parse");
         if let AstContent::StructDecl { name, fields } = ast.content() {
             assert_eq!(name, "Player");
-            assert_eq!(
-                fields,
-                &vec![
-                    StructField {
-                        name: "name".into(),
-                        type_annotation: TypeAnnotation::Str,
-                    },
-                    StructField {
-                        name: "health".into(),
-                        type_annotation: TypeAnnotation::Int,
-                    },
-                ]
-            );
+            assert_eq!(fields.len(), 2);
+            // Compare name and type_annotation only; span is assigned by the
+            // parser and varies with source position, so we don't assert it.
+            assert_eq!(fields[0].name, "name");
+            assert_eq!(fields[0].type_annotation, TypeAnnotation::Str);
+            assert_eq!(fields[1].name, "health");
+            assert_eq!(fields[1].type_annotation, TypeAnnotation::Int);
         } else {
             panic!("Expected AstContent::StructDecl, got {:?}", ast.content());
         }
@@ -1329,7 +1463,7 @@ label start {
             );
         }
         // The two strings are on different lines, so their spans must not overlap.
-        let (s0, e0) = item_spans[0];
+        let (_, e0) = item_spans[0];
         let (s1, _) = item_spans[1];
         assert!(
             s1 >= e0,

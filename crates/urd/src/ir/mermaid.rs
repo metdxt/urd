@@ -494,6 +494,7 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             | IrNodeKind::EnterScope { .. }
             | IrNodeKind::ExitScope { .. }
             | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineStruct { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
             | IrNodeKind::DefineFunction { .. }
             | IrNodeKind::ExternDecl { .. }
@@ -799,6 +800,12 @@ fn mermaid_node_def(
             format!("{n}[\"{text}\"]:::enumDef")
         }
 
+        // ── DefineStruct ────────────────────────────────────────────────────
+        IrNodeKind::DefineStruct { name, fields, .. } => {
+            let text = escape_mermaid(&format!("struct {name} ({} fields)", fields.len()));
+            format!("{n}[\"{text}\"]:::enumDef")
+        }
+
         // ── DefineScriptDecorator ──────────────────────────────────────────
         IrNodeKind::DefineScriptDecorator { name, params, .. } => {
             let raw = format!("def_decorator<br/>@{name} ({} params)", params.len());
@@ -1052,6 +1059,7 @@ mod tests {
     use crate::lexer::strings::ParsedString;
     use crate::parser::ast::{Ast, DeclKind};
     use crate::runtime::value::RuntimeValue;
+    use chumsky::span::Span as _;
 
     fn compile(ast: Ast) -> IrGraph {
         Compiler::compile(&ast).expect("compile failed in test")
@@ -1273,7 +1281,10 @@ mod tests {
     fn test_mermaid_define_enum_node() {
         let mmd = compile(Ast::block(vec![Ast::enum_decl(
             "Dir".into(),
-            vec!["N".into(), "S".into()],
+            vec![
+                ("N".into(), chumsky::span::SimpleSpan::new((), 0..0)),
+                ("S".into(), chumsky::span::SimpleSpan::new((), 0..0)),
+            ],
         )]))
         .to_mermaid();
         assert!(mmd.contains("enum"), "must contain DefineEnum node");

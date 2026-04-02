@@ -415,9 +415,24 @@ fn annotation_compatible(actual: &TypeAnnotation, expected: &TypeAnnotation) -> 
 /// Explicit compatibility policy for unresolved qualified identifiers
 /// (`IdentPath` with multiple segments) in identifier-RHS compatibility checks
 /// when no precise static type can be proven at this phase.
-fn unresolved_qualified_identpath_compatible(_expected: &TypeAnnotation) -> bool {
-    // Conservative default for identifier-RHS checks: do not silently accept.
-    false
+/// Returns `true` when `path` (a multi-segment identifier) resolves to a
+/// declared struct or enum name in `ctx`, making it a plausible typed value.
+///
+/// Checks both the fully-qualified join (`"module.Type"`) and the unqualified
+/// tail segment (`"Type"`) against the struct and enum registries so that
+/// cross-module references like `chars.Character` are accepted when `Character`
+/// is a known type in the imported context.
+fn unresolved_qualified_identpath_compatible(
+    path: &[String],
+    _expected: &TypeAnnotation,
+    ctx: &AnalysisContext,
+) -> bool {
+    let tail = path.last().map(String::as_str).unwrap_or("");
+    let qualified = path.join(".");
+    ctx.structs.contains_key(tail)
+        || ctx.structs.contains_key(&qualified)
+        || ctx.enums.contains_key(tail)
+        || ctx.enums.contains_key(&qualified)
 }
 
 /// Best-effort lookup of enum variants for a named type annotation.
@@ -480,7 +495,7 @@ fn is_compatible(
         && !matches!(annotation, TypeAnnotation::Named(_))
     {
         if path.len() != 1 {
-            return unresolved_qualified_identpath_compatible(annotation);
+            return unresolved_qualified_identpath_compatible(path, annotation, ctx);
         }
 
         if let Some(found_ann) = scope.lookup(path[0].as_str()) {
@@ -550,9 +565,10 @@ fn is_compatible(
                         true
                     }
                 } else {
-                    // Explicit conservative default for unresolved qualified paths:
-                    // incompatible unless they match the expected Named path shape.
-                    false
+                    // Shape doesn't match a variant pattern — try resolving the
+                    // qualified path as a struct/enum type reference (e.g.
+                    // `chars.Character` when `Character` is a known struct/enum).
+                    unresolved_qualified_identpath_compatible(ident_path, annotation, ctx)
                 }
             }
 
@@ -664,6 +680,7 @@ fn runtime_value_type_name(value: &RuntimeValue) -> String {
         RuntimeValue::List(_) => "list".to_owned(),
         RuntimeValue::Function { .. } => "fn".to_owned(),
         RuntimeValue::ScriptDecorator { .. } => "decorator".to_owned(),
+        RuntimeValue::Struct { name, .. } => format!("struct '{name}'"),
     }
 }
 
@@ -676,6 +693,7 @@ mod tests {
     use super::*;
     use crate::parser::ast::{DeclKind, TypeAnnotation};
     use crate::runtime::value::RuntimeValue;
+    use chumsky::span::Span as _;
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -1075,13 +1093,16 @@ mod tests {
     #[test]
     fn struct_literal_compatible_with_struct_annotation() {
         use crate::parser::ast::StructField;
+        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let fields = vec![
             StructField {
                 name: "name".into(),
+                span: zs,
                 type_annotation: TypeAnnotation::Str,
             },
             StructField {
                 name: "health".into(),
+                span: zs,
                 type_annotation: TypeAnnotation::Int,
             },
         ];
@@ -1107,13 +1128,16 @@ mod tests {
     fn struct_literal_missing_field_reports_struct_mismatch() {
         use crate::analysis::StructFieldError;
         use crate::parser::ast::StructField;
+        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let fields = vec![
             StructField {
                 name: "name".into(),
+                span: zs,
                 type_annotation: TypeAnnotation::Str,
             },
             StructField {
                 name: "health".into(),
+                span: zs,
                 type_annotation: TypeAnnotation::Int,
             },
         ];
@@ -1151,6 +1175,7 @@ mod tests {
         use crate::parser::ast::StructField;
         let fields = vec![StructField {
             name: "alive".into(),
+            span: chumsky::span::SimpleSpan::new((), 0..0),
             type_annotation: TypeAnnotation::Bool,
         }];
         let mut ctx = make_ctx(&[]);
@@ -1186,6 +1211,7 @@ mod tests {
         use crate::parser::ast::StructField;
         let fields = vec![StructField {
             name: "x".into(),
+            span: chumsky::span::SimpleSpan::new((), 0..0),
             type_annotation: TypeAnnotation::Int,
         }];
         let mut ctx = make_ctx(&[]);
@@ -1280,5 +1306,70 @@ mod tests {
         let ast = Ast::block(vec![extern_decl]);
         let errors = check(&ast, &ctx);
         assert_no_errors(&errors);
+    }
+
+    // ── ANA-5: unresolved_qualified_identpath_compatible ──────────────────────
+
+    #[test]
+    fn qualified_ident_accepted_when_tail_is_known_struct() {
+        // `chars.Character` should be accepted when `Character` is a known struct.
+        let zs = chumsky::span::SimpleSpan::new((), 0..0);
+        let mut ctx = AnalysisContext::default();
+        ctx.structs.insert(
+            "Character".into(),
+            vec![crate::parser::ast::StructField {
+                name: "name".into(),
+                span: zs,
+                type_annotation: TypeAnnotation::Str,
+            }],
+        );
+
+        // Assigning a qualified path `chars.Character` to a Named-typed variable
+        // should not produce a TypeMismatch.
+        let init = Ast::value(RuntimeValue::IdentPath(vec![
+            "chars".into(),
+            "Character".into(),
+        ]));
+        let decl = typed_decl("npc", TypeAnnotation::Named(vec!["Character".into()]), init);
+        let root = Ast::block(vec![decl]);
+        assert_no_errors(&check(&root, &ctx));
+    }
+
+    #[test]
+    fn qualified_ident_accepted_when_tail_is_known_enum() {
+        // `dir.Direction` should be accepted when `Direction` is a known enum.
+        let ctx = make_ctx(&[("Direction", &["North", "South"])]);
+
+        let init = Ast::value(RuntimeValue::IdentPath(vec![
+            "dir".into(),
+            "Direction".into(),
+        ]));
+        let decl = typed_decl(
+            "heading",
+            TypeAnnotation::Named(vec!["Direction".into()]),
+            init,
+        );
+        let root = Ast::block(vec![decl]);
+        assert_no_errors(&check(&root, &ctx));
+    }
+
+    #[test]
+    fn qualified_ident_rejected_when_name_unknown() {
+        // `foo.Unknown` should produce a TypeMismatch when neither `Unknown`
+        // nor `foo.Unknown` resolves to any struct or enum in context.
+        let ctx = make_ctx(&[]);
+        let init = Ast::value(RuntimeValue::IdentPath(vec![
+            "foo".into(),
+            "Unknown".into(),
+        ]));
+        let decl = typed_decl("x", TypeAnnotation::Int, init);
+        let root = Ast::block(vec![decl]);
+        // The annotation is Int and the value is a qualified IdentPath to an
+        // unknown type — this should be rejected as a type mismatch.
+        let errors = check(&root, &ctx);
+        assert!(
+            !errors.is_empty(),
+            "expected a TypeMismatch for unknown qualified ident assigned to Int"
+        );
     }
 }

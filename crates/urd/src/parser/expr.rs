@@ -19,11 +19,33 @@ use super::aliases::{BoxedUrdParser, UrdInput, UrdParser};
 use super::ast::Ast;
 use crate::lexer::Token;
 use crate::parser::ast::{DeclKind, TypeAnnotation};
+use crate::parser::block::{code_block, fn_params_parser, return_type_parser};
 use crate::runtime::value::RuntimeValue;
 
-/// Represents a value
+/// Represents a value, including anonymous function literals.
+///
+/// Anonymous function literals have the form
+/// `fn(param: Type, ...) -> RetType { body }` and produce a
+/// [`crate::parser::ast::AstContent::FnDef`] node with `name: None`.
+///
+/// # Construction safety
+///
+/// `code_block()` is called here (outside any `recursive` closure) so there
+/// is no construction-time mutual-recursion cycle between this function and
+/// the block parser.
 pub fn atom<'tokens, I: UrdInput<'tokens>>() -> BoxedUrdParser<'tokens, I> {
-    atom_internal(expr()).boxed()
+    // Anonymous function literal: `fn(params) [-> RetType] { body }`
+    // Must be tried before the generic atom so the `fn` keyword is not
+    // consumed as an identifier.
+    let anon_fn = just(Token::Fn)
+        .ignore_then(fn_params_parser())
+        .then(return_type_parser().or_not())
+        .then(code_block())
+        .map_with(|((params, ret_type), body), extra| {
+            Ast::fn_def(None, params, ret_type, body).with_span(extra.span())
+        });
+
+    anon_fn.or(atom_internal(expr())).boxed()
 }
 
 /// Internal helper for `atom` that accepts a recursive expression parser.
@@ -333,6 +355,7 @@ pub fn extern_declaration<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> 
 mod tests {
     use super::*;
     use crate::parse_test;
+    use crate::parser::ast::AstContent;
 
     /// Helper: parse a type annotation from source text (e.g. `": int"`).
     fn parse_type_annotation(src: &str) -> Result<TypeAnnotation, ()> {
@@ -529,5 +552,40 @@ mod tests {
         // `extern global` is no longer valid syntax — kind specifiers are gone
         let result = parse_test!(extern_declaration(), "extern global score");
         assert!(result.is_err(), "extern global should not parse");
+    }
+
+    /// PAR-1: anonymous function literal in expression (atom) position must
+    /// produce a `FnDef` node with `name: None`.
+    #[test]
+    fn test_anon_fn_in_expression_position() {
+        let result = parse_test!(atom(), "fn(x: int) -> int { return x }");
+        assert!(
+            result.is_ok(),
+            "anonymous fn should parse in expression position: {result:?}"
+        );
+        let ast = result.unwrap();
+        match ast.content() {
+            AstContent::FnDef {
+                name,
+                params,
+                ret_type,
+                ..
+            } => {
+                assert_eq!(*name, None, "anonymous fn must have name=None");
+                assert_eq!(params.len(), 1, "expected exactly 1 parameter");
+                assert_eq!(params[0].name, "x");
+                assert_eq!(
+                    params[0].type_annotation,
+                    Some(TypeAnnotation::Int),
+                    "parameter type should be int"
+                );
+                assert_eq!(
+                    *ret_type,
+                    Some(TypeAnnotation::Int),
+                    "return type should be int"
+                );
+            }
+            other => panic!("expected AstContent::FnDef, got {:?}", other),
+        }
     }
 }

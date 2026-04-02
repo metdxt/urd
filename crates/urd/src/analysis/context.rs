@@ -143,7 +143,10 @@ fn collect_labels(root: &Ast, labels: &mut HashSet<String>) {
 fn collect_enums(root: &Ast, enums: &mut HashMap<String, Vec<String>>) {
     walk_ast(root, &mut |node| {
         if let AstContent::EnumDecl { name, variants } = node.content() {
-            enums.insert(name.clone(), variants.clone());
+            enums.insert(
+                name.clone(),
+                variants.iter().map(|(n, _)| n.clone()).collect(),
+            );
         }
     });
 }
@@ -275,6 +278,7 @@ mod tests {
     use super::*;
     use crate::parser::ast::{AstContent, DeclKind, StructField, TypeAnnotation};
     use crate::runtime::value::RuntimeValue;
+    use chumsky::span::Span as _;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -329,9 +333,10 @@ mod tests {
 
     #[test]
     fn build_collects_top_level_enum() {
+        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let enum_node = Ast::enum_decl(
             "Dir".to_owned(),
-            vec!["North".to_owned(), "South".to_owned()],
+            vec![("North".to_owned(), zs), ("South".to_owned(), zs)],
         );
         let root = Ast::block(vec![enum_node]);
         let ctx = AnalysisContext::build(&root);
@@ -343,9 +348,14 @@ mod tests {
 
     #[test]
     fn build_collects_enum_nested_in_label() {
+        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let enum_node = Ast::enum_decl(
             "Color".to_owned(),
-            vec!["Red".to_owned(), "Green".to_owned(), "Blue".to_owned()],
+            vec![
+                ("Red".to_owned(), zs),
+                ("Green".to_owned(), zs),
+                ("Blue".to_owned(), zs),
+            ],
         );
         let label = Ast::labeled_block("scene".to_owned(), Ast::block(vec![enum_node]));
         let root = Ast::block(vec![label]);
@@ -356,8 +366,12 @@ mod tests {
 
     #[test]
     fn build_collects_multiple_enums() {
-        let e1 = Ast::enum_decl("A".to_owned(), vec!["X".to_owned()]);
-        let e2 = Ast::enum_decl("B".to_owned(), vec!["Y".to_owned(), "Z".to_owned()]);
+        let zs = chumsky::span::SimpleSpan::new((), 0..0);
+        let e1 = Ast::enum_decl("A".to_owned(), vec![("X".to_owned(), zs)]);
+        let e2 = Ast::enum_decl(
+            "B".to_owned(),
+            vec![("Y".to_owned(), zs), ("Z".to_owned(), zs)],
+        );
         let root = Ast::block(vec![e1, e2]);
         let ctx = AnalysisContext::build(&root);
         assert_eq!(ctx.enums.len(), 2);
@@ -371,13 +385,16 @@ mod tests {
 
     #[test]
     fn build_collects_top_level_struct() {
+        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let fields = vec![
             StructField {
                 name: "name".into(),
+                span: zs,
                 type_annotation: TypeAnnotation::Str,
             },
             StructField {
                 name: "health".into(),
+                span: zs,
                 type_annotation: TypeAnnotation::Int,
             },
         ];
@@ -393,6 +410,7 @@ mod tests {
     fn build_collects_struct_nested_in_label() {
         let fields = vec![StructField {
             name: "x".into(),
+            span: chumsky::span::SimpleSpan::new((), 0..0),
             type_annotation: TypeAnnotation::Float,
         }];
         let inner = Ast::new(AstContent::StructDecl {

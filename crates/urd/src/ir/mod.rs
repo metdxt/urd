@@ -365,6 +365,20 @@ pub enum IrNodeKind {
         variants: Vec<String>,
     },
 
+    /// Struct declaration: registers the struct's field names in the VM environment.
+    ///
+    /// Executing this node stores the struct schema (ordered field name list) in
+    /// [`crate::vm::env::Environment`] so that struct constructor calls can build
+    /// [`crate::runtime::value::RuntimeValue::Struct`] instances.
+    ///
+    /// Continues via a single [`IrEdge::Next`] edge.
+    DefineStruct {
+        /// The struct type name.
+        name: String,
+        /// Ordered list of field names (types are not enforced at runtime).
+        fields: Vec<String>,
+    },
+
     /// Register a script-defined decorator in the VM's decorator table.
     ///
     /// Executing this node stores a `RuntimeValue::ScriptDecorator` into the

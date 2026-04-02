@@ -552,6 +552,12 @@ impl Vm {
                     state.cursor = next_of(graph, node_idx);
                 }
 
+                // ── Struct declaration ───────────────────────────────────────
+                IrNodeKind::DefineStruct { name, fields } => {
+                    state.env.define_struct(name.clone(), fields.clone());
+                    state.cursor = next_of(graph, node_idx);
+                }
+
                 // ── Script-defined decorator registration ────────────────────
                 //
                 // At execution time we store a `RuntimeValue::ScriptDecorator`
@@ -1011,6 +1017,7 @@ mod tests {
         parser::ast::{Ast, AstContent, DeclKind, Decorator, MatchArm, MatchPattern},
         runtime::value::RuntimeValue,
     };
+    use chumsky::span::Span as _;
 
     // ── Shared helpers ────────────────────────────────────────────────────────
 
@@ -1578,9 +1585,10 @@ mod tests {
     /// A complete script with `DefineEnum` + `Switch` reaches the right arm.
     #[test]
     fn test_switch_on_enum_variant() {
+        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let enum_decl = Ast::enum_decl(
             "Direction".to_string(),
-            vec!["North".to_string(), "South".to_string()],
+            vec![("North".to_string(), zs), ("South".to_string(), zs)],
         );
 
         let north_path = Ast::value(RuntimeValue::IdentPath(vec![

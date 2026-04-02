@@ -179,7 +179,13 @@ mod tests {
             ),
             // EnumDecl
             spanned(
-                Ast::enum_decl("Color".into(), vec!["Red".into(), "Blue".into()]),
+                Ast::enum_decl(
+                    "Color".into(),
+                    vec![
+                        ("Red".into(), chumsky::span::SimpleSpan::new((), 0..0)),
+                        ("Blue".into(), chumsky::span::SimpleSpan::new((), 0..0)),
+                    ],
+                ),
                 11,
                 20,
             ),

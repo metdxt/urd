@@ -42,6 +42,7 @@ use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
 use crate::parser::ast::{AstContent, Operator};
+// MatchPattern::Display is used transitively via .to_string() on SwitchArm::pattern.
 use crate::runtime::value::RuntimeValue;
 
 use super::render_common::truncate;
@@ -324,6 +325,7 @@ fn decode_node(
         | IrNodeKind::Assign { .. }
         | IrNodeKind::Eval { .. }
         | IrNodeKind::DefineEnum { .. }
+        | IrNodeKind::DefineStruct { .. }
         | IrNodeKind::DefineScriptDecorator { .. }
         | IrNodeKind::DefineFunction { .. }
         | IrNodeKind::ExternDecl { .. }
@@ -443,18 +445,26 @@ fn decode_node(
             Action::Choice(opts)
         }
 
-        // ── Switch (rare in sequences — treat as a note) ──────────────────
-        IrNodeKind::Switch { .. } => {
+        // ── Switch ────────────────────────────────────────────────────────
+        IrNodeKind::Switch { scrutinee, arms } => {
             let next = graph
                 .graph
                 .edges_directed(node_idx, Direction::Outgoing)
                 .find(|e| matches!(e.weight(), IrEdge::Default))
                 .map(|e| e.target())
                 .or_else(|| next_of(graph, node_idx));
-            Action::Note {
-                text: "match ⟨expr⟩".to_string(),
-                next,
-            }
+            let scrutinee_str = truncate(&ast_short(scrutinee), 32);
+            let arms_str = arms
+                .iter()
+                .map(|a| a.pattern.to_string())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let text = if arms_str.is_empty() {
+                format!("match {scrutinee_str}")
+            } else {
+                format!("match {scrutinee_str}: {arms_str}")
+            };
+            Action::Note { text, next }
         }
     }
 }
@@ -776,6 +786,32 @@ label start {
         assert!(
             out.contains("deactivate start"),
             "deactivate start missing;\ngot:\n{out}"
+        );
+    }
+
+    // ── Switch note ─────────────────────────────────────────────────────────
+
+    /// A `Switch` IR node must render as a `Note over` containing the scrutinee
+    /// name and each non-wildcard arm pattern, not the old static placeholder.
+    #[test]
+    fn sequence_shows_switch_as_note() {
+        let script = r#"
+label start {
+    match direction {
+        1 { return }
+        2 { return }
+        _ { return }
+    }
+}
+"#;
+        let out = compile_script(script).to_sequence_mermaid();
+        assert!(
+            !out.contains("match \u{27e8}expr\u{27e9}"),
+            "Switch note still uses static placeholder;\ngot:\n{out}"
+        );
+        assert!(
+            out.contains("match direction: 1 | 2"),
+            "expected 'match direction: 1 | 2' in Switch note;\ngot:\n{out}"
         );
     }
 }

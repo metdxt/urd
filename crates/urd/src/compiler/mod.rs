@@ -640,7 +640,7 @@ impl CompilerState {
             AstContent::EnumDecl { name, variants } => {
                 let id = self.graph.push(IrNodeKind::DefineEnum {
                     name: name.clone(),
-                    variants: variants.clone(),
+                    variants: variants.iter().map(|(n, _)| n.clone()).collect(),
                 });
                 if let Some(n) = next {
                     self.graph.add_edge(id, n, IrEdge::Next);
@@ -721,10 +721,13 @@ impl CompilerState {
             }
 
             // ── StructDecl ───────────────────────────────────────────────────
-            // Struct declarations are analysis-only — no runtime representation
-            // is needed. They compile to a Nop so execution flows through them.
-            AstContent::StructDecl { .. } => {
-                let id = self.graph.push(IrNodeKind::Nop);
+            // Struct declarations register the struct schema in the VM environment
+            // so that struct constructor calls can build RuntimeValue::Struct instances.
+            AstContent::StructDecl { name, fields } => {
+                let id = self.graph.push(IrNodeKind::DefineStruct {
+                    name: name.clone(),
+                    fields: fields.iter().map(|f| f.name.clone()).collect(),
+                });
                 if let Some(n) = next {
                     self.graph.add_edge(id, n, IrEdge::Next);
                 }

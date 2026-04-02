@@ -1032,7 +1032,13 @@ mod tests {
             Ast::struct_decl("Character".to_owned(), vec![]),
             Ast::enum_decl(
                 "Faction".to_owned(),
-                vec!["Guild".to_owned(), "Empire".to_owned()],
+                vec![
+                    ("Guild".to_owned(), chumsky::span::SimpleSpan::new((), 0..0)),
+                    (
+                        "Empire".to_owned(),
+                        chumsky::span::SimpleSpan::new((), 0..0),
+                    ),
+                ],
             ),
             Ast::decl(
                 crate::parser::ast::DeclKind::Constant,

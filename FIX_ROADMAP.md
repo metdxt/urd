@@ -54,7 +54,7 @@ These two are independent of each other but must both land before Phase 4/Group 
 
 ---
 
-### Phase 2 — Parser Foundations
+### (Completed) Phase 2 — Parser Foundations
 **Depends on: Phase 0**
 
 Both items are independent and can land in parallel. VM-8 (HOF list methods) is technically workable without anonymous functions, but every real-world HOF invocation requires them.
@@ -72,7 +72,7 @@ Both items are independent and can land in parallel. VM-8 (HOF list methods) is 
 
 ---
 
-### Phase 3 — Struct Runtime Representation & IR Rendering
+### (Completed) Phase 3 — Struct Runtime Representation & IR Rendering
 **Depends on: Phase 0**
 
 `CMP-1` and `IR-1` are independent and can be done in parallel. `ANA-5` gates on `CMP-1`.

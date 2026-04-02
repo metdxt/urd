@@ -128,6 +128,21 @@ pub enum RuntimeValue {
         /// The decorator body, kept as raw `Ast` for inline evaluation.
         body: Box<crate::parser::ast::Ast>,
     },
+
+    /// A struct instance: `Point(1, 2)` after `struct Point { x: int, y: int }`.
+    ///
+    /// Constructed by the VM when a call expression names a registered struct
+    /// type.  Field values are keyed by the field names declared in the struct.
+    ///
+    /// `Ast` may be referenced transitively via field values that are
+    /// `Function` or `ScriptDecorator`, so this variant is excluded from serde.
+    #[serde(skip)]
+    Struct {
+        /// The struct type name (e.g. `"Point"`).
+        name: String,
+        /// Field values keyed by field name.
+        fields: std::collections::HashMap<String, RuntimeValue>,
+    },
 }
 
 #[allow(missing_docs)]

@@ -439,6 +439,7 @@ pub fn render_dot(graph: &IrGraph) -> String {
             | IrNodeKind::EnterScope { .. }
             | IrNodeKind::ExitScope { .. }
             | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineStruct { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
             | IrNodeKind::DefineFunction { .. }
             | IrNodeKind::ExternDecl { .. }
@@ -782,6 +783,12 @@ fn node_attrs(
             format!("enum {name} ({} variants)", variants.len()),
         ),
 
+        IrNodeKind::DefineStruct { name, fields, .. } => (
+            "box",
+            "lavender",
+            format!("struct {name} ({} fields)", fields.len()),
+        ),
+
         IrNodeKind::DefineScriptDecorator { name, params, .. } => (
             "box",
             "#E6E6FA",
@@ -1008,6 +1015,7 @@ mod tests {
     use crate::lexer::strings::ParsedString;
     use crate::parser::ast::{Ast, DeclKind};
     use crate::runtime::value::RuntimeValue;
+    use chumsky::span::Span as _;
 
     fn compile(ast: Ast) -> IrGraph {
         Compiler::compile(&ast).expect("compile failed in test")
@@ -1537,7 +1545,10 @@ mod tests {
     fn test_define_enum_node() {
         let dot = compile(Ast::block(vec![Ast::enum_decl(
             "Dir".into(),
-            vec!["N".into(), "S".into()],
+            vec![
+                ("N".into(), chumsky::span::SimpleSpan::new((), 0..0)),
+                ("S".into(), chumsky::span::SimpleSpan::new((), 0..0)),
+            ],
         )]))
         .to_dot();
         assert!(dot.contains("enum"), "must contain DefineEnum node");

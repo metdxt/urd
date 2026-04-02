@@ -95,6 +95,26 @@ pub fn eval_expr(
                         AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
                         _ => "<unknown>".to_string(),
                     };
+                    // Check if this is a struct constructor call.
+                    if let AstContent::Value(RuntimeValue::IdentPath(path)) = func_path.content()
+                        && path.len() == 1
+                        && let Some(field_names) = env.get_struct_schema(&path[0])
+                    {
+                        if args.len() != field_names.len() {
+                            return Err(VmError::TypeError(format!(
+                                "struct '{}' expects {} field(s), got {}",
+                                path[0],
+                                field_names.len(),
+                                args.len()
+                            )));
+                        }
+                        let fields: std::collections::HashMap<String, RuntimeValue> =
+                            field_names.iter().cloned().zip(args).collect();
+                        return Ok(RuntimeValue::Struct {
+                            name: path[0].clone(),
+                            fields,
+                        });
+                    }
                     log::warn!(
                         "function call to '{path_str}' is not yet implemented; returning Null"
                     );
@@ -240,8 +260,25 @@ pub fn eval_expr(
                     };
                     Ok(list[actual].clone())
                 }
+                RuntimeValue::Struct { ref fields, .. } => {
+                    let key_str = match &key_val {
+                        RuntimeValue::Str(ps) => ps.to_string(),
+                        other => {
+                            return Err(VmError::TypeError(format!(
+                                "struct field key must be a Str, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    fields.get(&key_str).cloned().ok_or_else(|| {
+                        VmError::UndefinedVariable(format!(
+                            "field '{}' not found on struct",
+                            key_str
+                        ))
+                    })
+                }
                 other => Err(VmError::TypeError(format!(
-                    "subscript requires Map or List, got {:?}",
+                    "subscript requires Map, List, or Struct, got {:?}",
                     other
                 ))),
             }
@@ -326,6 +363,12 @@ pub(super) fn eval_runtime_value(
                 let namespaced = crate::ir::namespace(&path[0], &path[1]);
                 if let Ok(v) = env.get(&namespaced) {
                     return Ok(v);
+                }
+                // Try struct field access: path = ["struct_var", "field"].
+                if let Ok(RuntimeValue::Struct { ref fields, .. }) = env.get(&path[0])
+                    && let Some(val) = fields.get(&path[1])
+                {
+                    return Ok(val.clone());
                 }
                 // Fallback: plain first-segment lookup (legacy behaviour).
                 env.get(&path[0])
@@ -459,6 +502,9 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
             RuntimeValue::ScriptDecorator { .. } => "<decorator>".to_string(),
             RuntimeValue::Function { params, .. } => {
                 format!("fn({})", params.join(", "))
+            }
+            RuntimeValue::Struct { name, fields } => {
+                format!("{}({})", name, fields.len())
             }
         },
     }
@@ -1162,8 +1208,154 @@ mod tests {
     fn test_format_function_no_params() {
         let val = RuntimeValue::Function {
             params: vec![],
-            body: Box::new(Ast::block(vec![])),
+            body: Box::new(Ast::value(RuntimeValue::Null)),
         };
         assert_eq!(format_runtime_value(&val, None), "fn()");
+    }
+
+    // ── Struct construction ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_struct_construction_positional() {
+        // struct Point { x: int, y: int }
+        // let p = Point(3, 7)  →  RuntimeValue::Struct { name: "Point", fields: {x:3, y:7} }
+        let mut env = Environment::new();
+        env.define_struct("Point".into(), vec!["x".into(), "y".into()]);
+
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["Point".into()])),
+            Ast::expr_list(vec![
+                Ast::value(RuntimeValue::Int(3)),
+                Ast::value(RuntimeValue::Int(7)),
+            ]),
+        );
+
+        let result = eval_expr(&call, &env).expect("struct construction should succeed");
+        match result {
+            RuntimeValue::Struct { name, fields } => {
+                assert_eq!(name, "Point");
+                assert_eq!(fields.get("x"), Some(&RuntimeValue::Int(3)));
+                assert_eq!(fields.get("y"), Some(&RuntimeValue::Int(7)));
+            }
+            other => panic!("expected Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_struct_construction_wrong_arity_errors() {
+        let mut env = Environment::new();
+        env.define_struct("Point".into(), vec!["x".into(), "y".into()]);
+
+        // Pass only one argument to a 2-field struct — should error.
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["Point".into()])),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::Int(1))]),
+        );
+
+        let result = eval_expr(&call, &env);
+        assert!(
+            matches!(result, Err(VmError::TypeError(_))),
+            "expected TypeError for wrong arity, got {result:?}"
+        );
+    }
+
+    // ── Struct field access via Subscript ─────────────────────────────────────
+
+    #[test]
+    fn test_struct_subscript_read() {
+        let mut env = Environment::new();
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("x".into(), RuntimeValue::Int(10));
+        fields.insert("y".into(), RuntimeValue::Int(20));
+        env.set(
+            "pt",
+            RuntimeValue::Struct {
+                name: "Point".into(),
+                fields,
+            },
+            &crate::parser::ast::DeclKind::Variable,
+        )
+        .unwrap();
+
+        // pt["x"]  →  Int(10)
+        let subscript = Ast::subscript(
+            Ast::value(RuntimeValue::IdentPath(vec!["pt".into()])),
+            Ast::value(RuntimeValue::Str(
+                crate::lexer::strings::ParsedString::new_plain("x"),
+            )),
+        );
+        let result = eval_expr(&subscript, &env).expect("subscript read should succeed");
+        assert_eq!(result, RuntimeValue::Int(10));
+    }
+
+    #[test]
+    fn test_struct_subscript_missing_field_errors() {
+        let mut env = Environment::new();
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("x".into(), RuntimeValue::Int(5));
+        env.set(
+            "pt",
+            RuntimeValue::Struct {
+                name: "Point".into(),
+                fields,
+            },
+            &crate::parser::ast::DeclKind::Variable,
+        )
+        .unwrap();
+
+        let subscript = Ast::subscript(
+            Ast::value(RuntimeValue::IdentPath(vec!["pt".into()])),
+            Ast::value(RuntimeValue::Str(
+                crate::lexer::strings::ParsedString::new_plain("z"),
+            )),
+        );
+        let result = eval_expr(&subscript, &env);
+        assert!(
+            matches!(result, Err(VmError::UndefinedVariable(_))),
+            "expected UndefinedVariable for missing field, got {result:?}"
+        );
+    }
+
+    // ── Struct field access via IdentPath (point.x) ───────────────────────────
+
+    #[test]
+    fn test_struct_field_access_via_ident_path() {
+        let mut env = Environment::new();
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("hp".into(), RuntimeValue::Int(100));
+        env.set(
+            "player",
+            RuntimeValue::Struct {
+                name: "Player".into(),
+                fields,
+            },
+            &crate::parser::ast::DeclKind::Variable,
+        )
+        .unwrap();
+
+        // Evaluating IdentPath ["player", "hp"] should resolve via struct field access.
+        let result = eval_runtime_value(
+            &RuntimeValue::IdentPath(vec!["player".into(), "hp".into()]),
+            &env,
+        )
+        .expect("struct field via IdentPath should succeed");
+        assert_eq!(result, RuntimeValue::Int(100));
+    }
+
+    #[test]
+    fn test_struct_format() {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("x".into(), RuntimeValue::Int(1));
+        fields.insert("y".into(), RuntimeValue::Int(2));
+        let val = RuntimeValue::Struct {
+            name: "Point".into(),
+            fields,
+        };
+        // format_runtime_value should show "Point(2)" — name + field count.
+        let formatted = format_runtime_value(&val, None);
+        assert!(
+            formatted.starts_with("Point("),
+            "expected format to start with 'Point(', got '{formatted}'"
+        );
     }
 }

@@ -23,6 +23,8 @@ pub struct Environment {
     scopes: Vec<HashMap<String, RuntimeValue>>,
     /// Registered enum types — maps enum name → ordered variant name list.
     enums: HashMap<String, Vec<String>>,
+    /// Registered struct types — maps struct name → ordered field name list.
+    structs: HashMap<String, Vec<String>>,
     /// Global variables declared with `global`.
     /// These represent persistent game state (e.g. reputation, flags) and are
     /// the values a save-file system would serialise and restore.
@@ -203,6 +205,28 @@ impl Environment {
     /// Returns a reference to the registered enums (name → variant list).
     pub fn enums(&self) -> &HashMap<String, Vec<String>> {
         &self.enums
+    }
+
+    /// Registers a struct type with its ordered field names.
+    ///
+    /// Executed when the VM processes a [`crate::ir::IrNodeKind::DefineStruct`]
+    /// node so that subsequent constructor calls can build
+    /// [`crate::runtime::value::RuntimeValue::Struct`] instances.
+    pub fn define_struct(&mut self, name: String, fields: Vec<String>) {
+        self.structs.insert(name, fields);
+    }
+
+    /// Looks up a struct type's ordered field name list.
+    ///
+    /// Returns `None` if no struct with `name` has been registered via
+    /// [`Self::define_struct`].
+    pub fn get_struct_schema(&self, name: &str) -> Option<&Vec<String>> {
+        self.structs.get(name)
+    }
+
+    /// Returns a reference to all registered struct schemas (name → field list).
+    pub fn structs(&self) -> &HashMap<String, Vec<String>> {
+        &self.structs
     }
 
     /// Inject a runtime-provided extern value into the environment.

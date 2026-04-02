@@ -195,6 +195,23 @@ pub enum MatchPattern {
     Value(Ast),
 }
 
+impl std::fmt::Display for MatchPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MatchPattern::Wildcard => write!(f, "_"),
+            MatchPattern::Value(ast) => match ast.content() {
+                AstContent::Value(RuntimeValue::Str(s)) => write!(f, "{s}"),
+                AstContent::Value(RuntimeValue::IdentPath(p)) => write!(f, "{}", p.join(".")),
+                AstContent::Value(RuntimeValue::Int(i)) => write!(f, "{i}"),
+                AstContent::Value(RuntimeValue::Float(fv)) => write!(f, "{fv}"),
+                AstContent::Value(RuntimeValue::Bool(b)) => write!(f, "{b}"),
+                AstContent::Value(RuntimeValue::Null) => write!(f, "null"),
+                _ => write!(f, "_"),
+            },
+        }
+    }
+}
+
 /// A single named parameter in a `decorator` definition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecoratorParam {
@@ -218,6 +235,8 @@ pub struct FnParam {
 pub struct StructField {
     /// The field name (plain identifier)
     pub name: String,
+    /// The source span of the field name token.
+    pub span: SimpleSpan,
     /// The field's required type annotation
     pub type_annotation: TypeAnnotation,
 }
@@ -387,8 +406,8 @@ pub enum AstContent {
     EnumDecl {
         /// The enum's name (e.g. "Direction")
         name: String,
-        /// Ordered list of variant names (e.g. ["North", "South", "East", "West"])
-        variants: Vec<String>,
+        /// Ordered list of variant names with their source spans.
+        variants: Vec<(String, SimpleSpan)>,
     },
 
     /// Struct declaration: `struct Name { field: Type ... }`
@@ -741,7 +760,7 @@ impl Ast {
     }
 
     /// Create an enum declaration node
-    pub fn enum_decl(name: String, variants: Vec<String>) -> Self {
+    pub fn enum_decl(name: String, variants: Vec<(String, SimpleSpan)>) -> Self {
         Self::new(AstContent::EnumDecl { name, variants })
     }
 

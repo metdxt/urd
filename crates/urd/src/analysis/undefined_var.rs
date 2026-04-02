@@ -281,7 +281,7 @@ fn collect_global_names(ast: &Ast) -> HashSet<String> {
             }
             AstContent::EnumDecl { name, variants } => {
                 names.insert(name.clone());
-                names.extend(variants.iter().cloned());
+                names.extend(variants.iter().map(|(n, _)| n.clone()));
             }
             AstContent::StructDecl { name, .. } => {
                 names.insert(name.clone());
