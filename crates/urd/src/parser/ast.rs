@@ -49,19 +49,31 @@ pub struct Decorator {
     /// The argument list passed to the decorator. Always an [`AstContent::ExprList`] node,
     /// which is empty when the decorator is written without parentheses.
     args: Ast,
+    /// Source span covering the entire decorator (from `@` through closing `)` if present).
+    /// Zero span when constructed outside the parser.
+    span: SimpleSpan,
 }
 
 impl Decorator {
     /// Creates a new decorator with a name and an argument list (ExprList node).
+    ///
+    /// The `span` field is `0..0` when constructed outside the parser; the parser sets it via [`Decorator::with_span`].
     pub fn new(name: String, args: Ast) -> Self {
-        Decorator { name, args }
+        Decorator {
+            name,
+            args,
+            span: SimpleSpan::new((), 0..0),
+        }
     }
 
     /// Creates a new decorator with no arguments.
+    ///
+    /// The `span` field is `0..0` when constructed outside the parser; the parser sets it via [`Decorator::with_span`].
     pub fn bare(name: String) -> Self {
         Decorator {
             name,
             args: Ast::expr_list(vec![]),
+            span: SimpleSpan::new((), 0..0),
         }
     }
 
@@ -73,6 +85,17 @@ impl Decorator {
     /// Returns the decorator's argument list (an ExprList node).
     pub fn args(&self) -> &Ast {
         &self.args
+    }
+
+    /// Returns the source span covering this decorator.
+    pub fn span(&self) -> SimpleSpan {
+        self.span
+    }
+
+    /// Set the source span on this decorator, returning `self` (builder).
+    pub fn with_span(mut self, span: SimpleSpan) -> Self {
+        self.span = span;
+        self
     }
 }
 
@@ -230,13 +253,43 @@ pub struct FnParam {
     pub type_annotation: Option<TypeAnnotation>,
 }
 
+/// A sub-token source span used solely for IDE syntax highlighting.
+///
+/// Always compares equal under [`PartialEq`] so that structural AST equality
+/// remains span-insensitive: two nodes with identical content but different
+/// source positions are considered equal, which is the correct semantics for
+/// structural analysis passes (e.g. duplicate-menu-destination detection).
+///
+/// Access the inner [`SimpleSpan`] via the public `.0` field.
+#[derive(Debug, Clone, Copy)]
+pub struct TokSpan(pub SimpleSpan);
+
+impl Default for TokSpan {
+    fn default() -> Self {
+        Self(SimpleSpan::new((), 0..0))
+    }
+}
+
+impl PartialEq for TokSpan {
+    /// Always returns `true` — sub-token spans are excluded from structural equality.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl From<SimpleSpan> for TokSpan {
+    fn from(s: SimpleSpan) -> Self {
+        Self(s)
+    }
+}
+
 /// A single field in a `struct` definition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
     /// The field name (plain identifier)
     pub name: String,
     /// The source span of the field name token.
-    pub span: SimpleSpan,
+    pub span: TokSpan,
     /// The field's required type annotation
     pub type_annotation: TypeAnnotation,
 }
@@ -354,6 +407,8 @@ pub enum AstContent {
     LabeledBlock {
         /// Label identifier
         label: String,
+        /// Source span of the label name token.
+        label_span: TokSpan,
         /// The block of code
         block: Box<Ast>,
     },
@@ -390,6 +445,8 @@ pub enum AstContent {
     Jump {
         /// Label identifier to jump to
         label: String,
+        /// Source span of the label identifier token.
+        label_span: TokSpan,
         /// If true, push a call frame so we can `return` back here.
         expects_return: bool,
     },
@@ -398,8 +455,12 @@ pub enum AstContent {
     LetCall {
         /// Variable to store the return value in.
         name: String,
+        /// Source span of the bound variable name token.
+        name_span: TokSpan,
         /// Target label to jump to.
         target: String,
+        /// Source span of the target label token.
+        target_span: TokSpan,
     },
 
     /// Enum declaration: enum Foo { A, B, C }
@@ -407,7 +468,7 @@ pub enum AstContent {
         /// The enum's name (e.g. "Direction")
         name: String,
         /// Ordered list of variant names with their source spans.
-        variants: Vec<(String, SimpleSpan)>,
+        variants: Vec<(String, TokSpan)>,
     },
 
     /// Struct declaration: `struct Name { field: Type ... }`
@@ -440,6 +501,8 @@ pub enum AstContent {
         /// `Some(name)` for a named function declaration; `None` for an anonymous
         /// function expression.
         name: Option<String>,
+        /// Source span of the function name token, or `None` for anonymous functions.
+        name_span: Option<TokSpan>,
         /// Ordered parameter list.
         params: Vec<FnParam>,
         /// Optional return-type annotation (documentation only; not enforced at runtime).
@@ -531,6 +594,72 @@ impl Ast {
     /// Replaces the span on this node, returning `self`. Used by parsers after construction.
     pub fn with_span(mut self, span: SimpleSpan) -> Self {
         self.span = span;
+        self
+    }
+
+    /// Set the label-name span on a [`AstContent::LabeledBlock`] node (builder).
+    ///
+    /// Has no effect if called on a non-`LabeledBlock` node.
+    pub fn with_label_span(mut self, label_span: SimpleSpan) -> Self {
+        if let AstContent::LabeledBlock {
+            label_span: ref mut ls,
+            ..
+        } = self.content
+        {
+            *ls = TokSpan(label_span);
+        } else {
+            debug_assert!(false, "with_label_span called on non-LabeledBlock node");
+        }
+        self
+    }
+
+    /// Set the label span on a [`AstContent::Jump`] node (builder).
+    ///
+    /// Has no effect on non-`Jump` nodes.
+    pub fn with_jump_label_span(mut self, label_span: SimpleSpan) -> Self {
+        if let AstContent::Jump {
+            label_span: ref mut ls,
+            ..
+        } = self.content
+        {
+            *ls = TokSpan(label_span);
+        } else {
+            debug_assert!(false, "with_jump_label_span called on non-Jump node");
+        }
+        self
+    }
+
+    /// Set the name and target spans on a [`AstContent::LetCall`] node (builder).
+    ///
+    /// Has no effect on non-`LetCall` nodes.
+    pub fn with_let_call_spans(mut self, name_span: SimpleSpan, target_span: SimpleSpan) -> Self {
+        if let AstContent::LetCall {
+            name_span: ref mut ns,
+            target_span: ref mut ts,
+            ..
+        } = self.content
+        {
+            *ns = TokSpan(name_span);
+            *ts = TokSpan(target_span);
+        } else {
+            debug_assert!(false, "with_let_call_spans called on non-LetCall node");
+        }
+        self
+    }
+
+    /// Set the function-name span on a [`AstContent::FnDef`] node (builder).
+    ///
+    /// Has no effect on non-`FnDef` nodes.
+    pub fn with_fn_name_span(mut self, name_span: Option<SimpleSpan>) -> Self {
+        if let AstContent::FnDef {
+            name_span: ref mut ns,
+            ..
+        } = self.content
+        {
+            *ns = name_span.map(TokSpan);
+        } else {
+            debug_assert!(false, "with_fn_name_span called on non-FnDef node");
+        }
         self
     }
 
@@ -714,6 +843,7 @@ impl Ast {
     pub fn labeled_block(label: String, block: Ast) -> Self {
         Self::new(AstContent::LabeledBlock {
             label,
+            label_span: TokSpan::default(),
             block: Box::new(block),
         })
     }
@@ -750,17 +880,23 @@ impl Ast {
     pub fn jump_stmt(label: String, expects_return: bool) -> Self {
         Self::new(AstContent::Jump {
             label,
+            label_span: TokSpan::default(),
             expects_return,
         })
     }
 
     /// Create a subroutine call with result binding node (`let name = jump target and return`)
     pub fn let_call(name: String, target: String) -> Self {
-        Self::new(AstContent::LetCall { name, target })
+        Self::new(AstContent::LetCall {
+            name,
+            name_span: TokSpan::default(),
+            target,
+            target_span: TokSpan::default(),
+        })
     }
 
     /// Create an enum declaration node
-    pub fn enum_decl(name: String, variants: Vec<(String, SimpleSpan)>) -> Self {
+    pub fn enum_decl(name: String, variants: Vec<(String, TokSpan)>) -> Self {
         Self::new(AstContent::EnumDecl { name, variants })
     }
 
@@ -801,6 +937,7 @@ impl Ast {
     ) -> Self {
         Self::new(AstContent::FnDef {
             name,
+            name_span: None,
             params,
             ret_type,
             body: Box::new(body),

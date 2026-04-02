@@ -162,7 +162,7 @@ fn collect_opt_in_labels(root: &Ast) -> HashMap<String, SimpleSpan> {
 
 fn collect_opt_in_recursive(node: &Ast, out: &mut HashMap<String, SimpleSpan>) {
     match node.content() {
-        AstContent::LabeledBlock { label, block } => {
+        AstContent::LabeledBlock { label, block, .. } => {
             if has_check_loops_lint(node) {
                 out.entry(label.clone()).or_insert(node.span());
             }

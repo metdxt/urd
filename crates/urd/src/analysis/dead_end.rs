@@ -244,7 +244,7 @@ fn termination_of(
         }
 
         // ── LabeledBlock ──────────────────────────────────────────────────
-        AstContent::LabeledBlock { label, block } => {
+        AstContent::LabeledBlock { label, block, .. } => {
             let inner_loc = NodeDescription::label(label);
             let block_span = {
                 let s = block.span();
@@ -425,7 +425,7 @@ fn extract_call_name(func_path: &Ast) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{MatchArm, MatchPattern};
+    use crate::parser::ast::{MatchArm, MatchPattern, TokSpan};
     use crate::runtime::value::RuntimeValue;
     use chumsky::span::{SimpleSpan, Span};
 
@@ -1033,11 +1033,8 @@ mod tests {
             Ast::enum_decl(
                 "Faction".to_owned(),
                 vec![
-                    ("Guild".to_owned(), chumsky::span::SimpleSpan::new((), 0..0)),
-                    (
-                        "Empire".to_owned(),
-                        chumsky::span::SimpleSpan::new((), 0..0),
-                    ),
+                    ("Guild".to_owned(), TokSpan::default()),
+                    ("Empire".to_owned(), TokSpan::default()),
                 ],
             ),
             Ast::decl(

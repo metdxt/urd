@@ -95,9 +95,17 @@ pub enum RuntimeValue {
     /// An ordered list of runtime values: `[a, b, c]` literals.
     ///
     /// Unlike `Map` and `ScriptDecorator`, `List` is fully serialisable as
-    /// long as all its elements are themselves serialisable.  Note that a
-    /// list containing a `ScriptDecorator` element will panic at
-    /// serialisation time (same constraint as `Map` values).
+    /// long as all its elements are themselves serialisable.
+    ///
+    /// ## Invariant
+    ///
+    /// A `List` **must never** contain a `ScriptDecorator` (or any other
+    /// non-serialisable) element.  Violating this invariant is safe at
+    /// runtime but will cause a silent field omission (serde `#[serde(skip)]`)
+    /// or a panic when the element is later serialised as part of an
+    /// [`crate::ir::Event`] payload.  Use [`RuntimeValue::list`] to construct
+    /// `List` values from Rust code; it fires a `debug_assert!` in debug
+    /// builds to catch violations early.
     List(Vec<RuntimeValue>),
 
     /// A user-defined pure function value: `fn(x: int) -> int { x + 1 }`.
@@ -143,6 +151,30 @@ pub enum RuntimeValue {
         /// Field values keyed by field name.
         fields: std::collections::HashMap<String, RuntimeValue>,
     },
+}
+
+impl RuntimeValue {
+    /// Constructs a [`RuntimeValue::List`] value.
+    ///
+    /// In debug builds this asserts that no element is a
+    /// [`RuntimeValue::ScriptDecorator`].  A `List` that contains a
+    /// `ScriptDecorator` violates the serialisation invariant (see the
+    /// `List` variant doc) and will produce incorrect output when the
+    /// enclosing [`crate::ir::Event`] is serialised.
+    ///
+    /// # Panics (debug only)
+    ///
+    /// Panics in debug builds if any element is `ScriptDecorator`.
+    pub fn list(elements: Vec<RuntimeValue>) -> Self {
+        debug_assert!(
+            !elements
+                .iter()
+                .any(|e| matches!(e, RuntimeValue::ScriptDecorator { .. })),
+            "List elements must never be ScriptDecorator values \
+             (invariant: ScriptDecorator is not serialisable)"
+        );
+        RuntimeValue::List(elements)
+    }
 }
 
 #[allow(missing_docs)]

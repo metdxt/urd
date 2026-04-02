@@ -8,7 +8,10 @@ use crate::lexer::strings::ParsedString;
 use crate::parser::ast::DeclKind;
 use crate::runtime::value::RuntimeValue;
 
-use super::VmError;
+use std::fmt;
+use std::sync::Arc;
+
+use super::{DefaultDiceRoller, DiceRoller, VmError};
 
 // ─── Environment ──────────────────────────────────────────────────────────────
 
@@ -17,7 +20,7 @@ use super::VmError;
 /// Variables live in a stack of scopes; each [`IrNodeKind::EnterScope`] pushes
 /// a new scope and the matching [`IrNodeKind::ExitScope`] pops it.  Globals
 /// (`global x = …`) are stored in a separate flat map and are never popped.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct Environment {
     /// Stack of local scopes; `scopes.last()` is the innermost one.
     scopes: Vec<HashMap<String, RuntimeValue>>,
@@ -42,6 +45,27 @@ pub struct Environment {
     /// These are read-only from script code — only the runtime can write them
     /// via [`Environment::provide_extern`]. Never part of a save file.
     externs: HashMap<String, RuntimeValue>,
+    /// Pluggable dice-rolling backend; `None` means dice expressions will error.
+    ///
+    /// Stored behind an [`Arc`] so that cloning an `Environment` (e.g. for
+    /// script-decorator sub-environments) propagates the roller cheaply rather
+    /// than severing it.
+    roller: Option<Arc<dyn DiceRoller>>,
+}
+
+impl fmt::Debug for Environment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Environment")
+            .field("scopes", &self.scopes)
+            .field("enums", &self.enums)
+            .field("structs", &self.structs)
+            .field("globals", &self.globals)
+            .field("constants", &self.constants)
+            .field("builtins", &self.builtins)
+            .field("externs", &self.externs)
+            .field("roller", &self.roller.as_ref().map(|_| "<DiceRoller>"))
+            .finish()
+    }
 }
 
 impl Environment {
@@ -50,6 +74,7 @@ impl Environment {
         Environment {
             scopes: vec![HashMap::new()],
             externs: HashMap::new(),
+            roller: Some(Arc::new(DefaultDiceRoller)),
             ..Default::default()
         }
     }
@@ -240,6 +265,29 @@ impl Environment {
     /// returns a [`VmError::TypeError`].
     pub fn provide_extern(&mut self, name: &str, value: RuntimeValue) {
         self.externs.insert(name.to_string(), value);
+    }
+
+    /// Replace the dice-rolling backend.
+    ///
+    /// The supplied [`Box`] is converted into an [`Arc`] internally so that
+    /// cloned sub-environments (e.g. for script decorators) share the same
+    /// roller without requiring it to be `Clone`.
+    pub fn set_dice_roller(&mut self, roller: Box<dyn DiceRoller>) {
+        self.roller = Some(Arc::from(roller));
+    }
+
+    /// Roll `count`d`sides` using the registered roller.
+    ///
+    /// Returns `Err(`[`VmError::NotImplemented`]`)` when no roller is
+    /// registered (i.e. the roller was explicitly removed or never set).
+    pub(crate) fn roll_dice(&self, count: u32, sides: u32) -> Result<i64, VmError> {
+        match &self.roller {
+            Some(r) => Ok(r.roll(count, sides)),
+            None => Err(VmError::NotImplemented(format!(
+                "dice evaluation ({}d{}) — no dice roller registered",
+                count, sides
+            ))),
+        }
     }
 }
 

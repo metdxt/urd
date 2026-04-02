@@ -276,7 +276,7 @@ impl ScopeStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{AstContent, DeclKind, StructField, TypeAnnotation};
+    use crate::parser::ast::{AstContent, DeclKind, StructField, TokSpan, TypeAnnotation};
     use crate::runtime::value::RuntimeValue;
     use chumsky::span::Span as _;
 
@@ -333,10 +333,12 @@ mod tests {
 
     #[test]
     fn build_collects_top_level_enum() {
-        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let enum_node = Ast::enum_decl(
             "Dir".to_owned(),
-            vec![("North".to_owned(), zs), ("South".to_owned(), zs)],
+            vec![
+                ("North".to_owned(), TokSpan::default()),
+                ("South".to_owned(), TokSpan::default()),
+            ],
         );
         let root = Ast::block(vec![enum_node]);
         let ctx = AnalysisContext::build(&root);
@@ -348,13 +350,12 @@ mod tests {
 
     #[test]
     fn build_collects_enum_nested_in_label() {
-        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let enum_node = Ast::enum_decl(
             "Color".to_owned(),
             vec![
-                ("Red".to_owned(), zs),
-                ("Green".to_owned(), zs),
-                ("Blue".to_owned(), zs),
+                ("Red".to_owned(), TokSpan::default()),
+                ("Green".to_owned(), TokSpan::default()),
+                ("Blue".to_owned(), TokSpan::default()),
             ],
         );
         let label = Ast::labeled_block("scene".to_owned(), Ast::block(vec![enum_node]));
@@ -366,11 +367,13 @@ mod tests {
 
     #[test]
     fn build_collects_multiple_enums() {
-        let zs = chumsky::span::SimpleSpan::new((), 0..0);
-        let e1 = Ast::enum_decl("A".to_owned(), vec![("X".to_owned(), zs)]);
+        let e1 = Ast::enum_decl("A".to_owned(), vec![("X".to_owned(), TokSpan::default())]);
         let e2 = Ast::enum_decl(
             "B".to_owned(),
-            vec![("Y".to_owned(), zs), ("Z".to_owned(), zs)],
+            vec![
+                ("Y".to_owned(), TokSpan::default()),
+                ("Z".to_owned(), TokSpan::default()),
+            ],
         );
         let root = Ast::block(vec![e1, e2]);
         let ctx = AnalysisContext::build(&root);
@@ -385,16 +388,15 @@ mod tests {
 
     #[test]
     fn build_collects_top_level_struct() {
-        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let fields = vec![
             StructField {
                 name: "name".into(),
-                span: zs,
+                span: TokSpan::default(),
                 type_annotation: TypeAnnotation::Str,
             },
             StructField {
                 name: "health".into(),
-                span: zs,
+                span: TokSpan::default(),
                 type_annotation: TypeAnnotation::Int,
             },
         ];
@@ -410,7 +412,7 @@ mod tests {
     fn build_collects_struct_nested_in_label() {
         let fields = vec![StructField {
             name: "x".into(),
-            span: chumsky::span::SimpleSpan::new((), 0..0),
+            span: TokSpan::default(),
             type_annotation: TypeAnnotation::Float,
         }];
         let inner = Ast::new(AstContent::StructDecl {

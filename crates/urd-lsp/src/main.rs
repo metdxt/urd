@@ -52,6 +52,7 @@ const TOKEN_TYPES: &[SemanticTokenType] = &[
     SemanticTokenType::STRUCT,      // 7
     SemanticTokenType::DECORATOR,   // 8
     SemanticTokenType::FUNCTION,    // 9
+    SemanticTokenType::PROPERTY,    // 10
 ];
 
 /// Map our internal semantic-token type to its index in [`TOKEN_TYPES`].
@@ -67,6 +68,7 @@ fn urd_token_type_to_index(tt: &UrdTokenType) -> u32 {
         UrdTokenType::Struct => 7,
         UrdTokenType::Decorator => 8,
         UrdTokenType::Function => 9,
+        UrdTokenType::Property => 10,
     }
 }
 

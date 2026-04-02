@@ -1057,7 +1057,7 @@ mod tests {
     use super::*;
     use crate::compiler::Compiler;
     use crate::lexer::strings::ParsedString;
-    use crate::parser::ast::{Ast, DeclKind};
+    use crate::parser::ast::{Ast, DeclKind, TokSpan};
     use crate::runtime::value::RuntimeValue;
     use chumsky::span::Span as _;
 
@@ -1282,8 +1282,8 @@ mod tests {
         let mmd = compile(Ast::block(vec![Ast::enum_decl(
             "Dir".into(),
             vec![
-                ("N".into(), chumsky::span::SimpleSpan::new((), 0..0)),
-                ("S".into(), chumsky::span::SimpleSpan::new((), 0..0)),
+                ("N".into(), TokSpan::default()),
+                ("S".into(), TokSpan::default()),
             ],
         )]))
         .to_mermaid();

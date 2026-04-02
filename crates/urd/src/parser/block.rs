@@ -10,7 +10,7 @@ use crate::{
     parser::{
         ast::{
             Ast, DeclKind, Decorator, DecoratorParam, EventConstraint, FnParam, ImportSymbol,
-            MatchArm, MatchPattern, StructField, TypeAnnotation,
+            MatchArm, MatchPattern, StructField, TokSpan, TypeAnnotation,
         },
         expr::{comma_separated_exprs, declaration, expr, extern_declaration, type_annotation},
     },
@@ -67,6 +67,7 @@ pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
         // Encoded as "module_name.label_name" — the compiler detects the dot.
         Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
     }
+    .map_with(|lbl, extra| (lbl, extra.span()))
     .or(select! {
         Token::IdentPath(path) if path.len() >= 3 => path,
     }
@@ -81,7 +82,8 @@ pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
             ),
         ));
         path[..2].join(".") // best-effort recovery: truncate to first two segments
-    }));
+    })
+    .map_with(|lbl, extra| (lbl, extra.span())));
 
     just(Token::Jump)
         .ignore_then(label)
@@ -91,8 +93,10 @@ pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
                 .or_not()
                 .map(|r| r.is_some()),
         )
-        .map_with(|(label, expects_return), extra| {
-            Ast::jump_stmt(label, expects_return).with_span(extra.span())
+        .map_with(|((label, label_span), expects_return), extra| {
+            Ast::jump_stmt(label, expects_return)
+                .with_jump_label_span(label_span)
+                .with_span(extra.span())
         })
         .boxed()
 }
@@ -103,6 +107,7 @@ pub fn let_call_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> 
         Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
         Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
     }
+    .map_with(|lbl, extra| (lbl, extra.span()))
     .or(select! {
         Token::IdentPath(path) if path.len() >= 3 => path,
     }
@@ -117,18 +122,26 @@ pub fn let_call_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> 
             ),
         ));
         path[..2].join(".") // best-effort recovery: truncate to first two segments
-    }));
+    })
+    .map_with(|lbl, extra| (lbl, extra.span())));
 
     just(Token::Let)
-        .ignore_then(select! {
-            Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
-        })
+        .ignore_then(
+            select! {
+                Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
+            }
+            .map_with(|name, extra| (name, extra.span())),
+        )
         .then_ignore(just(Token::Assign))
         .then_ignore(just(Token::Jump))
         .then(label)
         .then_ignore(just(Token::And))
         .then_ignore(just(Token::Return))
-        .map_with(|(name, target), extra| Ast::let_call(name, target).with_span(extra.span()))
+        .map_with(|((name, name_span), (target, target_span)), extra| {
+            Ast::let_call(name, target)
+                .with_let_call_spans(name_span, target_span)
+                .with_span(extra.span())
+        })
         .boxed()
 }
 
@@ -231,9 +244,9 @@ fn decorator_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
     just(Token::At)
         .ignore_then(name)
         .then(args.or_not())
-        .map(|(name, maybe_args)| match maybe_args {
-            Some(args) => Decorator::new(name, args),
-            None => Decorator::bare(name),
+        .map_with(|(name, maybe_args), extra| match maybe_args {
+            Some(args) => Decorator::new(name, args).with_span(extra.span()),
+            None => Decorator::bare(name).with_span(extra.span()),
         })
         .boxed()
 }
@@ -453,6 +466,7 @@ fn fn_def_parser<'tok, I: UrdInput<'tok>>(
     let name = select! {
         Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
     }
+    .map_with(|n, extra| (n, extra.span()))
     .labelled("function name")
     .or_not();
 
@@ -461,8 +475,14 @@ fn fn_def_parser<'tok, I: UrdInput<'tok>>(
         .then(fn_params_parser())
         .then(return_type_parser().or_not())
         .then(block)
-        .map_with(|(((name, params), ret_type), body), extra| {
-            Ast::fn_def(name, params, ret_type, body).with_span(extra.span())
+        .map_with(|(((name_opt, params), ret_type), body), extra| {
+            let (name_str, name_span) = match name_opt {
+                Some((n, s)) => (Some(n), Some(s)),
+                None => (None, None),
+            };
+            Ast::fn_def(name_str, params, ret_type, body)
+                .with_fn_name_span(name_span)
+                .with_span(extra.span())
         })
         .boxed()
 }
@@ -594,12 +614,17 @@ fn labeled_block_parser<'tok, I: UrdInput<'tok>>(
     let ident = select! {
         Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
     }
+    .map_with(|name, extra| (name, extra.span()))
     .labelled("identifier");
 
     just(Token::Label)
         .ignore_then(ident)
         .then(block)
-        .map_with(|(label, body), extra| Ast::labeled_block(label, body).with_span(extra.span()))
+        .map_with(|((label, label_span), body), extra| {
+            Ast::labeled_block(label, body)
+                .with_label_span(label_span)
+                .with_span(extra.span())
+        })
         .boxed()
 }
 
@@ -717,7 +742,7 @@ fn enum_decl_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
         Token::IdentPath(path) if path.len() == 1 => path[0].clone()
     }
     .labelled("enum variant")
-    .map_with(|name, extra| (name, extra.span()));
+    .map_with(|name, extra| (name, TokSpan(extra.span())));
 
     let variants = variant
         .separated_by(sep)
@@ -758,7 +783,7 @@ fn struct_decl_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
         .then(type_annotation())
         .map(|((name, span), type_annotation)| StructField {
             name,
-            span,
+            span: TokSpan(span),
             type_annotation,
         })
         .labelled("struct field");
@@ -1016,6 +1041,7 @@ mod tests {
         if let AstContent::Jump {
             label,
             expects_return,
+            ..
         } = ast.content()
         {
             assert_eq!(label, "my_label");
@@ -1035,6 +1061,7 @@ mod tests {
         if let AstContent::Jump {
             label,
             expects_return,
+            ..
         } = ast.content()
         {
             // Dot-notation is the convention for cross-module jumps; the compiler splits on '.'
@@ -1103,6 +1130,7 @@ mod tests {
             AstContent::Jump {
                 label,
                 expects_return,
+                ..
             } => {
                 assert_eq!(label, "my_label");
                 assert!(*expects_return, "expects_return should be true");
@@ -1118,7 +1146,7 @@ mod tests {
         assert!(result.is_ok(), "should parse: {result:?}");
         let ast = result.unwrap();
         match ast.content() {
-            AstContent::LetCall { name, target } => {
+            AstContent::LetCall { name, target, .. } => {
                 assert_eq!(name, "result");
                 assert_eq!(target, "my_label");
             }
@@ -1136,6 +1164,7 @@ mod tests {
             AstContent::Jump {
                 label,
                 expects_return,
+                ..
             } => {
                 assert_eq!(label, "plain_label");
                 assert!(!expects_return, "expects_return should be false");

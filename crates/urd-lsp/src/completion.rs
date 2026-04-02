@@ -1713,7 +1713,7 @@ mod tests {
                 type_annotation: None,
                 detail: None,
                 doc_comment: None,
-            is_extern: false,
+                is_extern: false,
             },
             Symbol {
                 name: "chars.Faction".to_string(),
@@ -1722,7 +1722,7 @@ mod tests {
                 type_annotation: None,
                 detail: None,
                 doc_comment: None,
-            is_extern: false,
+                is_extern: false,
             },
             sym("local_var", SymbolKind::Variable, None),
         ];
@@ -1807,7 +1807,7 @@ mod tests {
                 type_annotation: None,
                 detail: Some("Faction.Guild".to_string()),
                 doc_comment: None,
-            is_extern: false,
+                is_extern: false,
             },
             Symbol {
                 name: "chars.Empire".to_string(),
@@ -1816,7 +1816,7 @@ mod tests {
                 type_annotation: None,
                 detail: Some("Faction.Empire".to_string()),
                 doc_comment: None,
-            is_extern: false,
+                is_extern: false,
             },
             Symbol {
                 name: "chars.Rebel".to_string(),
@@ -1825,7 +1825,7 @@ mod tests {
                 type_annotation: None,
                 detail: Some("Faction.Rebel".to_string()),
                 doc_comment: None,
-            is_extern: false,
+                is_extern: false,
             },
         ];
         let items = items_for_context(
@@ -2227,10 +2227,12 @@ mod tests {
             vec![
                 urd::parser::ast::StructField {
                     name: "name".to_string(),
+                    span: urd::parser::ast::TokSpan::default(),
                     type_annotation: TypeAnnotation::Str,
                 },
                 urd::parser::ast::StructField {
                     name: "name_color".to_string(),
+                    span: urd::parser::ast::TokSpan::default(),
                     type_annotation: TypeAnnotation::Str,
                 },
             ],
@@ -2273,6 +2275,7 @@ mod tests {
             "Character".to_string(),
             vec![urd::parser::ast::StructField {
                 name: "stale_field".to_string(),
+                span: urd::parser::ast::TokSpan::default(),
                 type_annotation: TypeAnnotation::Int,
             }],
         );
@@ -2409,7 +2412,7 @@ mod tests {
                 type_annotation: Some(TypeAnnotation::Named(vec!["Character".to_string()])),
                 detail: Some("const narrator: Character".to_string()),
                 doc_comment: None,
-            is_extern: false,
+                is_extern: false,
             },
             // A few other symbols that should NOT appear in field completion.
             sym("prologue", SymbolKind::Label, None),
@@ -2432,10 +2435,12 @@ mod tests {
             vec![
                 urd::parser::ast::StructField {
                     name: "name".to_string(),
+                    span: urd::parser::ast::TokSpan::default(),
                     type_annotation: TypeAnnotation::Str,
                 },
                 urd::parser::ast::StructField {
                     name: "name_color".to_string(),
+                    span: urd::parser::ast::TokSpan::default(),
                     type_annotation: TypeAnnotation::Str,
                 },
             ],

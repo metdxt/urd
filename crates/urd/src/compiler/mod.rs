@@ -176,7 +176,7 @@ impl CompilerState {
     /// encountered more than once.
     pub(super) fn scan_labels(&mut self, ast: &Ast) -> Result<(), CompilerError> {
         match ast.content() {
-            AstContent::LabeledBlock { label, block } => {
+            AstContent::LabeledBlock { label, block, .. } => {
                 if self.label_placeholders.contains_key(label) {
                     return Err(CompilerError::DuplicateLabel(label.clone()));
                 }
@@ -461,7 +461,7 @@ impl CompilerState {
             }
 
             // ── LabeledBlock ─────────────────────────────────────────────────
-            AstContent::LabeledBlock { label, block } => {
+            AstContent::LabeledBlock { label, block, .. } => {
                 // Retrieve the pre-allocated placeholder NodeIndex from pass 1.
                 let placeholder_id = self
                     .label_placeholders
@@ -503,6 +503,7 @@ impl CompilerState {
             AstContent::Jump {
                 label,
                 expects_return,
+                ..
             } => {
                 // Check for cross-module dot-notation: "alias.label_name"
                 let target = resolve_label(label, &self.label_placeholders, &self.graph.labels)?;
@@ -525,7 +526,7 @@ impl CompilerState {
             }
 
             // ── LetCall ───────────────────────────────────────────────────────
-            AstContent::LetCall { name, target } => {
+            AstContent::LetCall { name, target, .. } => {
                 // Check for cross-module dot-notation: "alias.label_name"
                 let target_id =
                     resolve_label(target, &self.label_placeholders, &self.graph.labels)?;

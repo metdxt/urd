@@ -90,8 +90,9 @@ pub enum SemanticTokenType {
     EnumMember,
     /// A struct name.
     Struct,
+    /// A struct field name.
+    Property,
     /// A decorator name or usage.
-    #[allow(dead_code)]
     Decorator,
     /// A function / built-in call name.
     Function,
@@ -371,7 +372,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
         }
 
         // ── Labeled blocks ───────────────────────────────────────────────
-        AstContent::LabeledBlock { label, block } => {
+        AstContent::LabeledBlock { label, block, .. } => {
             out.push(make_symbol(
                 label.clone(),
                 SymbolKind::Label,
@@ -385,23 +386,24 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
 
         // ── Enum declarations ────────────────────────────────────────────
         AstContent::EnumDecl { name, variants } => {
-            let variant_list = variants.join(", ");
+            let variant_list: Vec<&str> = variants.iter().map(|(n, _)| n.as_str()).collect();
+            let variant_list_str = variant_list.join(", ");
             out.push(make_symbol(
                 name.clone(),
                 SymbolKind::Enum,
                 ast.span(),
                 None,
-                Some(format!("enum {name} {{ {variant_list} }}")),
+                Some(format!("enum {name} {{ {variant_list_str} }}")),
                 ast.doc_comment.clone(),
             ));
             // Each variant is also a symbol (for completion / references).
-            for variant in variants {
+            for (variant_name, _variant_span) in variants {
                 out.push(make_symbol(
-                    variant.clone(),
+                    variant_name.clone(),
                     SymbolKind::EnumVariant,
                     ast.span(),
                     None,
-                    Some(format!("{name}.{variant}")),
+                    Some(format!("{name}.{variant_name}")),
                     None,
                 ));
             }
@@ -496,7 +498,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
         }
 
         // ── LetCall (let name = jump label and return) ───────────────────
-        AstContent::LetCall { name, target: _ } => {
+        AstContent::LetCall { name, .. } => {
             out.push(make_symbol(
                 name.clone(),
                 SymbolKind::Variable,
@@ -655,7 +657,7 @@ fn find_definition_recursive(ast: &Ast, name: &str) -> Option<SimpleSpan> {
             find_definition_in_children(ast.content(), name)
         }
 
-        AstContent::LabeledBlock { label, block } => {
+        AstContent::LabeledBlock { label, block, .. } => {
             if label == name {
                 return Some(ast.span());
             }
@@ -796,17 +798,11 @@ fn find_definition_in_children(content: &AstContent, name: &str) -> Option<Simpl
             }
             None
         }
-        AstContent::LabeledBlock { label, block } => {
-            if label == name {
-                // This shouldn't normally be reached (handled in parent), but
-                // for completeness…
-                return Some(SimpleSpan::new((), 0..0));
-            }
-            find_definition_recursive(block, name)
-        }
+        // AstContent::LabeledBlock is handled by find_definition_recursive before
+        // this function is reached; no arm needed here (falls through to `_ => None`).
         AstContent::DecoratorDef { name: dn, body, .. } => {
             if dn == name {
-                return Some(SimpleSpan::new((), 0..0));
+                return None;
             }
             find_definition_recursive(body, name)
         }
@@ -1063,7 +1059,7 @@ fn hover_from_ast(
             None
         }
 
-        AstContent::LetCall { name, target } => {
+        AstContent::LetCall { name, target, .. } => {
             let word = ident_at_offset(src, byte_offset);
             if word == target.as_str() {
                 if let Some(sym) = symbols
@@ -1375,6 +1371,7 @@ fn find_references_recursive(ast: &Ast, name: &str, out: &mut Vec<SimpleSpan>) {
         AstContent::LetCall {
             name: let_name,
             target,
+            ..
         } => {
             if let_name == name || target == name {
                 out.push(ast.span());
@@ -1382,7 +1379,7 @@ fn find_references_recursive(ast: &Ast, name: &str, out: &mut Vec<SimpleSpan>) {
         }
 
         // Labeled blocks: the label itself is a definition-reference.
-        AstContent::LabeledBlock { label, block } => {
+        AstContent::LabeledBlock { label, block, .. } => {
             if label == name {
                 out.push(ast.span());
             }
@@ -1414,7 +1411,7 @@ fn find_references_recursive(ast: &Ast, name: &str, out: &mut Vec<SimpleSpan>) {
             name: enum_name,
             variants,
         } => {
-            if enum_name == name || variants.iter().any(|v| v == name) {
+            if enum_name == name || variants.iter().any(|(v, _)| v == name) {
                 out.push(ast.span());
             }
         }
@@ -1760,12 +1757,15 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
 
     // Tag decorators applied to this node.
     for dec in ast.decorators() {
-        let ds = dec.name();
-        // We don't have the decorator's own span directly, but we know the
-        // parent node span covers it. Best-effort: skip sub-token tagging
-        // since we can't reliably recover decorator byte positions from AST
-        // alone. (Full implementation would need token-level spans.)
-        let _ = ds;
+        let dspan = dec.span();
+        let dlen = dspan.end.saturating_sub(dspan.start);
+        if dlen > 0 {
+            out.push(SemanticTokenInfo {
+                start: dspan.start,
+                length: dlen,
+                token_type: SemanticTokenType::Decorator,
+            });
+        }
     }
 
     match ast.content() {
@@ -1834,40 +1834,54 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
             emit_semantic_tokens(decl_defs, out);
         }
 
-        AstContent::LabeledBlock { block, .. } => {
-            // `label` keyword at start of span.
-            // Label name is tagged as Label.
+        AstContent::LabeledBlock {
+            block, label_span, ..
+        } => {
+            // Emit `label` keyword.
+            let kw_len = "label".len();
             if len > 0 {
-                // Approximate: first 5 bytes are the keyword "label".
-                let kw_len = "label".len().min(len);
                 out.push(SemanticTokenInfo {
                     start: span.start,
-                    length: kw_len,
+                    length: kw_len.min(len),
                     token_type: SemanticTokenType::Keyword,
                 });
-                // The label name follows after "label ".
-                let name_start = span.start + kw_len;
-                let block_start = block.span().start;
-                if block_start > name_start {
-                    out.push(SemanticTokenInfo {
-                        start: name_start,
-                        length: block_start - name_start,
-                        token_type: SemanticTokenType::Label,
-                    });
-                }
+            }
+            // Emit the label name using its actual token span.
+            let llen = label_span.0.end.saturating_sub(label_span.0.start);
+            if llen > 0 {
+                out.push(SemanticTokenInfo {
+                    start: label_span.0.start,
+                    length: llen,
+                    token_type: SemanticTokenType::Label,
+                });
             }
             emit_semantic_tokens(block, out);
         }
 
-        AstContent::Jump { .. } => {
-            // Whole span is keyword-ish.
+        AstContent::Jump {
+            label: _,
+            label_span,
+            expects_return: _,
+        } => {
+            // Emit `jump` keyword.
+            let kw_len = "jump".len();
             if len > 0 {
                 out.push(SemanticTokenInfo {
                     start: span.start,
-                    length: len,
+                    length: kw_len.min(len),
                     token_type: SemanticTokenType::Keyword,
                 });
             }
+            // Emit label name using its actual token span.
+            let llen = label_span.0.end.saturating_sub(label_span.0.start);
+            if llen > 0 {
+                out.push(SemanticTokenInfo {
+                    start: label_span.0.start,
+                    length: llen,
+                    token_type: SemanticTokenType::Label,
+                });
+            }
+            // "and return" suffix (if present) is not separately tokenised.
         }
 
         AstContent::Return { value } => {
@@ -1924,7 +1938,10 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
             }
         }
 
-        AstContent::EnumDecl { .. } => {
+        AstContent::EnumDecl {
+            name: enum_name,
+            variants,
+        } => {
             let kw_len = "enum".len().min(len);
             if len > 0 {
                 out.push(SemanticTokenInfo {
@@ -1932,18 +1949,34 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     length: kw_len,
                     token_type: SemanticTokenType::Keyword,
                 });
-                // Rest of the span is the enum body.
-                if len > kw_len {
+                // Enum name follows "enum " (5 bytes).
+                let name_start = span.start + kw_len + 1;
+                let name_len = enum_name.len();
+                if name_start + name_len <= span.end {
                     out.push(SemanticTokenInfo {
-                        start: span.start + kw_len,
-                        length: len - kw_len,
+                        start: name_start,
+                        length: name_len,
+                        token_type: SemanticTokenType::Struct,
+                    });
+                }
+            }
+            // Per-variant EnumMember tokens using spans from Phase 3.
+            for (_variant_name, variant_span) in variants {
+                let vlen = variant_span.0.end.saturating_sub(variant_span.0.start);
+                if vlen > 0 {
+                    out.push(SemanticTokenInfo {
+                        start: variant_span.0.start,
+                        length: vlen,
                         token_type: SemanticTokenType::EnumMember,
                     });
                 }
             }
         }
 
-        AstContent::StructDecl { .. } => {
+        AstContent::StructDecl {
+            name: struct_name,
+            fields,
+        } => {
             let kw_len = "struct".len().min(len);
             if len > 0 {
                 out.push(SemanticTokenInfo {
@@ -1951,11 +1984,25 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     length: kw_len,
                     token_type: SemanticTokenType::Keyword,
                 });
-                if len > kw_len {
+                // Struct name follows "struct " (7 bytes).
+                let name_start = span.start + kw_len + 1;
+                let name_len = struct_name.len();
+                if name_start + name_len <= span.end {
                     out.push(SemanticTokenInfo {
-                        start: span.start + kw_len,
-                        length: len - kw_len,
+                        start: name_start,
+                        length: name_len,
                         token_type: SemanticTokenType::Struct,
+                    });
+                }
+            }
+            // Per-field Property tokens using the span from Phase 3.
+            for field in fields {
+                let flen = field.span.0.end.saturating_sub(field.span.0.start);
+                if flen > 0 {
+                    out.push(SemanticTokenInfo {
+                        start: field.span.0.start,
+                        length: flen,
+                        token_type: SemanticTokenType::Property,
                     });
                 }
             }
@@ -1973,14 +2020,33 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
             emit_semantic_tokens(body, out);
         }
 
-        AstContent::FnDef { body, .. } => {
-            let kw_len = "fn".len().min(len);
+        AstContent::FnDef {
+            name,
+            name_span,
+            body,
+            ..
+        } => {
+            // Emit `fn` keyword.
+            let kw_len = "fn".len();
             if len > 0 {
                 out.push(SemanticTokenInfo {
                     start: span.start,
-                    length: kw_len,
+                    length: kw_len.min(len),
                     token_type: SemanticTokenType::Keyword,
                 });
+            }
+            // Emit function name using its actual token span (named functions only).
+            if name.is_some()
+                && let Some(ns) = name_span
+            {
+                let nlen = ns.0.end.saturating_sub(ns.0.start);
+                if nlen > 0 {
+                    out.push(SemanticTokenInfo {
+                        start: ns.0.start,
+                        length: nlen,
+                        token_type: SemanticTokenType::Function,
+                    });
+                }
             }
             emit_semantic_tokens(body, out);
         }
@@ -2033,14 +2099,37 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
             emit_semantic_tokens(content, out);
         }
 
-        AstContent::LetCall { .. } => {
-            // "let" keyword.
-            let kw_len = "let".len().min(len);
+        AstContent::LetCall {
+            name: _,
+            name_span,
+            target: _,
+            target_span,
+        } => {
+            // Emit `let` keyword.
+            let kw_len = "let".len();
             if len > 0 {
                 out.push(SemanticTokenInfo {
                     start: span.start,
-                    length: kw_len,
+                    length: kw_len.min(len),
                     token_type: SemanticTokenType::Keyword,
+                });
+            }
+            // Emit variable name using its actual token span.
+            let nlen = name_span.0.end.saturating_sub(name_span.0.start);
+            if nlen > 0 {
+                out.push(SemanticTokenInfo {
+                    start: name_span.0.start,
+                    length: nlen,
+                    token_type: SemanticTokenType::Variable,
+                });
+            }
+            // Emit target label using its actual token span.
+            let tlen = target_span.0.end.saturating_sub(target_span.0.start);
+            if tlen > 0 {
+                out.push(SemanticTokenInfo {
+                    start: target_span.0.start,
+                    length: tlen,
+                    token_type: SemanticTokenType::Label,
                 });
             }
         }
@@ -3225,6 +3314,84 @@ mod tests {
         assert!(
             sym.doc_comment.is_none(),
             "single-# comment must not be treated as a doc comment"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_fn_def_emits_function_token() {
+        // "greet" has length 5 — can only come from the FnDef name arm, not from end!().
+        let ast = parse("fn greet() {\n  end!()\n}\n");
+        let toks = semantic_tokens(&ast);
+        let fn_name_tok = toks
+            .iter()
+            .find(|t| t.token_type == SemanticTokenType::Function && t.length == 5);
+        assert!(
+            fn_name_tok.is_some(),
+            "expected Function token with length=5 for 'greet', got {toks:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_jump_emits_keyword_and_label() {
+        // "label start" emits Label("start"); "jump target" should emit Label("target").
+        // So we expect at least 2 Label tokens — not just 1.
+        let ast = parse("label start {\n  jump target\n}\n");
+        let toks = semantic_tokens(&ast);
+        let label_toks: Vec<_> = toks
+            .iter()
+            .filter(|t| t.token_type == SemanticTokenType::Label)
+            .collect();
+        assert!(
+            label_toks.len() >= 2,
+            "expected >=2 Label tokens (one from LabeledBlock 'start', one from Jump 'target'), got {toks:?}"
+        );
+        // Specifically check that "target" (length 6) appears as a Label.
+        assert!(
+            label_toks.iter().any(|t| t.length == 6),
+            "expected a Label token with length=6 for 'target', got {label_toks:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_enum_emits_per_variant_token() {
+        let ast = parse("enum Color { Red, Green, Blue }\n");
+        let toks = semantic_tokens(&ast);
+        let variant_toks: Vec<_> = toks
+            .iter()
+            .filter(|t| t.token_type == SemanticTokenType::EnumMember)
+            .collect();
+        assert_eq!(
+            variant_toks.len(),
+            3,
+            "expected 3 EnumMember tokens (one per variant), got {toks:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_struct_emits_per_field_token() {
+        let ast = parse("struct Point { x: int, y: int }\n");
+        let toks = semantic_tokens(&ast);
+        let field_toks: Vec<_> = toks
+            .iter()
+            .filter(|t| t.token_type == SemanticTokenType::Property)
+            .collect();
+        assert_eq!(
+            field_toks.len(),
+            2,
+            "expected 2 Property tokens (one per field), got {toks:?}"
+        );
+    }
+
+    #[test]
+    fn find_definition_in_children_returns_none_not_zero() {
+        // find_definition should return None (not Some(0..0)) when the name
+        // is not actually defined anywhere.
+        let ast = parse("label scene {\n  end!()\n}\n");
+        // "missing" is not defined; result must be None, not Some(0..0)
+        let result = find_definition(&ast, "missing");
+        assert!(
+            result.is_none(),
+            "expected None for unknown name, got {result:?}"
         );
     }
 }

@@ -300,7 +300,7 @@ fn scan_label_nops(
     labels: &mut HashMap<String, NodeIndex>,
 ) -> Result<(), CompilerError> {
     match ast.content() {
-        AstContent::LabeledBlock { label, block } => {
+        AstContent::LabeledBlock { label, block, .. } => {
             if labels.contains_key(label) {
                 return Err(CompilerError::DuplicateLabel(label.clone()));
             }

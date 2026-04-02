@@ -691,7 +691,7 @@ fn runtime_value_type_name(value: &RuntimeValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{DeclKind, TypeAnnotation};
+    use crate::parser::ast::{DeclKind, TokSpan, TypeAnnotation};
     use crate::runtime::value::RuntimeValue;
     use chumsky::span::Span as _;
 
@@ -1093,16 +1093,15 @@ mod tests {
     #[test]
     fn struct_literal_compatible_with_struct_annotation() {
         use crate::parser::ast::StructField;
-        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let fields = vec![
             StructField {
                 name: "name".into(),
-                span: zs,
+                span: TokSpan::default(),
                 type_annotation: TypeAnnotation::Str,
             },
             StructField {
                 name: "health".into(),
-                span: zs,
+                span: TokSpan::default(),
                 type_annotation: TypeAnnotation::Int,
             },
         ];
@@ -1128,16 +1127,15 @@ mod tests {
     fn struct_literal_missing_field_reports_struct_mismatch() {
         use crate::analysis::StructFieldError;
         use crate::parser::ast::StructField;
-        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let fields = vec![
             StructField {
                 name: "name".into(),
-                span: zs,
+                span: TokSpan::default(),
                 type_annotation: TypeAnnotation::Str,
             },
             StructField {
                 name: "health".into(),
-                span: zs,
+                span: TokSpan::default(),
                 type_annotation: TypeAnnotation::Int,
             },
         ];
@@ -1175,7 +1173,7 @@ mod tests {
         use crate::parser::ast::StructField;
         let fields = vec![StructField {
             name: "alive".into(),
-            span: chumsky::span::SimpleSpan::new((), 0..0),
+            span: TokSpan::default(),
             type_annotation: TypeAnnotation::Bool,
         }];
         let mut ctx = make_ctx(&[]);
@@ -1211,7 +1209,7 @@ mod tests {
         use crate::parser::ast::StructField;
         let fields = vec![StructField {
             name: "x".into(),
-            span: chumsky::span::SimpleSpan::new((), 0..0),
+            span: TokSpan::default(),
             type_annotation: TypeAnnotation::Int,
         }];
         let mut ctx = make_ctx(&[]);
@@ -1313,13 +1311,12 @@ mod tests {
     #[test]
     fn qualified_ident_accepted_when_tail_is_known_struct() {
         // `chars.Character` should be accepted when `Character` is a known struct.
-        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let mut ctx = AnalysisContext::default();
         ctx.structs.insert(
             "Character".into(),
             vec![crate::parser::ast::StructField {
                 name: "name".into(),
-                span: zs,
+                span: TokSpan::default(),
                 type_annotation: TypeAnnotation::Str,
             }],
         );

@@ -22,9 +22,13 @@
 
 pub mod env;
 pub mod eval;
+mod float_methods;
+mod int_methods;
 mod list_methods;
 pub mod loader;
+mod map_methods;
 pub mod registry;
+mod str_methods;
 
 pub use env::{CallFrame, Environment};
 pub use eval::{eval_expr, eval_expr_list};
@@ -40,7 +44,7 @@ use thiserror::Error;
 use crate::{
     compiler::CompilerError,
     ir::{ChoiceEvent, Event, IrChoiceOption, IrEdge, IrGraph, IrNodeKind, VmStep},
-    parser::ast::{AstContent, DeclKind, Decorator, MatchPattern},
+    parser::ast::{AstContent, DeclKind, Decorator, EventConstraint, MatchPattern},
     runtime::value::RuntimeValue,
 };
 
@@ -122,6 +126,32 @@ pub enum VmError {
     /// before script execution started.
     #[error("extern value '{0}' was not provided by the host runtime before execution")]
     ExternNotProvided(String),
+
+    /// A method was called on a value type that does not support it.
+    ///
+    /// For example, calling `.push()` on an integer would produce this error.
+    #[error("unknown method '{0}' for the given type")]
+    UnknownMethod(String),
+
+    /// A free-function call referenced a name that is not defined in any
+    /// reachable scope.
+    #[error("undefined function '{0}'")]
+    UndefinedFunction(String),
+
+    /// A script-defined decorator was applied to an event kind it does not
+    /// accept, as declared by its `<event: …>` constraint clause.
+    #[error(
+        "constraint violation: decorator '@{decorator}' requires a '{constraint}' event, \
+         but was applied to a '{actual_event}' event"
+    )]
+    ConstraintViolation {
+        /// The name of the decorator whose constraint was violated.
+        decorator: String,
+        /// The constraint declared on the decorator (e.g. `"choice"`).
+        constraint: String,
+        /// The actual event kind it was applied to (e.g. `"dialogue"`).
+        actual_event: String,
+    },
 }
 
 // ─── Decorator validation helper ─────────────────────────────────────────────
@@ -142,6 +172,33 @@ fn check_decorator_known(
         });
     }
     Ok(())
+}
+
+// ─── Dice rolling ─────────────────────────────────────────────────────────────
+
+/// A pluggable dice-rolling backend.
+///
+/// Implement this trait to substitute the default `rand`-based roller with a
+/// deterministic stub in tests, or a custom RNG in production.
+pub trait DiceRoller: Send + Sync {
+    /// Roll `count` dice, each with `sides` faces, and return the total.
+    ///
+    /// Each die produces a value in `1..=sides`.  A `count` of `0` returns
+    /// `0`.  Behaviour for `sides == 0` is implementation-defined.
+    fn roll(&self, count: u32, sides: u32) -> i64;
+}
+
+/// Default [`DiceRoller`] implementation backed by [`rand::thread_rng`].
+///
+/// Used by the VM unless the host replaces it via dependency injection.
+pub struct DefaultDiceRoller;
+
+impl DiceRoller for DefaultDiceRoller {
+    fn roll(&self, count: u32, sides: u32) -> i64 {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        (0..count).map(|_| rng.gen_range(1..=sides) as i64).sum()
+    }
 }
 
 // ─── VmState ─────────────────────────────────────────────────────────────────
@@ -626,7 +683,13 @@ impl Vm {
                     // decorators), then falls back to the Rust registry.
                     let mut fields: HashMap<String, RuntimeValue> = HashMap::new();
                     for dec in decorators {
-                        match apply_decorator(dec, &state.env, &state.registry, fields) {
+                        match apply_decorator(
+                            dec,
+                            &state.env,
+                            &state.registry,
+                            fields,
+                            &EventConstraint::Dialogue,
+                        ) {
                             Ok(new_fields) => fields = new_fields,
                             Err(e) => return VmStep::Error(e),
                         }
@@ -893,27 +956,61 @@ fn exec_stmt_sync(
 
 // ─── Script-decorator execution ──────────────────────────────────────────────
 
+/// Bundles the compile-time definition data for a script-defined decorator.
+///
+/// Passed by reference to [`apply_script_decorator`] so that function stays
+/// within Clippy's `too_many_arguments` limit.
+struct ScriptDecoratorDef<'a> {
+    /// The decorator's registered name (used in error messages).
+    name: &'a str,
+    /// The event-kind constraint declared on the decorator.
+    event_constraint: &'a EventConstraint,
+    /// Ordered parameter names.
+    params: &'a [String],
+    /// The decorator body block.
+    body: &'a crate::parser::ast::Ast,
+}
+
 /// Runs a script-defined decorator body against `event`, mutating its fields.
+///
+/// # Errors
+///
+/// Returns [`VmError::ConstraintViolation`] when `def.event_constraint` is
+/// `Dialogue` but `actual_kind` is `Choice`, or vice-versa.
 fn apply_script_decorator(
-    event_constraint: &crate::parser::ast::EventConstraint,
-    params: &[String],
-    body: &crate::parser::ast::Ast,
+    def: &ScriptDecoratorDef<'_>,
     args: &[crate::parser::ast::Ast],
     env: &Environment,
     mut event: HashMap<String, RuntimeValue>,
+    actual_kind: &EventConstraint,
 ) -> Result<HashMap<String, RuntimeValue>, VmError> {
-    use crate::parser::ast::EventConstraint;
-
-    // Type-check the event constraint. For now all constraints are accepted;
-    // this is where future runtime constraint enforcement would go.
-    match event_constraint {
-        EventConstraint::Any | EventConstraint::Dialogue | EventConstraint::Choice => {}
+    // Enforce the event-kind constraint declared on the decorator.
+    match def.event_constraint {
+        EventConstraint::Any => {}
+        EventConstraint::Dialogue => {
+            if matches!(actual_kind, EventConstraint::Choice) {
+                return Err(VmError::ConstraintViolation {
+                    decorator: def.name.to_string(),
+                    constraint: "dialogue".to_string(),
+                    actual_event: "choice".to_string(),
+                });
+            }
+        }
+        EventConstraint::Choice => {
+            if matches!(actual_kind, EventConstraint::Dialogue) {
+                return Err(VmError::ConstraintViolation {
+                    decorator: def.name.to_string(),
+                    constraint: "choice".to_string(),
+                    actual_event: "dialogue".to_string(),
+                });
+            }
+        }
     }
 
     // Bind arguments to parameter names in a fresh inner scope.
     let mut inner_env = env.clone();
     inner_env.push_scope();
-    for (param, arg_ast) in params.iter().zip(args.iter()) {
+    for (param, arg_ast) in def.params.iter().zip(args.iter()) {
         let val = eval_expr(arg_ast, env)?;
         inner_env.set(param.as_str(), val, &DeclKind::Variable)?;
     }
@@ -929,7 +1026,7 @@ fn apply_script_decorator(
         &DeclKind::Variable,
     )?;
 
-    exec_block_sync(body, &mut inner_env, &mut event)?;
+    exec_block_sync(def.body, &mut inner_env, &mut event)?;
     Ok(event)
 }
 
@@ -939,11 +1036,16 @@ fn apply_script_decorator(
 ///
 /// Checks the environment for a script-defined decorator first; falls back to
 /// the Rust [`DecoratorRegistry`].
+///
+/// `actual_kind` indicates the kind of event being decorated (`Dialogue` or
+/// `Choice`); it is forwarded to [`apply_script_decorator`] for constraint
+/// checking.  Pass [`EventConstraint::Any`] when the kind is irrelevant.
 fn apply_decorator(
     dec: &Decorator,
     env: &Environment,
     registry: &DecoratorRegistry,
     event: HashMap<String, RuntimeValue>,
+    actual_kind: &EventConstraint,
 ) -> Result<HashMap<String, RuntimeValue>, VmError> {
     // Check whether this decorator is script-defined (stored in env).
     if let Ok(RuntimeValue::ScriptDecorator {
@@ -958,7 +1060,18 @@ fn apply_decorator(
             AstContent::ExprList(items) => items.clone(),
             _ => vec![args_ast.clone()],
         };
-        return apply_script_decorator(&event_constraint, &params, &body, &args, env, event);
+        return apply_script_decorator(
+            &ScriptDecoratorDef {
+                name: dec.name(),
+                event_constraint: &event_constraint,
+                params: &params,
+                body: &body,
+            },
+            &args,
+            env,
+            event,
+            actual_kind,
+        );
     }
 
     // Fall back to Rust-registered handler.
@@ -978,7 +1091,7 @@ fn build_choice_event(
     // Evaluate top-level choice decorators.
     let mut fields: HashMap<String, RuntimeValue> = HashMap::new();
     for dec in decorators {
-        match apply_decorator(dec, env, registry, fields) {
+        match apply_decorator(dec, env, registry, fields, &EventConstraint::Choice) {
             Ok(new_fields) => fields = new_fields,
             Err(e) => return VmStep::Error(e),
         }
@@ -989,7 +1102,7 @@ fn build_choice_event(
     for opt in options {
         let mut opt_fields: HashMap<String, RuntimeValue> = HashMap::new();
         for dec in &opt.decorators {
-            match apply_decorator(dec, env, registry, opt_fields) {
+            match apply_decorator(dec, env, registry, opt_fields, &EventConstraint::Choice) {
                 Ok(new_fields) => opt_fields = new_fields,
                 Err(e) => return VmStep::Error(e),
             }
@@ -1014,7 +1127,7 @@ mod tests {
     use crate::{
         compiler::Compiler,
         lexer::strings::ParsedString,
-        parser::ast::{Ast, AstContent, DeclKind, Decorator, MatchArm, MatchPattern},
+        parser::ast::{Ast, AstContent, DeclKind, Decorator, MatchArm, MatchPattern, TokSpan},
         runtime::value::RuntimeValue,
     };
     use chumsky::span::Span as _;
@@ -1585,10 +1698,12 @@ mod tests {
     /// A complete script with `DefineEnum` + `Switch` reaches the right arm.
     #[test]
     fn test_switch_on_enum_variant() {
-        let zs = chumsky::span::SimpleSpan::new((), 0..0);
         let enum_decl = Ast::enum_decl(
             "Direction".to_string(),
-            vec![("North".to_string(), zs), ("South".to_string(), zs)],
+            vec![
+                ("North".to_string(), TokSpan::default()),
+                ("South".to_string(), TokSpan::default()),
+            ],
         );
 
         let north_path = Ast::value(RuntimeValue::IdentPath(vec![

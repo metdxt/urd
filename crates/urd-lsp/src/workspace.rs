@@ -364,15 +364,16 @@ fn collect_type_defs_from_ast(
                 .or_insert_with(|| fields.clone());
         }
         AstContent::EnumDecl { name, variants } => {
-            // `variants` is already a `Vec<String>` — just clone it directly.
+            // Extract just the variant names (dropping source spans).
             // Avoid malformed ".Faction" when alias is empty.
+            let variant_names: Vec<String> = variants.iter().map(|(n, _)| n.clone()).collect();
             if !alias.is_empty() {
                 let qualified = format!("{alias}.{name}");
-                enums.entry(qualified).or_insert_with(|| variants.clone());
+                enums
+                    .entry(qualified)
+                    .or_insert_with(|| variant_names.clone());
             }
-            enums
-                .entry(name.clone())
-                .or_insert_with(|| variants.clone());
+            enums.entry(name.clone()).or_insert_with(|| variant_names);
         }
         AstContent::LabeledBlock { block, .. } => {
             collect_type_defs_from_ast(block, alias, structs, enums);

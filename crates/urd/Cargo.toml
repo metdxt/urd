@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 ariadne.workspace = true
+rand = { workspace = true }
 chumsky.workspace = true
 logos.workspace = true
 logos-display.workspace = true

@@ -140,7 +140,7 @@ fn disallowed_description(node: &Ast) -> Option<String> {
 mod tests {
     use super::*;
     use crate::lexer::strings::ParsedString;
-    use crate::parser::ast::{Ast, AstContent, DeclKind, Decorator};
+    use crate::parser::ast::{Ast, AstContent, DeclKind, Decorator, TokSpan};
     use crate::runtime::value::RuntimeValue;
     use chumsky::span::{SimpleSpan, Span};
 
@@ -182,8 +182,8 @@ mod tests {
                 Ast::enum_decl(
                     "Color".into(),
                     vec![
-                        ("Red".into(), chumsky::span::SimpleSpan::new((), 0..0)),
-                        ("Blue".into(), chumsky::span::SimpleSpan::new((), 0..0)),
+                        ("Red".into(), TokSpan::default()),
+                        ("Blue".into(), TokSpan::default()),
                     ],
                 ),
                 11,

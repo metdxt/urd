@@ -485,14 +485,13 @@ fn collect_type_defs_from_ast(
                 .or_insert_with(|| fields.clone());
         }
         AstContent::EnumDecl { name, variants } => {
+            let variant_names: Vec<String> = variants.iter().map(|(n, _)| n.clone()).collect();
             if !alias.is_empty() {
                 enums
                     .entry(format!("{alias}.{name}"))
-                    .or_insert_with(|| variants.clone());
+                    .or_insert_with(|| variant_names.clone());
             }
-            enums
-                .entry(name.clone())
-                .or_insert_with(|| variants.clone());
+            enums.entry(name.clone()).or_insert_with(|| variant_names);
         }
         AstContent::LabeledBlock { block, .. } => {
             collect_type_defs_from_ast(block, alias, structs, enums);
@@ -514,7 +513,7 @@ fn collect_label_names_from_node(
     use urd::parser::ast::AstContent;
 
     match ast.content() {
-        AstContent::LabeledBlock { label, block } => {
+        AstContent::LabeledBlock { label, block, .. } => {
             labels.insert(label.clone());
             collect_label_names_from_node(block, labels);
         }

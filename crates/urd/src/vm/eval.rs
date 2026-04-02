@@ -8,7 +8,11 @@ use crate::runtime::value::RuntimeValue;
 
 use super::VmError;
 use super::env::Environment;
+use super::float_methods;
+use super::int_methods;
 use super::list_methods;
+use super::map_methods;
+use super::str_methods;
 
 // ─── Expression evaluator ─────────────────────────────────────────────────────
 
@@ -73,14 +77,14 @@ pub fn eval_expr(
 
                     match receiver {
                         RuntimeValue::List(list) => list_methods::dispatch(list, method, &args),
-                        _ => {
-                            let path_str = path.join(".");
-                            log::warn!(
-                                "method call to '{path_str}' on non-list receiver is not yet \
-                                 implemented; returning Null"
-                            );
-                            Ok(RuntimeValue::Null)
-                        }
+                        RuntimeValue::Str(s) => str_methods::dispatch(s, method, &args),
+                        RuntimeValue::Int(n) => int_methods::dispatch(n, method, &args),
+                        RuntimeValue::Float(f) => float_methods::dispatch(f, method, &args),
+                        RuntimeValue::Map(m) => map_methods::dispatch(m, method, &args),
+                        _ => Err(VmError::UnknownMethod(format!(
+                            "method '{}' is not defined on this value type",
+                            method
+                        ))),
                     }
                 }
                 _ => {
@@ -115,10 +119,10 @@ pub fn eval_expr(
                             fields,
                         });
                     }
-                    log::warn!(
-                        "function call to '{path_str}' is not yet implemented; returning Null"
-                    );
-                    Ok(RuntimeValue::Null)
+                    Err(VmError::UndefinedFunction(format!(
+                        "function '{}' is not defined",
+                        path_str
+                    )))
                 }
             }
         }
@@ -388,10 +392,9 @@ pub(super) fn eval_runtime_value(
             // Resolve any interpolation placeholders.
             Ok(RuntimeValue::Str(interpolate_string(ps, env)))
         }
-        RuntimeValue::Dice(count, sides) => Err(VmError::NotImplemented(format!(
-            "dice evaluation ({}d{}) — wire up a dice roller via DecoratorRegistry or a custom evaluator",
-            count, sides
-        ))),
+        RuntimeValue::Dice(count, sides) => env
+            .roll_dice(*count as u32, *sides as u32)
+            .map(RuntimeValue::Int),
         other => Ok(other.clone()),
     }
 }

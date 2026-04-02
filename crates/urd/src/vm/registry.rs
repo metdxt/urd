@@ -14,7 +14,14 @@ use super::eval::eval_expr;
 // ─── DecoratorRegistry ────────────────────────────────────────────────────────
 
 /// Type alias for a boxed decorator handler function.
-type DecoratorHandler = Box<dyn Fn(&[RuntimeValue]) -> HashMap<String, RuntimeValue> + Send + Sync>;
+///
+/// The handler receives a slice of evaluated [`RuntimeValue`] arguments and
+/// returns a [`HashMap`] of fields to merge into the emitted event, or a
+/// [`VmError`] if execution fails (e.g. arity mismatch in a script-body
+/// handler).  Infallible Rust handlers registered via
+/// [`DecoratorRegistry::register`] are wrapped in `Ok(...)` automatically.
+type DecoratorHandler =
+    Box<dyn Fn(&[RuntimeValue]) -> Result<HashMap<String, RuntimeValue>, VmError> + Send + Sync>;
 
 /// Registry of named decorator handlers used to evaluate `@decorator` annotations
 /// attached to [`crate::ir::IrNodeKind::Dialogue`] and
@@ -49,16 +56,19 @@ impl DecoratorRegistry {
         }
     }
 
-    /// Registers a decorator handler under `name`.
+    /// Registers an infallible decorator handler under `name`.
     ///
     /// The handler receives a slice of evaluated [`RuntimeValue`] arguments
     /// and returns a [`HashMap`] of fields to merge into the emitted event.
+    /// The infallible closure is wrapped in `Ok(...)` internally so that it
+    /// satisfies the fallible [`DecoratorHandler`] storage type.
     pub fn register(
         &mut self,
         name: impl Into<String>,
         handler: impl Fn(&[RuntimeValue]) -> HashMap<String, RuntimeValue> + Send + Sync + 'static,
     ) {
-        self.handlers.insert(name.into(), Box::new(handler));
+        self.handlers
+            .insert(name.into(), Box::new(move |args| Ok(handler(args))));
     }
 
     /// Returns an iterator over all registered decorator names.
@@ -66,31 +76,54 @@ impl DecoratorRegistry {
         self.handlers.keys().map(String::as_str)
     }
 
-    /// Registers a no-op Rust-side stub handler under `name` so that the
-    /// validation pass in [`crate::vm::Vm::new`] accepts `@name(args)` on
-    /// dialogue/choice nodes.
+    /// Registers a script-defined decorator body as a Rust-side handler.
     ///
-    /// Script-defined decorator bodies are already evaluated automatically by
-    /// the VM via [`crate::runtime::value::RuntimeValue::ScriptDecorator`]
-    /// stored in the environment; this method is only needed when you also want
-    /// a native Rust handler to run for the same decorator name.
+    /// When the handler fires, it executes `body` as a **pure** function body
+    /// (via [`crate::vm::eval::exec_fn_body`]) with `params` bound to the
+    /// evaluated call-site arguments.  If the body returns a
+    /// [`RuntimeValue::Map`], its entries are used as the extra event fields;
+    /// any other return value is treated as an empty field set.
+    ///
+    /// Unlike script-defined decorators executed through the environment (via
+    /// `apply_decorator`'s env-lookup path), this handler path does **not**
+    /// expose or mutate an `event` map — the body must return a Map literal
+    /// explicitly.
+    ///
+    /// If an entry for `name` already exists in the registry it is left
+    /// unchanged (first registration wins).
     ///
     /// # Errors
-    /// Currently infallible; returns `Ok(())` always.  The `Result` return
-    /// type is kept for forward compatibility with richer error handling.
+    ///
+    /// Returns `Ok(())` unconditionally.  The `Result` return type is kept for
+    /// forward compatibility with richer validation.
     pub fn define_script_decorator(
         &mut self,
         name: String,
         _event_constraint: crate::parser::ast::EventConstraint,
-        _params: Vec<String>,
-        _body: crate::parser::ast::Ast,
+        params: Vec<String>,
+        body: crate::parser::ast::Ast,
     ) -> Result<(), VmError> {
-        // Register a stub handler so `@name` passes the validation pass in
-        // `Vm::new` and can be used in dialogue/choice nodes without a native
-        // Rust closure.
-        self.handlers
-            .entry(name)
-            .or_insert_with(|| Box::new(|_args: &[RuntimeValue]| HashMap::new()));
+        self.handlers.entry(name).or_insert_with(|| {
+            // Both `params` and `body` are moved into the handler closure.
+            // `exec_fn_body` creates an isolated environment, binds each
+            // parameter to the corresponding argument, and evaluates the body.
+            Box::new(
+                move |args: &[RuntimeValue]| -> Result<HashMap<String, RuntimeValue>, VmError> {
+                    match super::eval::exec_fn_body(&body, &params, args) {
+                        Ok(RuntimeValue::Map(m)) => {
+                            // Convert HashMap<String, Box<RuntimeValue>> →
+                            // HashMap<String, RuntimeValue>.
+                            Ok(m.into_iter().map(|(k, v)| (k, *v)).collect())
+                        }
+                        // Body returned something other than a Map — treat as
+                        // no additional event fields.
+                        Ok(_) => Ok(HashMap::new()),
+                        // Propagate execution errors (e.g. arity mismatch).
+                        Err(e) => Err(e),
+                    }
+                },
+            )
+        });
         Ok(())
     }
 
@@ -100,6 +133,10 @@ impl DecoratorRegistry {
     /// Returns [`VmError::UnknownDecorator`] (with a sentinel [`NodeIndex::end()`])
     /// if the decorator name is not registered.  Callers that know the real node
     /// index should override it in the error.
+    ///
+    /// Also propagates any [`VmError`] returned by the handler itself (e.g. an
+    /// arity mismatch when a script-body handler is invoked with the wrong
+    /// number of arguments).
     pub fn apply(
         &self,
         decorator: &Decorator,
@@ -119,7 +156,8 @@ impl DecoratorRegistry {
         // Evaluate every argument in the ExprList (or a bare single argument).
         let args = eval_decorator_args(decorator.args(), env)?;
 
-        Ok(handler(&args))
+        // Handler is now fallible — propagate any error it produces.
+        handler(&args)
     }
 }
 

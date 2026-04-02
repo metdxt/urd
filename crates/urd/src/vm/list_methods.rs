@@ -200,7 +200,7 @@ pub(super) fn dispatch(
             Ok(RuntimeValue::Str(ParsedString::new_plain(&joined)))
         }
 
-        // ── Stubs ─────────────────────────────────────────────────────────────
+        // ── Higher-order functions ─────────────────────────────────────────────
         "map" => {
             require_args("map", args, 1)?;
             let (params, body) = match &args[0] {
@@ -226,10 +226,247 @@ pub(super) fn dispatch(
             Ok(RuntimeValue::List(result))
         }
 
+        "filter" => {
+            require_args("filter", args, 1)?;
+            let (params, body) = match &args[0] {
+                RuntimeValue::Function { params, body } => (params.clone(), body.as_ref()),
+                other => {
+                    return Err(super::VmError::TypeError(format!(
+                        "list.filter() expects a function argument, got {:?}",
+                        other
+                    )));
+                }
+            };
+            if params.len() != 1 {
+                return Err(super::VmError::TypeError(format!(
+                    "list.filter() function must take exactly 1 parameter, got {}",
+                    params.len()
+                )));
+            }
+            let mut result = Vec::new();
+            for item in list {
+                match super::eval::exec_fn_body(body, &params, std::slice::from_ref(&item))? {
+                    RuntimeValue::Bool(true) => result.push(item),
+                    RuntimeValue::Bool(false) => {}
+                    other => {
+                        return Err(super::VmError::TypeError(format!(
+                            "list.filter() predicate must return Bool, got {:?}",
+                            other
+                        )));
+                    }
+                }
+            }
+            Ok(RuntimeValue::List(result))
+        }
+
+        "reduce" | "fold" => {
+            require_args(method, args, 2)?;
+            let init = args[0].clone();
+            let (params, body) = match &args[1] {
+                RuntimeValue::Function { params, body } => (params.clone(), body.as_ref()),
+                other => {
+                    return Err(super::VmError::TypeError(format!(
+                        "list.{method}() expects a function as second argument, got {:?}",
+                        other
+                    )));
+                }
+            };
+            if params.len() != 2 {
+                return Err(super::VmError::TypeError(format!(
+                    "list.{method}() function must take exactly 2 parameters, got {}",
+                    params.len()
+                )));
+            }
+            let mut acc = init;
+            for item in list {
+                acc = super::eval::exec_fn_body(body, &params, &[acc, item])?;
+            }
+            Ok(acc)
+        }
+
+        "find" => {
+            require_args("find", args, 1)?;
+            let (params, body) = match &args[0] {
+                RuntimeValue::Function { params, body } => (params.clone(), body.as_ref()),
+                other => {
+                    return Err(super::VmError::TypeError(format!(
+                        "list.find() expects a function argument, got {:?}",
+                        other
+                    )));
+                }
+            };
+            if params.len() != 1 {
+                return Err(super::VmError::TypeError(format!(
+                    "list.find() function must take exactly 1 parameter, got {}",
+                    params.len()
+                )));
+            }
+            for item in list {
+                match super::eval::exec_fn_body(body, &params, std::slice::from_ref(&item))? {
+                    RuntimeValue::Bool(true) => return Ok(item),
+                    RuntimeValue::Bool(false) => {}
+                    other => {
+                        return Err(super::VmError::TypeError(format!(
+                            "list.find() predicate must return Bool, got {:?}",
+                            other
+                        )));
+                    }
+                }
+            }
+            Ok(RuntimeValue::Null)
+        }
+
+        "any" => {
+            require_args("any", args, 1)?;
+            let (params, body) = match &args[0] {
+                RuntimeValue::Function { params, body } => (params.clone(), body.as_ref()),
+                other => {
+                    return Err(super::VmError::TypeError(format!(
+                        "list.any() expects a function argument, got {:?}",
+                        other
+                    )));
+                }
+            };
+            if params.len() != 1 {
+                return Err(super::VmError::TypeError(format!(
+                    "list.any() function must take exactly 1 parameter, got {}",
+                    params.len()
+                )));
+            }
+            for item in list {
+                match super::eval::exec_fn_body(body, &params, &[item])? {
+                    RuntimeValue::Bool(true) => return Ok(RuntimeValue::Bool(true)),
+                    RuntimeValue::Bool(false) => {}
+                    other => {
+                        return Err(super::VmError::TypeError(format!(
+                            "list.any() predicate must return Bool, got {:?}",
+                            other
+                        )));
+                    }
+                }
+            }
+            Ok(RuntimeValue::Bool(false))
+        }
+
+        "all" => {
+            require_args("all", args, 1)?;
+            let (params, body) = match &args[0] {
+                RuntimeValue::Function { params, body } => (params.clone(), body.as_ref()),
+                other => {
+                    return Err(super::VmError::TypeError(format!(
+                        "list.all() expects a function argument, got {:?}",
+                        other
+                    )));
+                }
+            };
+            if params.len() != 1 {
+                return Err(super::VmError::TypeError(format!(
+                    "list.all() function must take exactly 1 parameter, got {}",
+                    params.len()
+                )));
+            }
+            for item in list {
+                match super::eval::exec_fn_body(body, &params, &[item])? {
+                    RuntimeValue::Bool(true) => {}
+                    RuntimeValue::Bool(false) => return Ok(RuntimeValue::Bool(false)),
+                    other => {
+                        return Err(super::VmError::TypeError(format!(
+                            "list.all() predicate must return Bool, got {:?}",
+                            other
+                        )));
+                    }
+                }
+            }
+            Ok(RuntimeValue::Bool(true))
+        }
+
+        // Sort a list using a caller-supplied comparator function.
+        //
+        // The comparator `cmp(a, b)` must return either:
+        // - `Int`: negative → a < b, zero → equal, positive → a > b
+        // - `Bool`: `true` → a < b, `false` → a >= b
+        //
+        // Returns a new sorted list; the original is consumed.  Errors
+        // produced by the comparator are propagated after sorting completes.
+        "sort_by" => {
+            require_args("sort_by", args, 1)?;
+            let (params, body) = match &args[0] {
+                RuntimeValue::Function { params, body } => (params.clone(), body.as_ref()),
+                other => {
+                    return Err(super::VmError::TypeError(format!(
+                        "list.sort_by() expects a function argument, got {:?}",
+                        other
+                    )));
+                }
+            };
+            if params.len() != 2 {
+                return Err(super::VmError::TypeError(format!(
+                    "list.sort_by() function must take exactly 2 parameters, got {}",
+                    params.len()
+                )));
+            }
+            // Errors from the comparator cannot be returned directly from
+            // inside the sort closure, so we stash them here and check after.
+            let mut sort_error: Option<super::VmError> = None;
+            let mut out = list;
+            out.sort_by(|a, b| {
+                if sort_error.is_some() {
+                    return std::cmp::Ordering::Equal;
+                }
+                match super::eval::exec_fn_body(body, &params, &[a.clone(), b.clone()]) {
+                    Ok(RuntimeValue::Int(n)) => {
+                        if n < 0 {
+                            std::cmp::Ordering::Less
+                        } else if n > 0 {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    }
+                    Ok(RuntimeValue::Bool(true)) => std::cmp::Ordering::Less,
+                    Ok(RuntimeValue::Bool(false)) => std::cmp::Ordering::Greater,
+                    Ok(other) => {
+                        sort_error = Some(super::VmError::TypeError(format!(
+                            "list.sort_by() comparator must return Int or Bool, got {:?}",
+                            other
+                        )));
+                        std::cmp::Ordering::Equal
+                    }
+                    Err(e) => {
+                        sort_error = Some(e);
+                        std::cmp::Ordering::Equal
+                    }
+                }
+            });
+            if let Some(e) = sort_error {
+                return Err(e);
+            }
+            Ok(RuntimeValue::List(out))
+        }
+
+        "zip" => {
+            require_args("zip", args, 1)?;
+            let other = match &args[0] {
+                RuntimeValue::List(v) => v,
+                other => {
+                    return Err(super::VmError::TypeError(format!(
+                        "list.zip() expects a List argument, got {:?}",
+                        other
+                    )));
+                }
+            };
+            let len = list.len().min(other.len());
+            let result = list
+                .into_iter()
+                .zip(other.iter().cloned())
+                .take(len)
+                .map(|(a, b)| RuntimeValue::List(vec![a, b]))
+                .collect();
+            Ok(RuntimeValue::List(result))
+        }
+
         // ── Unknown ───────────────────────────────────────────────────────────
-        other => Err(super::VmError::TypeError(format!(
-            "unknown list method '{other}'"
-        ))),
+        other => Err(super::VmError::UnknownMethod(format!("'{other}' on List"))),
     }
 }
 
@@ -595,16 +832,392 @@ mod tests {
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
+    // ── filter ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_filter_keeps_matching_elements() {
+        use crate::parser::ast::Ast;
+        // fn(x) { x > 2 }
+        let body = Box::new(Ast::block(vec![Ast::greater_than_op(
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::Int(2)),
+        )]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(1), int(2), int(3), int(4)], "filter", &[pred]).unwrap();
+        assert_eq!(result, list_of([int(3), int(4)]));
+    }
+
+    #[test]
+    fn test_filter_empty_input_returns_empty() {
+        use crate::parser::ast::Ast;
+        // fn(x) { true } — predicate always passes
+        let body = Box::new(Ast::block(vec![Ast::value(RuntimeValue::Bool(true))]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![], "filter", &[pred]).unwrap();
+        assert_eq!(result, list_of([]));
+    }
+
+    #[test]
+    fn test_filter_wrong_arg_type() {
+        let err = dispatch(vec![int(1)], "filter", &[int(42)]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
+    #[test]
+    fn test_filter_non_bool_predicate_errors() {
+        use crate::parser::ast::Ast;
+        // fn(x) { x } — returns Int, not Bool
+        let body = Box::new(Ast::block(vec![Ast::value(RuntimeValue::IdentPath(vec![
+            "x".into(),
+        ]))]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let err = dispatch(vec![int(1)], "filter", &[pred]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
+    // ── reduce / fold ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_reduce_sums_elements() {
+        use crate::parser::ast::{Ast, Operator};
+        // fn(acc, x) { acc + x }
+        let body = Box::new(Ast::block(vec![Ast::binop(
+            Operator::Plus,
+            Ast::value(RuntimeValue::IdentPath(vec!["acc".into()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+        )]));
+        let func = RuntimeValue::Function {
+            params: vec!["acc".to_string(), "x".to_string()],
+            body,
+        };
+        let result = dispatch(
+            vec![int(1), int(2), int(3), int(4)],
+            "reduce",
+            &[int(0), func],
+        )
+        .unwrap();
+        assert_eq!(result, int(10));
+    }
+
+    #[test]
+    fn test_fold_alias_works() {
+        use crate::parser::ast::{Ast, Operator};
+        // fn(acc, x) { acc + x }
+        let body = Box::new(Ast::block(vec![Ast::binop(
+            Operator::Plus,
+            Ast::value(RuntimeValue::IdentPath(vec!["acc".into()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+        )]));
+        let func = RuntimeValue::Function {
+            params: vec!["acc".to_string(), "x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(1), int(2), int(3)], "fold", &[int(0), func]).unwrap();
+        assert_eq!(result, int(6));
+    }
+
+    #[test]
+    fn test_reduce_empty_list_returns_init() {
+        use crate::parser::ast::{Ast, Operator};
+        let body = Box::new(Ast::block(vec![Ast::binop(
+            Operator::Plus,
+            Ast::value(RuntimeValue::IdentPath(vec!["acc".into()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+        )]));
+        let func = RuntimeValue::Function {
+            params: vec!["acc".to_string(), "x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![], "reduce", &[int(42), func]).unwrap();
+        assert_eq!(result, int(42));
+    }
+
+    #[test]
+    fn test_reduce_wrong_function_arg_type() {
+        // Second argument must be a function
+        let err = dispatch(vec![int(1)], "reduce", &[int(0), int(42)]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
+    // ── find ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_find_returns_first_match() {
+        use crate::parser::ast::Ast;
+        // fn(x) { x > 2 }
+        let body = Box::new(Ast::block(vec![Ast::greater_than_op(
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::Int(2)),
+        )]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(1), int(3), int(5)], "find", &[pred]).unwrap();
+        assert_eq!(result, int(3));
+    }
+
+    #[test]
+    fn test_find_returns_null_when_no_match() {
+        use crate::parser::ast::Ast;
+        // fn(x) { x > 100 }
+        let body = Box::new(Ast::block(vec![Ast::greater_than_op(
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::Int(100)),
+        )]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(1), int(2), int(3)], "find", &[pred]).unwrap();
+        assert_eq!(result, RuntimeValue::Null);
+    }
+
+    #[test]
+    fn test_find_wrong_arg_type() {
+        let err = dispatch(vec![int(1)], "find", &[int(42)]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
+    // ── any ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_any_true_when_match_exists() {
+        use crate::parser::ast::Ast;
+        // fn(x) { x > 2 }
+        let body = Box::new(Ast::block(vec![Ast::greater_than_op(
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::Int(2)),
+        )]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(1), int(2), int(3)], "any", &[pred]).unwrap();
+        assert_eq!(result, RuntimeValue::Bool(true));
+    }
+
+    #[test]
+    fn test_any_false_when_no_match() {
+        use crate::parser::ast::Ast;
+        // fn(x) { x > 10 }
+        let body = Box::new(Ast::block(vec![Ast::greater_than_op(
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::Int(10)),
+        )]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(1), int(2), int(3)], "any", &[pred]).unwrap();
+        assert_eq!(result, RuntimeValue::Bool(false));
+    }
+
+    #[test]
+    fn test_any_empty_list_is_false() {
+        use crate::parser::ast::Ast;
+        // pred body doesn't matter — list is empty
+        let body = Box::new(Ast::block(vec![Ast::value(RuntimeValue::Bool(true))]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![], "any", &[pred]).unwrap();
+        assert_eq!(result, RuntimeValue::Bool(false));
+    }
+
+    #[test]
+    fn test_any_wrong_arg_type() {
+        let err = dispatch(vec![int(1)], "any", &[int(42)]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
+    // ── all ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_all_true_when_all_match() {
+        use crate::parser::ast::Ast;
+        // fn(x) { x > 0 }
+        let body = Box::new(Ast::block(vec![Ast::greater_than_op(
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::Int(0)),
+        )]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(1), int(2), int(3)], "all", &[pred]).unwrap();
+        assert_eq!(result, RuntimeValue::Bool(true));
+    }
+
+    #[test]
+    fn test_all_false_when_one_fails() {
+        use crate::parser::ast::Ast;
+        // fn(x) { x > 1 }  — fails for x=1
+        let body = Box::new(Ast::block(vec![Ast::greater_than_op(
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::Int(1)),
+        )]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(1), int(2), int(3)], "all", &[pred]).unwrap();
+        assert_eq!(result, RuntimeValue::Bool(false));
+    }
+
+    #[test]
+    fn test_all_empty_list_is_true() {
+        use crate::parser::ast::Ast;
+        // pred body doesn't matter — vacuous truth
+        let body = Box::new(Ast::block(vec![Ast::value(RuntimeValue::Bool(false))]));
+        let pred = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+        let result = dispatch(vec![], "all", &[pred]).unwrap();
+        assert_eq!(result, RuntimeValue::Bool(true));
+    }
+
+    #[test]
+    fn test_all_wrong_arg_type() {
+        let err = dispatch(vec![int(1)], "all", &[int(42)]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
+    // ── sort_by ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sort_by_ascending_int_comparator() {
+        use crate::parser::ast::{Ast, Operator};
+        // fn(a, b) { a - b }  → ascending by Int sign convention
+        let body = Box::new(Ast::block(vec![Ast::binop(
+            Operator::Minus,
+            Ast::value(RuntimeValue::IdentPath(vec!["a".into()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["b".into()])),
+        )]));
+        let cmp = RuntimeValue::Function {
+            params: vec!["a".to_string(), "b".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(3), int(1), int(2)], "sort_by", &[cmp]).unwrap();
+        assert_eq!(result, list_of([int(1), int(2), int(3)]));
+    }
+
+    #[test]
+    fn test_sort_by_bool_comparator() {
+        use crate::parser::ast::Ast;
+        // fn(a, b) { a < b }  → ascending via Bool(true if a < b) convention
+        let body = Box::new(Ast::block(vec![Ast::less_than_op(
+            Ast::value(RuntimeValue::IdentPath(vec!["a".into()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["b".into()])),
+        )]));
+        let cmp = RuntimeValue::Function {
+            params: vec!["a".to_string(), "b".to_string()],
+            body,
+        };
+        let result = dispatch(vec![int(5), int(2), int(8)], "sort_by", &[cmp]).unwrap();
+        assert_eq!(result, list_of([int(2), int(5), int(8)]));
+    }
+
+    #[test]
+    fn test_sort_by_empty_list() {
+        use crate::parser::ast::Ast;
+        let body = Box::new(Ast::block(vec![Ast::value(RuntimeValue::Int(0))]));
+        let cmp = RuntimeValue::Function {
+            params: vec!["a".to_string(), "b".to_string()],
+            body,
+        };
+        let result = dispatch(vec![], "sort_by", &[cmp]).unwrap();
+        assert_eq!(result, list_of([]));
+    }
+
+    #[test]
+    fn test_sort_by_wrong_arg_type() {
+        let err = dispatch(vec![int(1)], "sort_by", &[int(42)]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
+    #[test]
+    fn test_sort_by_bad_comparator_return_type() {
+        use crate::parser::ast::Ast;
+        // fn(a, b) { "oops" }  — returns Str, not Int/Bool
+        let body = Box::new(Ast::block(vec![Ast::value(RuntimeValue::Str(
+            ParsedString::new_plain("oops"),
+        ))]));
+        let cmp = RuntimeValue::Function {
+            params: vec!["a".to_string(), "b".to_string()],
+            body,
+        };
+        let err = dispatch(vec![int(1), int(2)], "sort_by", &[cmp]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
+    // ── zip ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_zip_equal_length_lists() {
+        let a = vec![int(1), int(2), int(3)];
+        let b = list_of([int(4), int(5), int(6)]);
+        let result = call(a, "zip", vec![b]).unwrap();
+        assert_eq!(
+            result,
+            list_of([
+                list_of([int(1), int(4)]),
+                list_of([int(2), int(5)]),
+                list_of([int(3), int(6)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_zip_truncates_to_shorter_list() {
+        let a = vec![int(1), int(2), int(3)];
+        let b = list_of([int(10), int(20)]);
+        let result = call(a, "zip", vec![b]).unwrap();
+        assert_eq!(
+            result,
+            list_of([list_of([int(1), int(10)]), list_of([int(2), int(20)])])
+        );
+    }
+
+    #[test]
+    fn test_zip_empty_self_returns_empty() {
+        let result = call(vec![], "zip", vec![list_of([int(1), int(2)])]).unwrap();
+        assert_eq!(result, list_of([]));
+    }
+
+    #[test]
+    fn test_zip_empty_other_returns_empty() {
+        let result = call(vec![int(1), int(2)], "zip", vec![list_of([])]).unwrap();
+        assert_eq!(result, list_of([]));
+    }
+
+    #[test]
+    fn test_zip_wrong_arg_type() {
+        let err = call(vec![int(1)], "zip", vec![int(42)]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
     // ── unknown method ───────────────────────────────────────────────────────
 
     #[test]
     fn test_unknown_method() {
         let err = call(vec![], "frobnicate", vec![]).unwrap_err();
         assert!(
-            matches!(err, super::super::VmError::TypeError(_)),
-            "expected TypeError, got: {err:?}"
+            matches!(err, super::super::VmError::UnknownMethod(_)),
+            "expected UnknownMethod, got: {err:?}"
         );
-        if let super::super::VmError::TypeError(msg) = err {
+        if let super::super::VmError::UnknownMethod(msg) = err {
             assert!(
                 msg.contains("frobnicate"),
                 "error message should name the unknown method, got: {msg}"
