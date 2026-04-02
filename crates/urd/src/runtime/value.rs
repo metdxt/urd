@@ -92,6 +92,14 @@ pub enum RuntimeValue {
     #[serde(skip)]
     Map(std::collections::HashMap<String, Box<RuntimeValue>>),
 
+    /// An ordered list of runtime values: `[a, b, c]` literals.
+    ///
+    /// Unlike `Map` and `ScriptDecorator`, `List` is fully serialisable as
+    /// long as all its elements are themselves serialisable.  Note that a
+    /// list containing a `ScriptDecorator` element will panic at
+    /// serialisation time (same constraint as `Map` values).
+    List(Vec<RuntimeValue>),
+
     /// A script-defined decorator, stored as a first-class runtime value.
     ///
     /// `Ast` is not serialisable, so this variant is excluded from serde

@@ -656,6 +656,7 @@ fn runtime_value_type_name(value: &RuntimeValue) -> String {
         }
         RuntimeValue::Label { name, .. } => format!("label '{name}'"),
         RuntimeValue::Map(_) => "map".to_owned(),
+        RuntimeValue::List(_) => "list".to_owned(),
         RuntimeValue::ScriptDecorator { .. } => "decorator".to_owned(),
     }
 }

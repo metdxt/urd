@@ -100,6 +100,15 @@ pub enum VmError {
         len: usize,
     },
 
+    /// A list index was out of bounds.
+    #[error("index {index} out of bounds for list of length {len}")]
+    IndexOutOfBounds {
+        /// The supplied index (may be negative for reverse-indexing attempts).
+        index: i64,
+        /// The length of the list.
+        len: usize,
+    },
+
     /// An error propagated from the compiler (e.g. when constructing test graphs).
     #[error("compiler error: {0}")]
     CompilerError(#[from] CompilerError),
@@ -708,7 +717,7 @@ fn eval_subscript_assign(
 ) -> Result<(), VmError> {
     use crate::parser::ast::AstContent;
 
-    // Resolve the variable name that holds the map.
+    // Resolve the variable name that holds the map or list.
     let var_name = match object.content() {
         AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => path[0].clone(),
         _ => {
@@ -722,32 +731,56 @@ fn eval_subscript_assign(
     let key_val = eval_expr(key, env)?;
     let new_val = eval_expr(value, env)?;
 
-    let key_str = match key_val {
-        RuntimeValue::Str(ref ps) => ps.to_string(),
-        RuntimeValue::Int(i) => i.to_string(),
-        other => {
-            return Err(VmError::TypeError(format!(
-                "map key must be Str or Int, got {other:?}"
-            )));
-        }
-    };
-
-    // Fetch the map, mutate it, and write it back.
-    let map_val = env
+    // Fetch the current value of the variable.
+    let current = env
         .get(&var_name)
         .map_err(|_| VmError::UndefinedVariable(var_name.clone()))?;
 
-    let mut map = match map_val {
-        RuntimeValue::Map(m) => m,
-        other => {
-            return Err(VmError::TypeError(format!(
-                "subscript assign: {var_name} is not a map, got {other:?}"
-            )));
+    match current {
+        RuntimeValue::Map(mut map) => {
+            let key_str = match key_val {
+                RuntimeValue::Str(ref ps) => ps.to_string(),
+                RuntimeValue::Int(i) => i.to_string(),
+                other => {
+                    return Err(VmError::TypeError(format!(
+                        "map key must be Str or Int, got {other:?}"
+                    )));
+                }
+            };
+            map.insert(key_str, Box::new(new_val));
+            env.set(&var_name, RuntimeValue::Map(map), &DeclKind::Variable)
         }
-    };
-
-    map.insert(key_str, Box::new(new_val));
-    env.set(&var_name, RuntimeValue::Map(map), &DeclKind::Variable)
+        RuntimeValue::List(mut list) => {
+            let idx = match key_val {
+                RuntimeValue::Int(i) => i,
+                other => {
+                    return Err(VmError::TypeError(format!(
+                        "list index must be Int, got {other:?}"
+                    )));
+                }
+            };
+            let len = list.len();
+            // Support Python-style negative indexing.
+            let actual = if idx < 0 {
+                let pos = len as i64 + idx;
+                if pos < 0 {
+                    return Err(VmError::IndexOutOfBounds { index: idx, len });
+                }
+                pos as usize
+            } else {
+                let pos = idx as usize;
+                if pos >= len {
+                    return Err(VmError::IndexOutOfBounds { index: idx, len });
+                }
+                pos
+            };
+            list[actual] = new_val;
+            env.set(&var_name, RuntimeValue::List(list), &DeclKind::Variable)
+        }
+        other => Err(VmError::TypeError(format!(
+            "subscript assign: {var_name} is not a map or list, got {other:?}"
+        ))),
+    }
 }
 
 // ─── Sync block executor ─────────────────────────────────────────────────────
@@ -1789,6 +1822,105 @@ mod tests {
             RuntimeValue::Int(99),
             "m[\"a\"] should be 99 after assign"
         );
+    }
+
+    #[test]
+    fn test_list_literal_eval_via_vm() {
+        // Verify that list literals evaluate to RuntimeValue::List.
+        let env = Environment::default();
+        let ast = Ast::list(vec![
+            Ast::value(RuntimeValue::Int(10)),
+            Ast::value(RuntimeValue::Int(20)),
+            Ast::value(RuntimeValue::Int(30)),
+        ]);
+        let result = eval_expr(&ast, &env).expect("list eval");
+        assert_eq!(
+            result,
+            RuntimeValue::List(vec![
+                RuntimeValue::Int(10),
+                RuntimeValue::Int(20),
+                RuntimeValue::Int(30),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_subscript_assign_mutates_list() {
+        let mut env = Environment::new();
+        // Declare: let xs: list = [1, 2, 3]
+        env.set(
+            "xs",
+            RuntimeValue::List(vec![
+                RuntimeValue::Int(1),
+                RuntimeValue::Int(2),
+                RuntimeValue::Int(3),
+            ]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+
+        // xs[1] = 99
+        let obj = Ast::value(RuntimeValue::IdentPath(vec!["xs".into()]));
+        let key = Ast::value(RuntimeValue::Int(1));
+        let val = Ast::value(RuntimeValue::Int(99));
+        eval_subscript_assign(&obj, &key, &val, &mut env).expect("subscript assign");
+
+        // Read back xs[1]
+        let subscript = Ast::subscript(
+            Ast::value(RuntimeValue::IdentPath(vec!["xs".into()])),
+            Ast::value(RuntimeValue::Int(1)),
+        );
+        let result = eval_expr(&subscript, &env).expect("subscript read");
+        assert_eq!(result, RuntimeValue::Int(99));
+    }
+
+    #[test]
+    fn test_subscript_assign_list_negative_index() {
+        let mut env = Environment::new();
+        env.set(
+            "xs",
+            RuntimeValue::List(vec![
+                RuntimeValue::Int(1),
+                RuntimeValue::Int(2),
+                RuntimeValue::Int(3),
+            ]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+
+        // xs[-1] = 42  — should update the last element
+        let obj = Ast::value(RuntimeValue::IdentPath(vec!["xs".into()]));
+        let key = Ast::value(RuntimeValue::Int(-1));
+        let val = Ast::value(RuntimeValue::Int(42));
+        eval_subscript_assign(&obj, &key, &val, &mut env).expect("negative index assign");
+
+        let subscript = Ast::subscript(
+            Ast::value(RuntimeValue::IdentPath(vec!["xs".into()])),
+            Ast::value(RuntimeValue::Int(-1)),
+        );
+        let result = eval_expr(&subscript, &env).expect("negative subscript read");
+        assert_eq!(result, RuntimeValue::Int(42));
+    }
+
+    #[test]
+    fn test_subscript_assign_list_out_of_bounds() {
+        let mut env = Environment::new();
+        env.set(
+            "xs",
+            RuntimeValue::List(vec![RuntimeValue::Int(1)]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+
+        let obj = Ast::value(RuntimeValue::IdentPath(vec!["xs".into()]));
+        let key = Ast::value(RuntimeValue::Int(5));
+        let val = Ast::value(RuntimeValue::Int(0));
+        let err =
+            eval_subscript_assign(&obj, &key, &val, &mut env).expect_err("should be out of bounds");
+        assert!(matches!(
+            err,
+            VmError::IndexOutOfBounds { index: 5, len: 1 }
+        ));
     }
 
     #[test]

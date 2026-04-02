@@ -68,9 +68,12 @@ pub fn eval_expr(
         }
 
         // ── Collection literals — not yet supported ──────────────────────────
-        AstContent::List(_) => {
-            log::warn!("List literals are not yet supported; returning Null");
-            Ok(RuntimeValue::Null)
+        AstContent::List(items) => {
+            let mut elements = Vec::with_capacity(items.len());
+            for item in items {
+                elements.push(eval_expr(item, env)?);
+            }
+            Ok(RuntimeValue::List(elements))
         }
         AstContent::Map(pairs) => {
             let mut map = HashMap::new();
@@ -147,22 +150,52 @@ pub fn eval_expr(
         AstContent::Subscript { object, key } => {
             let obj_val = eval_expr(object, env)?;
             let key_val = eval_expr(key, env)?;
-            let key_str = match &key_val {
-                RuntimeValue::Str(ps) => ps.to_string(),
-                RuntimeValue::Int(i) => i.to_string(),
-                other => {
-                    return Err(VmError::TypeError(format!(
-                        "subscript key must be Str or Int, got {:?}",
-                        other
-                    )));
-                }
-            };
+
             match obj_val {
-                RuntimeValue::Map(map) => map.get(&key_str).map(|v| *v.clone()).ok_or_else(|| {
-                    VmError::UndefinedVariable(format!("key '{}' not found in map", key_str))
-                }),
+                RuntimeValue::Map(map) => {
+                    let key_str = match &key_val {
+                        RuntimeValue::Str(ps) => ps.to_string(),
+                        RuntimeValue::Int(i) => i.to_string(),
+                        other => {
+                            return Err(VmError::TypeError(format!(
+                                "map key must be Str or Int, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    map.get(&key_str).map(|v| *v.clone()).ok_or_else(|| {
+                        VmError::UndefinedVariable(format!("key '{}' not found in map", key_str))
+                    })
+                }
+                RuntimeValue::List(list) => {
+                    let idx = match key_val {
+                        RuntimeValue::Int(i) => i,
+                        other => {
+                            return Err(VmError::TypeError(format!(
+                                "list index must be Int, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    let len = list.len();
+                    // Support Python-style negative indexing.
+                    let actual = if idx < 0 {
+                        let pos = len as i64 + idx;
+                        if pos < 0 {
+                            return Err(VmError::IndexOutOfBounds { index: idx, len });
+                        }
+                        pos as usize
+                    } else {
+                        let pos = idx as usize;
+                        if pos >= len {
+                            return Err(VmError::IndexOutOfBounds { index: idx, len });
+                        }
+                        pos
+                    };
+                    Ok(list[actual].clone())
+                }
                 other => Err(VmError::TypeError(format!(
-                    "subscript requires Map, got {:?}",
+                    "subscript requires Map or List, got {:?}",
                     other
                 ))),
             }
@@ -370,6 +403,13 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
             RuntimeValue::IdentPath(path) => path.join("."),
             RuntimeValue::Label { name, .. } => name.clone(),
             RuntimeValue::Map(m) => format!("map({})", m.len()),
+            RuntimeValue::List(items) => {
+                let parts: Vec<String> = items
+                    .iter()
+                    .map(|v| format_runtime_value(v, None))
+                    .collect();
+                format!("[{}]", parts.join(", "))
+            }
             RuntimeValue::ScriptDecorator { .. } => "<decorator>".to_string(),
         },
     }
@@ -623,6 +663,8 @@ pub(super) fn is_truthy(v: &RuntimeValue) -> bool {
         RuntimeValue::Int(i) => *i != 0,
         // NaN is explicitly falsy — a NaN comparison should never pass a guard.
         RuntimeValue::Float(f) => *f != 0.0 && !f.is_nan(),
+        // An empty list is falsy; a non-empty list is truthy.
+        RuntimeValue::List(items) => !items.is_empty(),
         _ => true,
     }
 }
@@ -639,6 +681,101 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
         (RuntimeValue::Float(x), RuntimeValue::Int(y)) => *x == (*y as f64),
         (RuntimeValue::Str(x), RuntimeValue::Str(y)) => x.to_string() == y.to_string(),
         (RuntimeValue::Label { node_id: x, .. }, RuntimeValue::Label { node_id: y, .. }) => x == y,
+        (RuntimeValue::List(xs), RuntimeValue::List(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(a, b)| values_equal(a, b))
+        }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::ast::Ast;
+    use crate::runtime::value::RuntimeValue;
+    use crate::vm::env::Environment;
+
+    #[test]
+    fn test_list_literal_evaluates() {
+        let env = Environment::default();
+        let ast = Ast::list(vec![
+            Ast::value(RuntimeValue::Int(1)),
+            Ast::value(RuntimeValue::Int(2)),
+            Ast::value(RuntimeValue::Int(3)),
+        ]);
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(
+            result,
+            RuntimeValue::List(vec![
+                RuntimeValue::Int(1),
+                RuntimeValue::Int(2),
+                RuntimeValue::Int(3),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_list_subscript_read() {
+        let env = Environment::default();
+        let list_ast = Ast::list(vec![
+            Ast::value(RuntimeValue::Int(10)),
+            Ast::value(RuntimeValue::Int(20)),
+            Ast::value(RuntimeValue::Int(30)),
+        ]);
+        let subscript = Ast::subscript(list_ast, Ast::value(RuntimeValue::Int(1)));
+        let result = eval_expr(&subscript, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(20));
+    }
+
+    #[test]
+    fn test_list_subscript_negative_index() {
+        let env = Environment::default();
+        let list_ast = Ast::list(vec![
+            Ast::value(RuntimeValue::Int(10)),
+            Ast::value(RuntimeValue::Int(20)),
+            Ast::value(RuntimeValue::Int(30)),
+        ]);
+        let subscript = Ast::subscript(list_ast, Ast::value(RuntimeValue::Int(-1)));
+        let result = eval_expr(&subscript, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(30));
+    }
+
+    #[test]
+    fn test_list_subscript_out_of_bounds() {
+        let env = Environment::default();
+        let list_ast = Ast::list(vec![Ast::value(RuntimeValue::Int(1))]);
+        let subscript = Ast::subscript(list_ast, Ast::value(RuntimeValue::Int(5)));
+        let err = eval_expr(&subscript, &env).unwrap_err();
+        assert!(matches!(
+            err,
+            VmError::IndexOutOfBounds { index: 5, len: 1 }
+        ));
+    }
+
+    #[test]
+    fn test_list_is_truthy() {
+        assert!(!is_truthy(&RuntimeValue::List(vec![])));
+        assert!(is_truthy(&RuntimeValue::List(vec![RuntimeValue::Int(1)])));
+    }
+
+    #[test]
+    fn test_list_values_equal() {
+        let a = RuntimeValue::List(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]);
+        let b = RuntimeValue::List(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]);
+        let c = RuntimeValue::List(vec![RuntimeValue::Int(1), RuntimeValue::Int(9)]);
+        assert!(values_equal(&a, &b));
+        assert!(!values_equal(&a, &c));
+        assert!(!values_equal(&a, &RuntimeValue::List(vec![])));
+    }
+
+    #[test]
+    fn test_list_format() {
+        let list = RuntimeValue::List(vec![
+            RuntimeValue::Int(1),
+            RuntimeValue::Bool(true),
+            RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain("hello")),
+        ]);
+        let formatted = format_runtime_value(&list, None);
+        assert_eq!(formatted, "[1, true, hello]");
     }
 }
