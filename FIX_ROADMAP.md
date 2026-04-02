@@ -38,7 +38,7 @@ All items are fully independent and can be parallelised.
 
 ---
 
-### Phase 1 — Error Propagation & Diagnostic Correctness
+### (Completed) Phase 1 — Error Propagation & Diagnostic Correctness
 **Depends on: Phase 0**
 
 These two are independent of each other but must both land before Phase 4/Group C.

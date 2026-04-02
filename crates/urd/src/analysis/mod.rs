@@ -416,7 +416,8 @@ impl AnalysisError {
             | Self::UnusedVariable { .. }
             | Self::AlwaysDeadBranch { .. }
             | Self::PossibleTypo { .. }
-            | Self::InfiniteDialogueLoop { .. } => true,
+            | Self::InfiniteDialogueLoop { .. }
+            | Self::UndefinedLabel { .. } => true,
             #[cfg(feature = "spellcheck")]
             Self::Misspelling { .. } => true,
             _ => false,
@@ -944,4 +945,21 @@ pub fn analyze_with_imports_and_semantic(
     let ctx =
         AnalysisContext::build_with_imports(ast, imported_structs, imported_enums, imported_labels);
     run_passes_with_semantic(ast, &ctx, semantic)
+}
+
+#[cfg(test)]
+mod is_warning_tests {
+    use chumsky::span::{SimpleSpan, Span};
+
+    use super::AnalysisError;
+
+    #[test]
+    fn undefined_label_is_a_warning() {
+        let err = AnalysisError::UndefinedLabel {
+            span: SimpleSpan::new((), 0..1),
+            label: "x".into(),
+            suggestion: None,
+        };
+        assert!(err.is_warning());
+    }
 }

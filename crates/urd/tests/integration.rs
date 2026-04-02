@@ -26,3 +26,6 @@ mod mermaid_render;
 
 #[path = "integration/sequence.rs"]
 mod sequence;
+
+#[path = "integration/vm_decorator.rs"]
+mod vm_decorator;

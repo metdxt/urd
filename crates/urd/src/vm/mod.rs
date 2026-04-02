@@ -879,10 +879,7 @@ fn exec_stmt_sync(
             }
         }
         _ => {
-            // Best-effort evaluation of expression statements (side-effects only).
-            if let Err(e) = eval_expr(stmt, env) {
-                log::warn!("exec_stmt_sync: expression evaluation failed: {e}");
-            }
+            eval_expr(stmt, env)?;
         }
     }
     Ok(())
