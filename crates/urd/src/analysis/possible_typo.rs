@@ -1,17 +1,22 @@
 //! # Possible Typo Analysis
 //!
-//! Detects likely typos in identifiers across three namespaces:
+//! Detects likely typos in speaker names in dialogue lines
+//! (e.g. `zra:` instead of `zara:`).
 //!
-//! - **Speaker names** in dialogue lines (e.g. `zra:` instead of `zara:`).
-//! - **Jump target labels** (e.g. `jump staart` instead of `jump start`).
-//! Uses Levenshtein edit distance (≤ 2) plus frequency / existence guards to
-//! keep false-positive rates low.
+//! Label-typo detection has been unified into the `labels` pass, which embeds
+//! any suggestion directly in [`crate::analysis::AnalysisError::UndefinedLabel`].
+//!
+//! The primary detection strategy is Levenshtein edit distance (≤ 2) with
+//! frequency / existence guards to keep false-positive rates low.  When
+//! Levenshtein finds no close match, an optional [`SemanticSuggest`] backend
+//! is consulted as a fallback.
 
 use std::collections::{HashMap, HashSet};
 
 use chumsky::span::{SimpleSpan, Span};
 
 use crate::analysis::context::AnalysisContext;
+use crate::analysis::semantic_suggest::SemanticSuggest;
 use crate::analysis::{AnalysisError, TypoKind};
 use crate::parser::ast::{Ast, AstContent, Operator, walk_ast};
 use crate::runtime::value::RuntimeValue;
@@ -22,12 +27,22 @@ use crate::runtime::value::RuntimeValue;
 
 /// Run the possible-typo detection pass over `ast`.
 ///
-/// Combines two independent sub-checks — speakers and labels — and returns all
-/// discovered [`AnalysisError::PossibleTypo`] warnings.
-pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
+/// Checks speaker names for likely typos (edit distance ≤ 2, with frequency
+/// guard) and returns all discovered [`AnalysisError::PossibleTypo`] warnings.
+///
+/// Label-typo detection has been unified into the `labels` pass, which embeds
+/// any suggestion directly in [`AnalysisError::UndefinedLabel`].
+///
+/// When `semantic` is `Some`, it is used as a fallback for speaker names
+/// whenever Levenshtein edit distance produces no close match.
+pub fn check(
+    ast: &Ast,
+    _ctx: &AnalysisContext,
+    semantic: Option<&dyn SemanticSuggest>,
+) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
-    errors.extend(check_speaker_typos(ast));
-    errors.extend(check_label_typos(ast, ctx));
+    errors.extend(check_speaker_typos(ast, semantic));
+    // check_label_typos removed — label suggestions now live in labels::check
     errors
 }
 
@@ -37,7 +52,11 @@ pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
 
 /// Detect speaker identifiers that appear only once and are very close
 /// (edit distance ≤ 2) to a name that appears ≥ 3× more often.
-fn check_speaker_typos(ast: &Ast) -> Vec<AnalysisError> {
+///
+/// When `semantic` is `Some` and Levenshtein finds no match, the semantic
+/// model is consulted.  The frequency guard (candidate must appear ≥ 3× as
+/// often) still applies for semantic matches to suppress false positives.
+fn check_speaker_typos(ast: &Ast, semantic: Option<&dyn SemanticSuggest>) -> Vec<AnalysisError> {
     // Pass 1 — collect frequency and the span of the first occurrence for
     // every speaker name encountered across all Dialogue nodes.
     let mut freq: HashMap<String, usize> = HashMap::new();
@@ -72,13 +91,22 @@ fn check_speaker_typos(ast: &Ast) -> Vec<AnalysisError> {
         }
 
         // Candidates: every other known speaker name.
-        let candidates = names.iter().filter(|n| n.as_str() != written.as_str());
+        let other_names: Vec<String> = names
+            .iter()
+            .filter(|n| n.as_str() != written.as_str())
+            .cloned()
+            .collect();
 
-        if let Some((dist, suggestion)) = closest_match(written, candidates)
-            && dist <= 2
-        {
+        // Try Levenshtein first; fall back to semantic when it finds nothing.
+        let suggestion = closest_match(written, other_names.iter())
+            .and_then(|(dist, s)| if dist <= 2 { Some(s) } else { None })
+            .or_else(|| semantic.and_then(|m| m.find_synonym(written, &other_names)));
+
+        if let Some(suggestion) = suggestion {
             let candidate_freq = freq.get(&suggestion).copied().unwrap_or(0);
-            // Only flag if the suggestion is substantially more common.
+            // Only flag if the suggestion is substantially more common — this
+            // guard applies to both Levenshtein and semantic matches to keep
+            // false-positive rates low for speaker names.
             if candidate_freq >= 3 * count {
                 seen.insert(written.clone());
                 let span = first_span
@@ -94,59 +122,6 @@ fn check_speaker_typos(ast: &Ast) -> Vec<AnalysisError> {
             }
         }
     }
-
-    errors
-}
-
-// ---------------------------------------------------------------------------
-// Sub-check 2: Label typos
-// ---------------------------------------------------------------------------
-
-/// Detect jump / let-call targets that are not defined but are very close
-/// (edit distance ≤ 2) to a label that is defined.
-///
-/// Cross-module targets (containing `.`) are skipped — the single-file
-/// analyser cannot validate those.  Targets with no close match are also
-/// skipped: `UndefinedLabel` from `labels.rs` is already sufficient there.
-fn check_label_typos(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
-    let defined: Vec<String> = ctx.labels.iter().cloned().collect();
-    let mut errors = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    walk_ast(ast, &mut |node| {
-        // Extract the target string from Jump or LetCall; skip the node otherwise.
-        let target: String = match node.content() {
-            AstContent::Jump { label, .. } if !label.contains('.') => {
-                if ctx.labels.contains(label) {
-                    return; // defined — nothing to report
-                }
-                label.clone()
-            }
-            AstContent::LetCall { target, .. } if !target.contains('.') => {
-                if ctx.labels.contains(target) {
-                    return;
-                }
-                target.clone()
-            }
-            _ => return,
-        };
-
-        if seen.contains(&target) {
-            return;
-        }
-
-        if let Some((dist, suggestion)) = closest_match(&target, defined.iter())
-            && dist <= 2
-        {
-            seen.insert(target.clone());
-            errors.push(AnalysisError::PossibleTypo {
-                written: target,
-                suggestion,
-                kind: TypoKind::Label,
-                span: node.span(),
-            });
-        }
-    });
 
     errors
 }
@@ -398,7 +373,7 @@ label scene {
 }
 "#;
         let ast = parse(src);
-        let errors = check_speaker_typos(&ast);
+        let errors = check_speaker_typos(&ast, None);
         assert!(
             errors.iter().any(|e| matches!(
                 e,
@@ -425,7 +400,7 @@ label scene {
 }
 "#;
         let ast = parse(src);
-        let errors = check_speaker_typos(&ast);
+        let errors = check_speaker_typos(&ast, None);
         let flagged: Vec<_> = errors
             .iter()
             .filter(|e| {
@@ -456,7 +431,7 @@ label scene {
 }
 "#;
         let ast = parse(src);
-        let errors = check_speaker_typos(&ast);
+        let errors = check_speaker_typos(&ast, None);
         let flagged: Vec<_> = errors
             .iter()
             .filter(|e| {
@@ -475,123 +450,37 @@ label scene {
         );
     }
 
-    // ── Label typo tests ──────────────────────────────────────────────────────
-
-    #[test]
-    fn label_typo_detected() {
-        // "start" is defined; "staart" is not and has edit distance 1.
-        let src = r#"
-label start {
-    end!()
-}
-label other {
-    jump staart
-}
-"#;
-        let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_label_typos(&ast, &ctx);
-        assert!(
-            errors.iter().any(|e| matches!(
-                e,
-                AnalysisError::PossibleTypo {
-                    written,
-                    suggestion,
-                    kind: TypoKind::Label,
-                    ..
-                } if written == "staart" && suggestion == "start"
-            )),
-            "expected PossibleTypo(Label, \"staart\" → \"start\"), got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn label_typo_not_flagged_when_no_close_match() {
-        // "completelymissing" has no label within edit distance 2 — no PossibleTypo.
-        // (UndefinedLabel from labels.rs handles the existence check.)
-        let src = r#"
-label start {
-    end!()
-}
-label other {
-    jump completelymissing
-}
-"#;
-        let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_label_typos(&ast, &ctx);
-        let flagged: Vec<_> = errors
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    AnalysisError::PossibleTypo {
-                        kind: TypoKind::Label,
-                        ..
-                    }
-                )
-            })
-            .collect();
-        assert!(
-            flagged.is_empty(),
-            "expected no label typos (no close match), got: {flagged:?}"
-        );
-    }
-
-    #[test]
-    fn defined_label_jump_not_flagged() {
-        // Jumping to an existing label must never produce a PossibleTypo.
-        let src = r#"
-label start {
-    end!()
-}
-label entry {
-    jump start
-}
-"#;
-        let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_label_typos(&ast, &ctx);
-        assert!(
-            errors.is_empty(),
-            "expected no errors for a valid jump target, got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn let_call_typo_detected() {
-        // `let x = jump staart and return` — "staart" is a typo of "start".
-        let src = r#"
-label start {
-    end!()
-}
-label caller {
-    let result = jump staart and return
-    end!()
-}
-"#;
-        let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_label_typos(&ast, &ctx);
-        assert!(
-            errors.iter().any(|e| matches!(
-                e,
-                AnalysisError::PossibleTypo {
-                    written,
-                    suggestion,
-                    kind: TypoKind::Label,
-                    ..
-                } if written == "staart" && suggestion == "start"
-            )),
-            "expected PossibleTypo(Label, \"staart\" → \"start\") for let-call, got: {errors:?}"
-        );
-    }
-
     // ── Integration: check() aggregates all three sub-checks ─────────────────
+
+    /// Helper that calls `check` with `semantic = None` for all existing tests.
+    fn check_no_semantic(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
+        check(ast, ctx, None)
+    }
+
+    // ── Mock SemanticSuggest ──────────────────────────────────────────────────
+
+    use crate::analysis::semantic_suggest::SemanticSuggest;
+
+    /// A deterministic mock that returns a fixed suggestion for one specific
+    /// query string, and `None` for everything else.
+    struct MockSemantic {
+        query: &'static str,
+        answer: &'static str,
+    }
+
+    impl SemanticSuggest for MockSemantic {
+        fn find_synonym(&self, query: &str, candidates: &[String]) -> Option<String> {
+            if query == self.query && candidates.iter().any(|c| c == self.answer) {
+                Some(self.answer.to_owned())
+            } else {
+                None
+            }
+        }
+    }
 
     #[test]
     fn check_collects_all_sub_check_results() {
-        // One typo of each kind (speaker + label) in a single script.
+        // Speaker typo in the script; label-typo detection now lives in labels::check.
         let src = r#"
 label start {
     end!()
@@ -606,7 +495,7 @@ label main_scene {
 "#;
         let ast = parse(src);
         let ctx = AnalysisContext::build(&ast);
-        let errors = check(&ast, &ctx);
+        let errors = check_no_semantic(&ast, &ctx);
 
         let speaker_count = errors
             .iter()
@@ -637,6 +526,46 @@ label main_scene {
             speaker_count, 1,
             "expected 1 speaker typo, got {speaker_count}"
         );
-        assert_eq!(label_count, 1, "expected 1 label typo, got {label_count}");
+        // Label suggestions are now embedded in UndefinedLabel, not emitted as
+        // PossibleTypo — this check must produce zero label-kind warnings.
+        assert_eq!(
+            label_count, 0,
+            "expected 0 label typos from possible_typo::check, got {label_count}"
+        );
+    }
+
+    #[test]
+    fn semantic_fallback_fires_for_speaker_beyond_levenshtein_threshold() {
+        // "narrator" (appears once) vs "storyteller" (appears 3× more) —
+        // edit distance >> 2, so Levenshtein alone produces nothing.
+        // The mock returns "storyteller", proving the semantic path is reached.
+        let src = r#"
+label scene {
+    storyteller: "Line one."
+    storyteller: "Line two."
+    storyteller: "Line three."
+    narrator: "A different voice."
+    end!()
+}
+"#;
+        let ast = parse(src);
+        let ctx = AnalysisContext::build(&ast);
+        let semantic = MockSemantic {
+            query: "narrator",
+            answer: "storyteller",
+        };
+        let errors = check(&ast, &ctx, Some(&semantic));
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                AnalysisError::PossibleTypo {
+                    written,
+                    suggestion,
+                    kind: TypoKind::Speaker,
+                    ..
+                } if written == "narrator" && suggestion == "storyteller"
+            )),
+            "expected semantic PossibleTypo(Speaker, \"narrator\" → \"storyteller\"), got: {errors:?}"
+        );
     }
 }

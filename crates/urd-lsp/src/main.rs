@@ -19,6 +19,8 @@ use tracing::{debug, info};
 
 use document::{Document, byte_span_to_lsp_range, position_to_byte_offset, prefix_start_character};
 use urd::analysis::AnalysisError;
+use urd::analysis::semantic_suggest::SemanticSuggest;
+use urd::analysis::synonyms::SynonymStore;
 
 use completion::{TypeContext, completion_items};
 use semantic::{
@@ -158,6 +160,9 @@ struct Backend {
     documents: DashMap<Url, Document>,
     /// Cross-file symbol index: tracks imported modules for every open file.
     workspace: Arc<WorkspaceIndex>,
+    /// Synonym-based suggestion backend used to enrich undefined-variable and
+    /// undefined-label diagnostics with "did you mean …?" hints.
+    semantic: Arc<dyn SemanticSuggest + Send + Sync>,
 }
 
 impl Backend {
@@ -204,7 +209,12 @@ impl Backend {
         let (imported_structs, imported_enums, imported_labels) =
             self.workspace.imported_type_context(&uri);
         if let Some(mut doc) = self.documents.get_mut(&uri) {
-            doc.reanalyze_with_imports(imported_structs, imported_enums, imported_labels);
+            doc.reanalyze_with_imports(
+                imported_structs,
+                imported_enums,
+                imported_labels,
+                Some(Arc::clone(&self.semantic) as Arc<dyn SemanticSuggest>),
+            );
         }
 
         self.publish_diagnostics(uri).await;
@@ -807,7 +817,7 @@ impl LanguageServer for Backend {
         // Offer "Create label 'name'" for every UndefinedLabel diagnostic
         // whose span overlaps the requested range.
         for err in &doc.analysis_errors {
-            if let AnalysisError::UndefinedLabel { label, span } = err {
+            if let AnalysisError::UndefinedLabel { label, span, .. } = err {
                 let diag_range = byte_span_to_lsp_range(&src, *span);
 
                 // Check that the diagnostic overlaps the editor's requested range.
@@ -895,10 +905,13 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
+    let semantic: Arc<dyn SemanticSuggest + Send + Sync> = Arc::new(SynonymStore);
+
     let (service, socket) = LspService::build(|client| Backend {
         client,
         documents: DashMap::new(),
         workspace: Arc::new(WorkspaceIndex::new()),
+        semantic,
     })
     .finish();
 

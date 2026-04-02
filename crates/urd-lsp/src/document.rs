@@ -5,6 +5,9 @@ use tower_lsp::lsp_types::*;
 
 use chumsky::span::SimpleSpan;
 
+use std::sync::Arc;
+
+use urd::analysis::semantic_suggest::SemanticSuggest;
 use urd::analysis::{self, AnalysisError};
 use urd::compiler::loader::parse_source_spanned;
 use urd::parser::ast::Ast;
@@ -62,18 +65,25 @@ impl Document {
     ///
     /// If the document currently has no AST (i.e. the last parse failed) this
     /// is a no-op — there is nothing to re-analyse.
+    ///
+    /// `semantic` is an optional embedding model used to suggest semantically
+    /// similar variable names when no close Levenshtein match exists.  Pass
+    /// `None` to disable semantic suggestions (e.g. in tests or when the
+    /// model files are not installed).
     pub fn reanalyze_with_imports(
         &mut self,
         imported_structs: std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
         imported_enums: std::collections::HashMap<String, Vec<String>>,
         imported_labels: std::collections::HashSet<String>,
+        semantic: Option<Arc<dyn SemanticSuggest>>,
     ) {
         if let Some(ast) = &self.ast {
-            self.analysis_errors = urd::analysis::analyze_with_imports(
+            self.analysis_errors = urd::analysis::analyze_with_imports_and_semantic(
                 ast,
                 imported_structs,
                 imported_enums,
                 imported_labels,
+                semantic.as_deref(),
             );
         }
     }

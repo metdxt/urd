@@ -1,0 +1,13 @@
+global seller = ""
+
+@entry
+label start {
+    let a = trader
+    trader: "hello"
+
+    jump go_to_woods
+}
+
+label go_to_forest {
+    end!
+}

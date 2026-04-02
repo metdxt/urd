@@ -22,6 +22,11 @@
 //!    scope, **including dialogue speaker identifiers**.  Unresolved names
 //!    produce [`AnalysisError::UndefinedVariable`].
 //!
+//! 5. **Semantic fallback**: for undefined references longer than 2 characters
+//!    where Levenshtein produces no close match, an optional [`SemanticSuggest`]
+//!    backend is consulted.  It embeds the identifier name and all in-scope
+//!    names and returns the most similar one above its internal threshold.
+//!
 //! ## Limitations (known false negatives)
 //!
 //! - **Use-before-declaration within a label**: a variable used before its
@@ -40,6 +45,7 @@ use chumsky::span::SimpleSpan;
 use crate::analysis::AnalysisError;
 use crate::analysis::context::AnalysisContext;
 use crate::analysis::possible_typo::{closest_match, collect_var_refs};
+use crate::analysis::semantic_suggest::SemanticSuggest;
 use crate::parser::ast::{Ast, AstContent, walk_ast};
 use crate::runtime::value::RuntimeValue;
 
@@ -55,7 +61,11 @@ const BUILTINS: &[&str] = &["end!", "todo!"];
 /// Returns one [`AnalysisError::UndefinedVariable`] for every single-segment
 /// identifier used in a read position that cannot be resolved to any declaration
 /// visible in the current scope.
-pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
+pub fn check(
+    ast: &Ast,
+    ctx: &AnalysisContext,
+    semantic: Option<&dyn SemanticSuggest>,
+) -> Vec<AnalysisError> {
     let global = collect_global_names(ast);
 
     // Enum variants and type names are valid identifiers in many positions
@@ -70,7 +80,7 @@ pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
         .collect();
 
     let mut errors = Vec::new();
-    check_node(ast, &global, &excluded, &mut errors);
+    check_node(ast, &global, &excluded, &mut errors, semantic);
     errors
 }
 
@@ -83,13 +93,14 @@ fn check_node(
     global: &HashSet<String>,
     excluded: &HashSet<String>,
     errors: &mut Vec<AnalysisError>,
+    semantic: Option<&dyn SemanticSuggest>,
 ) {
     match node.content() {
         // Top-level block: recurse into each statement looking for labeled
         // blocks and decorator definitions.
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                check_node(stmt, global, excluded, errors);
+                check_node(stmt, global, excluded, errors, semantic);
             }
         }
 
@@ -98,7 +109,7 @@ fn check_node(
         AstContent::LabeledBlock { block, .. } => {
             let local = collect_block_local_names(block);
             let scope = build_scope(global, &local, excluded);
-            check_refs(block, &scope, errors);
+            check_refs(block, &scope, errors, semantic);
         }
 
         // Decorator definition: params are in scope within the body.
@@ -107,7 +118,7 @@ fn check_node(
             let local = collect_block_local_names(body);
             let mut scope = build_scope(global, &local, excluded);
             scope.extend(param_names);
-            check_refs(body, &scope, errors);
+            check_refs(body, &scope, errors, semantic);
         }
 
         // Everything else at the top level is either a definition node
@@ -123,7 +134,12 @@ fn check_node(
 /// Collect all single-segment read-position IdentPath references in `node`
 /// (including dialogue speaker identifiers) and emit `UndefinedVariable` for
 /// any not present in `scope`.
-fn check_refs(node: &Ast, scope: &HashSet<String>, errors: &mut Vec<AnalysisError>) {
+fn check_refs(
+    node: &Ast,
+    scope: &HashSet<String>,
+    errors: &mut Vec<AnalysisError>,
+    semantic: Option<&dyn SemanticSuggest>,
+) {
     // Pre-build a vec of scope names for closest_match iteration.
     let scope_list: Vec<String> = scope.iter().cloned().collect();
 
@@ -142,8 +158,11 @@ fn check_refs(node: &Ast, scope: &HashSet<String>, errors: &mut Vec<AnalysisErro
             // Only compute a suggestion for names long enough to have a
             // meaningful edit distance (≤ 2 characters → too many false positives).
             let suggestion = if name.len() > 2 {
-                closest_match(&name, scope_list.iter())
-                    .and_then(|(dist, s)| if dist <= 2 { Some(s) } else { None })
+                // First try Levenshtein (fast, no ML inference).
+                let lev = closest_match(&name, scope_list.iter())
+                    .and_then(|(dist, s)| if dist <= 2 { Some(s) } else { None });
+                // Fall back to semantic similarity when Levenshtein yields nothing.
+                lev.or_else(|| semantic.and_then(|m| m.find_synonym(&name, &scope_list)))
             } else {
                 None
             };
@@ -309,7 +328,7 @@ mod tests {
     fn errors(src: &str) -> Vec<AnalysisError> {
         let ast = parse(src);
         let ctx = ctx(&ast);
-        check(&ast, &ctx)
+        check(&ast, &ctx, None)
     }
 
     fn assert_no_errors(errs: &[AnalysisError]) {
@@ -591,7 +610,7 @@ label start {
         let src = "label start {\n    player: \"Hello\"\n    end!()\n}\n";
         let ast = parse(src);
         let ctx = ctx(&ast);
-        let errs = check(&ast, &ctx);
+        let errs = check(&ast, &ctx, None);
         let err = errs
             .iter()
             .find(

@@ -43,6 +43,8 @@ pub mod loop_detection;
 pub mod menu_structure;
 pub mod overwritten_assign;
 pub mod possible_typo;
+pub mod semantic_suggest;
+pub mod synonyms;
 pub mod top_level;
 pub mod types;
 pub mod undefined_var;
@@ -54,6 +56,7 @@ mod tests;
 
 use ariadne::{Label, Report, ReportKind, sources};
 use chumsky::span::SimpleSpan;
+use semantic_suggest::SemanticSuggest;
 
 use crate::parser::ast::{Ast, TypeAnnotation};
 
@@ -207,6 +210,8 @@ pub enum AnalysisError {
     UndefinedLabel {
         /// The name used in the `jump` (or `let … = jump … and return`).
         label: String,
+        /// Closest known label, if any (Levenshtein ≤ 2 or semantic match).
+        suggestion: Option<String>,
         /// Source span of the jump statement.
         span: SimpleSpan,
     },
@@ -465,9 +470,12 @@ impl AnalysisError {
                 )
             }
 
-            AnalysisError::UndefinedLabel { label, .. } => {
-                format!("Undefined label '{label}'")
-            }
+            AnalysisError::UndefinedLabel {
+                label, suggestion, ..
+            } => match suggestion {
+                Some(s) => format!("Undefined label '{label}' — did you mean '{s}'?"),
+                None => format!("Undefined label '{label}'"),
+            },
 
             AnalysisError::DeadEnd { description, .. } => {
                 format!(
@@ -603,9 +611,12 @@ impl AnalysisError {
                 field_errors.len()
             ),
 
-            AnalysisError::UndefinedLabel { label, .. } => {
-                format!("jump to undefined label '{label}'")
-            }
+            AnalysisError::UndefinedLabel {
+                label, suggestion, ..
+            } => match suggestion {
+                Some(s) => format!("jump to undefined label '{label}' — did you mean '{s}'?"),
+                None => format!("jump to undefined label '{label}'"),
+            },
 
             AnalysisError::DeadEnd { description, .. } => {
                 format!("{description}: no terminator on this path")
@@ -781,7 +792,24 @@ pub fn render_errors_stderr(errors: &[AnalysisError], src: &str, source_name: &s
 // ---------------------------------------------------------------------------
 
 /// Execute all analysis passes against `ast` using the pre-built `ctx`.
+///
+/// Delegates to [`run_passes_with_semantic`] with `semantic = None`.
 fn run_passes(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
+    run_passes_with_semantic(ast, ctx, None)
+}
+
+/// Execute all analysis passes against `ast`, optionally using a semantic
+/// embedding backend for synonym suggestions.
+///
+/// When `semantic` is `Some`, both the undefined-variable pass and the
+/// possible-typo pass (labels and speakers) will consult it as a fallback
+/// whenever Levenshtein edit distance produces no close match.  When `None`,
+/// behaviour is identical to [`run_passes`].
+fn run_passes_with_semantic(
+    ast: &Ast,
+    ctx: &AnalysisContext,
+    semantic: Option<&dyn SemanticSuggest>,
+) -> Vec<AnalysisError> {
     let mut errors: Vec<AnalysisError> = Vec::new();
 
     // ── Errors ────────────────────────────────────────────────────────────
@@ -791,17 +819,17 @@ fn run_passes(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     errors.extend(dead_end::check(ast));
     errors.extend(menu_structure::check(ast));
     errors.extend(const_reassign::check(ast));
-    errors.extend(undefined_var::check(ast, ctx));
+    errors.extend(undefined_var::check(ast, ctx, semantic));
 
     // ── Warnings ──────────────────────────────────────────────────────────
-    errors.extend(labels::check(ast, ctx));
+    errors.extend(labels::check(ast, ctx, semantic));
     errors.extend(unreachable_label::check(ast));
     errors.extend(empty_dialogue::check(ast));
     errors.extend(duplicate_menu_dest::check(ast));
     errors.extend(overwritten_assign::check(ast));
     errors.extend(unused_var::check(ast));
     errors.extend(dead_branch::check(ast));
-    errors.extend(possible_typo::check(ast, ctx));
+    errors.extend(possible_typo::check(ast, ctx, semantic));
 
     // ── Opt-in ────────────────────────────────────────────────────────────
     errors.extend(loop_detection::check(ast));
@@ -857,4 +885,26 @@ pub fn analyze_with_imports(
     let ctx =
         AnalysisContext::build_with_imports(ast, imported_structs, imported_enums, imported_labels);
     run_passes(ast, &ctx)
+}
+
+/// Like [`analyze_with_imports`] but also uses a semantic embedding model to
+/// find synonym suggestions for undefined variables when Levenshtein distance
+/// produces no close match.
+///
+/// `semantic` is an optional implementation of [`SemanticSuggest`].  When
+/// `None`, behaviour is identical to [`analyze_with_imports`].
+///
+/// `imported_structs` maps `"alias.StructName"` → field list.
+/// `imported_enums` maps `"alias.EnumName"` → variant list.
+/// `imported_labels` is the set of label names imported directly into scope.
+pub fn analyze_with_imports_and_semantic(
+    ast: &Ast,
+    imported_structs: std::collections::HashMap<String, Vec<crate::parser::ast::StructField>>,
+    imported_enums: std::collections::HashMap<String, Vec<String>>,
+    imported_labels: std::collections::HashSet<String>,
+    semantic: Option<&dyn SemanticSuggest>,
+) -> Vec<AnalysisError> {
+    let ctx =
+        AnalysisContext::build_with_imports(ast, imported_structs, imported_enums, imported_labels);
+    run_passes_with_semantic(ast, &ctx, semantic)
 }
