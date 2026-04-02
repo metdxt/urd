@@ -484,6 +484,11 @@ fn build_checker(language: SpellcheckLanguage) -> SymSpell<UnicodeStringStrategy
             "oppressive 3000000",
             "visit 2800000",
             "today 2800000",
+            "fight 2600000",
+            "enemy 2400000",
+            "run 2200000",
+            "away 2000000",
+            "attack 1800000",
         ],
         SpellcheckLanguage::German => &[
             "die 10000000",
@@ -534,18 +539,27 @@ fn map_whatlang_lang(lang: whatlang::Lang) -> Option<SpellcheckLanguage> {
 // Public entry points
 // ---------------------------------------------------------------------------
 
-/// Collect all [`StringPart::Literal`] content from every [`AstContent::Dialogue`]
-/// node into a single whitespace-separated buffer.
+/// Collect all player-visible text from the AST into a single
+/// whitespace-separated buffer for language detection.
 ///
-/// The result is fed to [`detect_language`] for script/language identification.
-/// Only `Literal` segments are included; interpolations and escape sequences
-/// are intentionally omitted so they don't skew the n-gram statistics.
+/// Two node kinds contribute:
+///
+/// - [`AstContent::Dialogue`] — only [`StringPart::Literal`] segments are
+///   included; interpolations and escape sequences are skipped so variable
+///   names don't skew the n-gram statistics.
+/// - [`AstContent::MenuOption`] — the raw label string is appended directly;
+///   it contains only plain text so no further filtering is needed.
 pub fn aggregate_dialogue_text(ast: &Ast) -> String {
     let mut buf = String::new();
-    walk_ast(ast, &mut |node| {
-        if let AstContent::Dialogue { content, .. } = node.content() {
+    walk_ast(ast, &mut |node| match node.content() {
+        AstContent::Dialogue { content, .. } => {
             collect_content_literals(content, &mut buf);
         }
+        AstContent::MenuOption { label, .. } => {
+            buf.push_str(label);
+            buf.push(' ');
+        }
+        _ => {}
     });
     buf
 }
@@ -624,8 +638,16 @@ pub fn check(ast: &Ast, forced_language: Option<SpellcheckLanguage>) -> Vec<Anal
     let mut errors = Vec::new();
 
     walk_ast(ast, &mut |node| {
-        if let AstContent::Dialogue { content, .. } = node.content() {
-            check_dialogue_content(content, checker, &mut errors);
+        match node.content() {
+            AstContent::Dialogue { content, .. } => {
+                check_dialogue_content(content, checker, &mut errors);
+            }
+            // Menu option labels are player-visible text, just like dialogue
+            // lines, and should be checked for spelling.
+            AstContent::MenuOption { label, .. } => {
+                check_text(label, node.span(), checker, &mut errors);
+            }
+            _ => {}
         }
     });
 
@@ -705,8 +727,8 @@ fn check_dialogue_content(
 
 /// Spell-check every [`StringPart::Literal`] segment of `s`.
 ///
-/// `span` is attached to every emitted [`AnalysisError::Misspelling`] so the
-/// diagnostic points at the surrounding dialogue node.
+/// Delegates to [`check_text`] for each literal segment so that all
+/// word-level logic lives in one place.
 fn check_parsed_string(
     s: &ParsedString,
     span: SimpleSpan,
@@ -717,41 +739,56 @@ fn check_parsed_string(
         let StringPart::Literal(text) = part else {
             continue;
         };
+        check_text(text, span, checker, errors);
+    }
+}
 
-        for word in tokenize_words(text) {
-            if should_skip_word(word) {
-                continue;
+/// Tokenise `text`, apply all skip predicates, and push one
+/// [`AnalysisError::Misspelling`] for every word that SymSpell cannot match
+/// at edit-distance 0.
+///
+/// `span` is used as the diagnostic location for every emitted error; callers
+/// should pass the span of the surrounding AST node (dialogue content or menu
+/// option label).
+fn check_text(
+    text: &str,
+    span: SimpleSpan,
+    checker: &SymSpell<UnicodeStringStrategy>,
+    errors: &mut Vec<AnalysisError>,
+) {
+    for word in tokenize_words(text) {
+        if should_skip_word(word) {
+            continue;
+        }
+
+        let lower = word.to_lowercase();
+        let suggestions = checker.lookup(&lower, Verbosity::Top, 2);
+
+        match suggestions.first() {
+            None => {
+                // Word is completely absent from the dictionary.
+                log::trace!("spellcheck: no dictionary match for '{word}'");
+                errors.push(AnalysisError::Misspelling {
+                    word: word.to_owned(),
+                    suggestion: None,
+                    span,
+                });
             }
-
-            let lower = word.to_lowercase();
-            let suggestions = checker.lookup(&lower, Verbosity::Top, 2);
-
-            match suggestions.first() {
-                None => {
-                    // Word is completely absent from the dictionary.
-                    log::trace!("spellcheck: no dictionary match for '{word}'");
-                    errors.push(AnalysisError::Misspelling {
-                        word: word.to_owned(),
-                        suggestion: None,
-                        span,
-                    });
-                }
-                Some(top) if top.distance > 0 => {
-                    // Closest match has non-zero edit distance → likely typo.
-                    log::trace!(
-                        "spellcheck: '{word}' → '{}' (distance {})",
-                        top.term,
-                        top.distance
-                    );
-                    errors.push(AnalysisError::Misspelling {
-                        word: word.to_owned(),
-                        suggestion: Some(top.term.clone()),
-                        span,
-                    });
-                }
-                Some(_) => {
-                    // Exact match (distance == 0) — word is spelled correctly.
-                }
+            Some(top) if top.distance > 0 => {
+                // Closest match has non-zero edit distance → likely typo.
+                log::trace!(
+                    "spellcheck: '{word}' → '{}' (distance {})",
+                    top.term,
+                    top.distance
+                );
+                errors.push(AnalysisError::Misspelling {
+                    word: word.to_owned(),
+                    suggestion: Some(top.term.clone()),
+                    span,
+                });
+            }
+            Some(_) => {
+                // Exact match (distance == 0) — word is spelled correctly.
             }
         }
     }
@@ -1068,6 +1105,99 @@ mod tests {
         assert!(
             !should_skip_word("αβγ"),
             "'αβγ' has 3 chars and should not be skipped by length"
+        );
+    }
+
+    // ── aggregate_dialogue_text includes menu options ────────────────────────
+
+    #[test]
+    fn aggregate_includes_menu_option_labels() {
+        let ast = parse(
+            r#"
+label start {
+    menu {
+        "Fight the dragon" { end!() }
+        "Run away quickly" { end!() }
+    }
+}
+"#,
+        );
+        let buf = aggregate_dialogue_text(&ast);
+        assert!(
+            buf.contains("Fight"),
+            "expected menu option label in buffer, got: {buf:?}"
+        );
+        assert!(
+            buf.contains("Run"),
+            "expected second menu option label in buffer, got: {buf:?}"
+        );
+    }
+
+    // ── Menu option spellcheck ───────────────────────────────────────────────
+
+    #[test]
+    fn menu_option_typo_is_flagged() {
+        let ast = parse(
+            r#"
+label start {
+    menu {
+        "Attak the enemy" { end!() }
+        "Run away" { end!() }
+    }
+}
+"#,
+        );
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
+        let flagged = errors
+            .iter()
+            .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "Attak"));
+        assert!(
+            flagged,
+            "expected 'Attak' in a menu option to be flagged, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn menu_option_correct_spelling_is_silent() {
+        let ast = parse(
+            r#"
+label start {
+    menu {
+        "Fight the enemy" { end!() }
+        "Run away" { end!() }
+    }
+}
+"#,
+        );
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
+        assert!(
+            errors.is_empty(),
+            "expected no errors for correctly-spelled menu options, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn menu_option_typo_diagnostic_is_warning() {
+        let ast = parse(
+            r#"
+label start {
+    menu {
+        "Attak the enemy" { end!() }
+    }
+}
+"#,
+        );
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
+        let misspelling = errors
+            .iter()
+            .find(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "Attak"));
+        assert!(
+            misspelling.is_some(),
+            "expected 'Attak' to be flagged, got: {errors:?}"
+        );
+        assert!(
+            misspelling.is_some_and(|e| e.is_warning()),
+            "menu option misspelling must be a warning"
         );
     }
 
