@@ -17,14 +17,16 @@ thiserror.workspace = true
 log.workspace = true
 symspell = { workspace = true, optional = true }
 whatlang = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
 
 [features]
-## Embed frequency dictionaries and enable the SymSpell-based spellcheck
-## analysis pass, including automatic language detection via whatlang.
-## Disabled by default to avoid bloating binaries that do not need
-## spell-checking (CLI runners, the VM, etc.).
+## Enable the SymSpell-based spellcheck analysis pass, automatic language
+## detection via whatlang, and lazy dictionary download into the user's
+## cache directory via ureq.  Disabled by default to keep the core library
+## lean — no embedded dictionaries, no network code unless you opt in.
 ## Enable with: cargo build -p urd --features spellcheck
-spellcheck = ["dep:symspell", "dep:whatlang"]
+spellcheck = ["dep:symspell", "dep:whatlang", "dep:ureq", "dep:dirs"]
 
 [lints]
 workspace = true

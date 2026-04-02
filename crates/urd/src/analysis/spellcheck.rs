@@ -40,9 +40,10 @@
 //! dictionary, or `None` to auto-detect the language from the dialogue content
 //! via whatlang (returns no diagnostics when detection fails or the text is
 //! too short).  Dictionaries for English, German, Spanish, French, Hebrew,
-//! Italian, Russian, and Chinese are embedded at compile time via `include_str!`
-//! so there is no runtime file I/O.  Each language's checker is initialised
-//! lazily on first use and then reused for the lifetime of the process.
+//! Italian, Russian, and Chinese are downloaded on first use and cached
+//! locally — see the [`Dictionary`] section below.  Each language's checker is
+//! initialised lazily on first use and then reused for the lifetime of the
+//! process.
 //!
 //! Use [`SpellcheckLanguage::from_code`] to resolve an ISO 639-1 code (e.g.
 //! `"de"`, `"ru"`) to the appropriate variant.
@@ -75,12 +76,21 @@
 //!
 //! ## Dictionary
 //!
-//! Each [`symspell::SymSpell`] instance is built once per language from the
-//! bundled frequency dictionary embedded at compile time.  Words with
-//! edit-distance 0 from a dictionary entry are clean.  Anything else emits a
-//! warning with an optional "did you mean" suggestion (the top-ranked SymSpell
-//! candidate).
+//! Dictionaries are downloaded lazily from the
+//! [hermitdave/FrequencyWords](https://github.com/hermitdave/FrequencyWords)
+//! corpus on first use and cached under `{cache_dir}/urd-spellcheck/`.
+//!
+//! On subsequent runs the cached file is loaded directly from disk — no
+//! network access.  If the cache directory cannot be determined, the download
+//! fails, or the file cannot be read, spellcheck is silently disabled for that
+//! session (an empty [`SymSpell`] instance is used).
+//!
+//! Downloads are initiated synchronously inside [`OnceLock::get_or_init`] the
+//! first time a given language's checker is needed.  Each language's checker is
+//! built at most once per process lifetime.
 
+#[cfg(not(test))]
+use std::io::BufRead;
 use std::sync::OnceLock;
 
 use chumsky::span::SimpleSpan;
@@ -100,22 +110,22 @@ use crate::runtime::value::RuntimeValue;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SpellcheckLanguage {
-    /// English (default) — 82,765-entry frequency dictionary.
+    /// English (default) — hermitdave/FrequencyWords full corpus; downloaded on first use.
     #[default]
     English,
-    /// German — 100k-entry frequency dictionary.
+    /// German — hermitdave/FrequencyWords full corpus; downloaded on first use.
     German,
-    /// Spanish — 100k-entry frequency dictionary.
+    /// Spanish — hermitdave/FrequencyWords full corpus; downloaded on first use.
     Spanish,
-    /// French — 100k-entry frequency dictionary.
+    /// French — hermitdave/FrequencyWords full corpus; downloaded on first use.
     French,
-    /// Hebrew — 100k-entry frequency dictionary.
+    /// Hebrew — hermitdave/FrequencyWords full corpus; downloaded on first use.
     Hebrew,
-    /// Italian — 100k-entry frequency dictionary.
+    /// Italian — hermitdave/FrequencyWords full corpus; downloaded on first use.
     Italian,
-    /// Russian — 100k-entry frequency dictionary.
+    /// Russian — hermitdave/FrequencyWords full corpus; downloaded on first use.
     Russian,
-    /// Chinese — 50k-entry frequency dictionary.
+    /// Chinese — hermitdave/FrequencyWords full corpus; downloaded on first use.
     Chinese,
 }
 
@@ -152,6 +162,52 @@ impl SpellcheckLanguage {
             Self::Chinese => 7,
         }
     }
+
+    /// File name used when caching this language's dictionary.
+    #[cfg(not(test))]
+    fn cache_filename(self) -> &'static str {
+        match self {
+            Self::English => "en_full.txt",
+            Self::German => "de_full.txt",
+            Self::Spanish => "es_full.txt",
+            Self::French => "fr_full.txt",
+            Self::Hebrew => "he_full.txt",
+            Self::Italian => "it_full.txt",
+            Self::Russian => "ru_full.txt",
+            Self::Chinese => "zh_cn_full.txt",
+        }
+    }
+
+    /// Full raw-content URL of this language's frequency dictionary on GitHub.
+    #[cfg(not(test))]
+    fn download_url(self) -> &'static str {
+        match self {
+            Self::English => {
+                "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_full.txt"
+            }
+            Self::German => {
+                "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/de/de_full.txt"
+            }
+            Self::Spanish => {
+                "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/es/es_full.txt"
+            }
+            Self::French => {
+                "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/fr/fr_full.txt"
+            }
+            Self::Hebrew => {
+                "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/he/he_full.txt"
+            }
+            Self::Italian => {
+                "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/it/it_full.txt"
+            }
+            Self::Russian => {
+                "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/ru/ru_full.txt"
+            }
+            Self::Chinese => {
+                "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/zh_cn/zh_cn_full.txt"
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +219,22 @@ impl SpellcheckLanguage {
 /// trigram-based detection.
 const MIN_DETECT_BYTES: usize = 50;
 
+/// Minimum corpus frequency for a dictionary entry to be included in the
+/// spell-check index.
+///
+/// Raw web-corpus frequency dictionaries (such as hermitdave/FrequencyWords)
+/// contain every token that ever appeared in the crawl — including typos.
+/// A word like "доргу" (a slip of "дорогу") may occur hundreds of times
+/// across billions of pages, giving it `count ≥ 1` and making SymSpell treat
+/// it as a correctly-spelled word (edit-distance 0 exact match).
+///
+/// Raising this threshold discards entries whose frequency falls below the
+/// cut-off, which removes corpus noise while retaining the entire everyday
+/// vocabulary: even an uncommon word like "замшелый" appears thousands of
+/// times in a large corpus.  For narrative game dialogue a value around 100
+/// strikes a good balance.
+const MIN_DICT_ENTRY_COUNT: i64 = 50;
+
 // ---------------------------------------------------------------------------
 // Per-language dictionary singletons
 // ---------------------------------------------------------------------------
@@ -170,48 +242,269 @@ const MIN_DETECT_BYTES: usize = 50;
 /// One [`OnceLock`] per language — initialised lazily on first use.
 static CHECKERS: [OnceLock<SymSpell<UnicodeStringStrategy>>; 8] = [const { OnceLock::new() }; 8];
 
+/// Process-wide [`ureq::Agent`] used for all dictionary downloads.
+///
+/// A 5-minute wall-clock timeout and a 60-second per-read stall timeout
+/// guard against hung connections while still allowing large dictionaries
+/// (30+ MB) to transfer on slow connections.
+#[cfg(not(test))]
+fn http_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(300))
+            .timeout_read(std::time::Duration::from_secs(60))
+            .build()
+    })
+}
+
+/// Returns the local cache path for `language`'s dictionary file.
+///
+/// Returns `None` if the platform cache directory cannot be determined.
+#[cfg(not(test))]
+fn dict_cache_path(language: SpellcheckLanguage) -> Option<std::path::PathBuf> {
+    dirs::cache_dir().map(|d| d.join("urd-spellcheck").join(language.cache_filename()))
+}
+
+/// Ensures the dictionary for `language` exists on disk, downloading it if
+/// necessary.  Returns the path to the cached file, or `None` on any failure.
+///
+/// ## Download strategy
+///
+/// 1. If the target path already exists, return it immediately (no network).
+/// 2. Otherwise, create the parent directory, download from
+///    [`SpellcheckLanguage::download_url`] using [`http_agent`], write to a
+///    `.part` temp file, then atomically rename to the final path.
+///    The `.part` file is removed on any I/O error so a subsequent run can
+///    retry from scratch.
+#[cfg(not(test))]
+fn ensure_dict_cached(language: SpellcheckLanguage) -> Option<std::path::PathBuf> {
+    let path = dict_cache_path(language)?;
+
+    if path.exists() {
+        log::debug!(
+            "spellcheck: {:?} dictionary already cached at {}",
+            language,
+            path.display()
+        );
+        return Some(path);
+    }
+
+    // Create parent directory if needed.
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        log::warn!(
+            "spellcheck: cannot create cache dir {}: {e}",
+            parent.display()
+        );
+        return None;
+    }
+
+    let url = language.download_url();
+    log::info!(
+        "spellcheck: {:?} dictionary not in cache — downloading from {url}",
+        language
+    );
+
+    // Download to a .part temp file for atomic promotion.
+    let tmp = path.with_extension("part");
+
+    let response = match http_agent().get(url).call() {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("spellcheck: download failed for {:?}: {e}", language);
+            return None;
+        }
+    };
+
+    let mut file = match std::fs::File::create(&tmp) {
+        Ok(f) => f,
+        Err(e) => {
+            log::warn!("spellcheck: cannot create temp file {}: {e}", tmp.display());
+            return None;
+        }
+    };
+
+    // into_reader() has no size limit in ureq 2.x — safe for 30+ MB files.
+    let mut reader = response.into_reader();
+    if let Err(e) = std::io::copy(&mut reader, &mut file) {
+        log::warn!(
+            "spellcheck: I/O error while writing {:?} dictionary: {e}",
+            language
+        );
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+
+    // Promote .part → final path (atomic on POSIX, best-effort on Windows).
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        log::warn!(
+            "spellcheck: cannot rename {} → {}: {e}",
+            tmp.display(),
+            path.display()
+        );
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+
+    log::info!(
+        "spellcheck: {:?} dictionary cached at {} ({} bytes)",
+        language,
+        path.display(),
+        std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+    );
+    Some(path)
+}
+
 /// Return (and lazily initialise) the [`SymSpell`] checker for `language`.
 ///
-/// The dictionary for each language is embedded at compile time via
-/// `include_str!` — no runtime file I/O, no missing-file errors.
+/// The dictionary for each language is downloaded on first use and cached
+/// locally — see [`ensure_dict_cached`] for the full caching strategy.
 fn spell_checker(language: SpellcheckLanguage) -> &'static SymSpell<UnicodeStringStrategy> {
     CHECKERS[language.index()].get_or_init(|| build_checker(language))
 }
 
-/// Build a fresh [`SymSpell<UnicodeStringStrategy>`] loaded with the
-/// frequency dictionary for `language`.
+/// Build a SymSpell checker for `language` by downloading (if necessary) and
+/// loading the full frequency dictionary from the user's cache.
+///
+/// Returns an empty checker if the dictionary is unavailable — spellcheck is
+/// silently disabled for that session rather than crashing.
+///
+/// Dictionaries are sourced from
+/// [hermitdave/FrequencyWords](https://github.com/hermitdave/FrequencyWords)
+/// and cached under `{cache_dir}/urd-spellcheck/`.
+#[cfg(not(test))]
 fn build_checker(language: SpellcheckLanguage) -> SymSpell<UnicodeStringStrategy> {
     let mut checker: SymSpell<UnicodeStringStrategy> = SymSpellBuilder::default()
         .max_dictionary_edit_distance(2)
         .prefix_length(7)
-        .count_threshold(1)
+        .count_threshold(MIN_DICT_ENTRY_COUNT)
         .build()
         .unwrap_or_default();
 
-    let dict = match language {
-        SpellcheckLanguage::English => {
-            include_str!("../../data/frequency_dictionary_en_82_765.txt")
+    let path = match ensure_dict_cached(language) {
+        Some(p) => p,
+        None => {
+            log::warn!(
+                "spellcheck: {:?} dictionary unavailable — spellcheck disabled for this session",
+                language
+            );
+            return checker;
         }
-        SpellcheckLanguage::German => include_str!("../../data/de-100k.txt"),
-        SpellcheckLanguage::Spanish => include_str!("../../data/es-100l.txt"),
-        SpellcheckLanguage::French => include_str!("../../data/fr-100k.txt"),
-        SpellcheckLanguage::Hebrew => include_str!("../../data/he-100k.txt"),
-        SpellcheckLanguage::Italian => include_str!("../../data/it-100k.txt"),
-        SpellcheckLanguage::Russian => include_str!("../../data/ru-100k.txt"),
-        SpellcheckLanguage::Chinese => include_str!("../../data/zh-50k.txt"),
     };
 
+    let file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            log::warn!("spellcheck: cannot open {}: {e}", path.display());
+            return checker;
+        }
+    };
+
+    let reader = std::io::BufReader::new(file);
     let mut loaded: usize = 0;
-    for line in dict.lines() {
-        if checker.load_dictionary_line(line, 0, 1, " ") {
-            loaded += 1;
+
+    for line_result in reader.lines() {
+        match line_result {
+            Ok(line) => {
+                if checker.load_dictionary_line(&line, 0, 1, " ") {
+                    loaded += 1;
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "spellcheck: I/O error reading {:?} dictionary: {e}",
+                    language
+                );
+                break;
+            }
         }
     }
 
-    log::debug!(
-        "spellcheck: {:?} dictionary initialised with {loaded} entries",
+    log::info!(
+        "spellcheck: {:?} dictionary loaded — {loaded} entries",
         language
     );
+    checker
+}
+
+/// Test-mode checker: uses a small hard-coded word list so tests run without
+/// network access or a pre-populated cache directory.
+///
+/// The checker is otherwise identical to the production version (same
+/// [`SymSpell`] configuration, same [`UnicodeStringStrategy`]).
+///
+/// Words are chosen to cover every dialogue string that appears in this
+/// module's test suite.  The `German` list covers `german_word_is_clean`;
+/// other languages use an empty list (tests for them are skipped or use
+/// `None` → auto-detect with long samples).
+#[cfg(test)]
+fn build_checker(language: SpellcheckLanguage) -> SymSpell<UnicodeStringStrategy> {
+    let mut checker: SymSpell<UnicodeStringStrategy> = SymSpellBuilder::default()
+        .max_dictionary_edit_distance(2)
+        .prefix_length(7)
+        .count_threshold(MIN_DICT_ENTRY_COUNT)
+        .build()
+        .unwrap_or_default();
+
+    // Space-separated "word count" entries, identical to the on-disk format.
+    let entries: &[&str] = match language {
+        SpellcheckLanguage::English => &[
+            // Core function words
+            "the 10000000",
+            "and 9500000",
+            "was 9000000",
+            // Test-dialogue nouns / verbs
+            "hello 8000000",
+            "world 8000000",
+            "rocket 7000000",
+            "launched 7000000",
+            "successful 6000000",
+            "your 6000000",
+            "name 6000000",
+            // Long auto-detect test sentence
+            "adventurer 5000000",
+            "walked 5000000",
+            "through 5000000",
+            "ancient 4500000",
+            "forest 4500000",
+            "carefully 4000000",
+            "noticing 4000000",
+            "every 3800000",
+            "stone 3800000",
+            "beneath 3600000",
+            "tall 3600000",
+            "trees 3400000",
+            // Other test dialogues
+            "beautiful 3400000",
+            "day 3200000",
+            "room 3200000",
+            "felt 3000000",
+            "oppressive 3000000",
+            "visit 2800000",
+            "today 2800000",
+        ],
+        SpellcheckLanguage::German => &[
+            "die 10000000",
+            "und 9000000",
+            "nicht 8000000",
+            "ist 7000000",
+            "das 6000000",
+            "der 5000000",
+            "ein 4000000",
+            "ich 3000000",
+        ],
+        // All other languages: empty — their tests either use None
+        // (auto-detect, which goes through the full pipeline) or are
+        // expected to produce no errors (Misspelling requires a non-empty
+        // suggestion vector, and an empty checker returns nothing).
+        _ => &[],
+    };
+
+    for entry in entries {
+        checker.load_dictionary_line(entry, 0, 1, " ");
+    }
     checker
 }
 
