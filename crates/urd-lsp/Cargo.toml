@@ -11,7 +11,7 @@ name = "urd-lsp"
 path = "src/main.rs"
 
 [dependencies]
-urd = { workspace = true, features = ["spellcheck"] }
+urd.workspace = true
 tower-lsp.workspace = true
 tokio.workspace = true
 dashmap.workspace = true
@@ -23,6 +23,19 @@ tracing-subscriber.workspace = true
 log.workspace = true
 chumsky.workspace = true
 
+
+[features]
+## Spell-checking support: automatic language detection via whatlang and
+## per-language SymSpell dictionaries.  Enabled by default — disable with
+## --no-default-features for a stripped binary without the embedded dicts.
+##
+## Install with spellcheck (default):
+##   cargo install --path ./crates/urd-lsp
+##
+## Install without spellcheck:
+##   cargo install --no-default-features --path ./crates/urd-lsp
+default = ["spellcheck"]
+spellcheck = ["urd/spellcheck"]
 
 [lints]
 workspace = true

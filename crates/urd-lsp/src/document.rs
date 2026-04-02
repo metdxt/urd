@@ -31,6 +31,7 @@ pub struct Document {
     pub analysis_errors: Vec<AnalysisError>,
     /// Spelling diagnostics from the most recent spellcheck pass.
     /// Populated by [`Document::run_spellcheck`]; empty if spellcheck is disabled.
+    #[cfg(feature = "spellcheck")]
     pub spellcheck_errors: Vec<AnalysisError>,
 }
 
@@ -43,6 +44,7 @@ impl Document {
             last_clean_ast: None,
             parse_errors: Vec::new(),
             analysis_errors: Vec::new(),
+            #[cfg(feature = "spellcheck")]
             spellcheck_errors: Vec::new(),
         };
         doc.reparse();
@@ -92,7 +94,12 @@ impl Document {
         }
     }
 
-    /// Run the spell-check pass over the current AST using the given language.
+    /// Run the spell-check pass over the current AST.
+    ///
+    /// `language` controls language selection:
+    /// - `Some(lang)` — use `lang` directly, bypassing auto-detection.
+    /// - `None` — auto-detect via whatlang; returns no errors if detection
+    ///   fails or the text is too short.
     ///
     /// Results are stored in [`Self::spellcheck_errors`] and included in the
     /// next call to [`Self::diagnostics`].  If no AST is currently available
@@ -100,9 +107,10 @@ impl Document {
     ///
     /// Any [`urd::analysis::AnalysisError::Misspelling`] whose lowercased word
     /// appears in `ignored` is silently dropped from the results.
+    #[cfg(feature = "spellcheck")]
     pub fn run_spellcheck(
         &mut self,
-        language: urd::analysis::SpellcheckLanguage,
+        language: Option<urd::analysis::SpellcheckLanguage>,
         ignored: &std::collections::HashSet<String>,
     ) {
         match &self.ast {
@@ -205,6 +213,7 @@ impl Document {
         }
 
         // Spellcheck errors are always warnings (Misspelling variant).
+        #[cfg(feature = "spellcheck")]
         for err in &self.spellcheck_errors {
             let span = err.span();
             let range = byte_span_to_lsp_range(&src, span);

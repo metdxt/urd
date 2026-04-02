@@ -4,12 +4,44 @@
 //! string literals that are not found in the dictionary for the selected
 //! language.
 //!
+//! ## Pipeline
+//!
+//! 1. **Text aggregation pre-pass** — [`aggregate_dialogue_text`] walks the
+//!    entire AST and collects all [`StringPart::Literal`] segments from every
+//!    [`AstContent::Dialogue`] node into a single whitespace-separated buffer.
+//!
+//! 2. **Language auto-detection** — [`detect_language`] feeds the buffer to
+//!    [`whatlang`] for trigram-based language identification.  Detection is
+//!    skipped (returning `None`) when:
+//!    - The buffer is shorter than [`MIN_DETECT_BYTES`] bytes.
+//!    - [`whatlang`] returns `None` (pure digits/punctuation, no trigrams).
+//!    - Detection is not reliable (`info.is_reliable()` is `false`).
+//!    - The detected language has no bundled dictionary.
+//!
+//!    In all of these cases the caller receives an empty diagnostics `Vec`
+//!    (no spellcheck performed) rather than a silent fallback to English.
+//!
+//! 3. **Dictionary routing** — the detected (or forced) language is mapped to
+//!    the appropriate [`symspell::SymSpell`] dictionary via [`spell_checker`].
+//!
+//! ## Language selection in [`check`]
+//!
+//! - `forced_language = Some(lang)` — use `lang` directly, skipping detection.
+//!   Use this when the user has explicitly configured a language in their
+//!   project settings.
+//! - `forced_language = None` — auto-detect via [`aggregate_dialogue_text`] +
+//!   [`detect_language`].  If the buffer is too short, detection is unreliable,
+//!   or the detected language has no bundled dictionary, the function returns
+//!   an empty `Vec` (no spellcheck performed).
+//!
 //! ## Multi-language support
 //!
-//! Pass a [`SpellcheckLanguage`] to [`check`] to select the active dictionary.
-//! Dictionaries for English, German, Spanish, French, Hebrew, Italian,
-//! Russian, and Chinese are embedded at compile time via `include_str!` so
-//! there is no runtime file I/O.  Each language's checker is initialised
+//! Pass `Some(`[`SpellcheckLanguage`]`)` to [`check`] to force a specific
+//! dictionary, or `None` to auto-detect the language from the dialogue content
+//! via whatlang (returns no diagnostics when detection fails or the text is
+//! too short).  Dictionaries for English, German, Spanish, French, Hebrew,
+//! Italian, Russian, and Chinese are embedded at compile time via `include_str!`
+//! so there is no runtime file I/O.  Each language's checker is initialised
 //! lazily on first use and then reused for the lifetime of the process.
 //!
 //! Use [`SpellcheckLanguage::from_code`] to resolve an ISO 639-1 code (e.g.
@@ -53,6 +85,7 @@ use std::sync::OnceLock;
 
 use chumsky::span::SimpleSpan;
 use symspell::{SymSpell, SymSpellBuilder, UnicodeStringStrategy, Verbosity};
+use whatlang;
 
 use crate::analysis::AnalysisError;
 use crate::lexer::strings::{ParsedString, StringPart};
@@ -122,6 +155,15 @@ impl SpellcheckLanguage {
 }
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Minimum byte length of aggregated dialogue text required to attempt
+/// language detection.  Texts shorter than this are too sparse for reliable
+/// trigram-based detection.
+const MIN_DETECT_BYTES: usize = 50;
+
+// ---------------------------------------------------------------------------
 // Per-language dictionary singletons
 // ---------------------------------------------------------------------------
 
@@ -174,28 +216,119 @@ fn build_checker(language: SpellcheckLanguage) -> SymSpell<UnicodeStringStrategy
 }
 
 // ---------------------------------------------------------------------------
-// Public entry point
+// whatlang helpers
 // ---------------------------------------------------------------------------
 
-/// Run the spellcheck pass over `ast` using `language` and return any
-/// diagnostics found.
+/// Map a [`whatlang::Lang`] to a [`SpellcheckLanguage`] for which a bundled
+/// dictionary exists.  Returns `None` for any unsupported language so that
+/// spellcheck is skipped rather than silently misrouted.
+fn map_whatlang_lang(lang: whatlang::Lang) -> Option<SpellcheckLanguage> {
+    use whatlang::Lang;
+    match lang {
+        Lang::Eng => Some(SpellcheckLanguage::English),
+        Lang::Deu => Some(SpellcheckLanguage::German),
+        Lang::Spa => Some(SpellcheckLanguage::Spanish),
+        Lang::Fra => Some(SpellcheckLanguage::French),
+        Lang::Heb => Some(SpellcheckLanguage::Hebrew),
+        Lang::Ita => Some(SpellcheckLanguage::Italian),
+        Lang::Rus => Some(SpellcheckLanguage::Russian),
+        Lang::Cmn => Some(SpellcheckLanguage::Chinese),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry points
+// ---------------------------------------------------------------------------
+
+/// Collect all [`StringPart::Literal`] content from every [`AstContent::Dialogue`]
+/// node into a single whitespace-separated buffer.
 ///
-/// Walks the entire AST in DFS order.  For every [`AstContent::Dialogue`]
-/// node the content sub-tree is inspected:
+/// The result is fed to [`detect_language`] for script/language identification.
+/// Only `Literal` segments are included; interpolations and escape sequences
+/// are intentionally omitted so they don't skew the n-gram statistics.
+pub fn aggregate_dialogue_text(ast: &Ast) -> String {
+    let mut buf = String::new();
+    walk_ast(ast, &mut |node| {
+        if let AstContent::Dialogue { content, .. } = node.content() {
+            collect_content_literals(content, &mut buf);
+        }
+    });
+    buf
+}
+
+/// Detect the language of `text` and return the matching [`SpellcheckLanguage`].
 ///
-/// - `Value(Str(s))` — the string is checked directly.
-/// - `Block([..])` / `ExprList([..])` — each `Value(Str(s))` child is checked
-///   individually.
+/// Returns `None` when:
+/// - `text` is shorter than [`MIN_DETECT_BYTES`] bytes (too sparse for reliable detection).
+/// - `whatlang` returns `None` (no trigrams found — pure digits/punctuation).
+/// - `whatlang` detection is not reliable (`info.is_reliable()` is `false`).
+/// - The detected language has no corresponding bundled dictionary (e.g. Japanese).
 ///
-/// Each [`StringPart::Literal`] segment is tokenised into words.  Words that
-/// are shorter than 3 Unicode scalar values, entirely ASCII-uppercase, or
-/// contain digits are skipped.  Remaining words are lowercased and looked up
-/// with SymSpell (edit distance ≤ 2, `Verbosity::Top`).  Any word whose
-/// closest dictionary match has distance > 0, or that is absent from the
-/// dictionary entirely, produces one [`AnalysisError::Misspelling`].
-pub fn check(ast: &Ast, language: SpellcheckLanguage) -> Vec<AnalysisError> {
+/// The caller should treat `None` as "skip spellcheck" rather than "use English".
+pub fn detect_language(text: &str) -> Option<SpellcheckLanguage> {
+    if text.len() < MIN_DETECT_BYTES {
+        log::debug!(
+            "spellcheck: text too short ({} bytes) for language detection, skipping",
+            text.len()
+        );
+        return None;
+    }
+    let info = whatlang::detect(text)?;
+    if !info.is_reliable() {
+        log::debug!(
+            "spellcheck: detection unreliable (lang={:?}, confidence={:.2}), skipping",
+            info.lang(),
+            info.confidence()
+        );
+        return None;
+    }
+    let lang = map_whatlang_lang(info.lang());
+    log::debug!(
+        "spellcheck: detected {:?} → {:?} (confidence={:.2})",
+        info.lang(),
+        lang,
+        info.confidence()
+    );
+    lang
+}
+
+/// Run the spellcheck pass over `ast`.
+///
+/// ## Language selection
+///
+/// - `forced_language = Some(lang)` — use `lang` directly, skipping detection.
+///   Use this when the user has explicitly configured a language.
+/// - `forced_language = None` — auto-detect via [`aggregate_dialogue_text`] +
+///   [`detect_language`].  If the buffer is too short, detection is unreliable,
+///   or the detected language has no bundled dictionary, the function returns
+///   an empty `Vec` (no spellcheck performed).
+///
+/// ## Performance
+///
+/// Language detection is a single pre-pass over the AST that runs once per
+/// `check` invocation.  SymSpell dictionaries are lazily initialised on first
+/// use and cached for the process lifetime.
+pub fn check(ast: &Ast, forced_language: Option<SpellcheckLanguage>) -> Vec<AnalysisError> {
+    let language = match forced_language {
+        Some(lang) => {
+            log::debug!("spellcheck: using forced language {:?}", lang);
+            lang
+        }
+        None => {
+            let text = aggregate_dialogue_text(ast);
+            match detect_language(&text) {
+                Some(lang) => lang,
+                None => {
+                    log::debug!("spellcheck: language undetectable, skipping spellcheck");
+                    return Vec::new();
+                }
+            }
+        }
+    };
+
     let checker = spell_checker(language);
-    let mut errors: Vec<AnalysisError> = Vec::new();
+    let mut errors = Vec::new();
 
     walk_ast(ast, &mut |node| {
         if let AstContent::Dialogue { content, .. } = node.content() {
@@ -207,7 +340,43 @@ pub fn check(ast: &Ast, language: SpellcheckLanguage) -> Vec<AnalysisError> {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Private helpers — aggregation
+// ---------------------------------------------------------------------------
+
+/// Dispatch literal collection to the appropriate handler for `content`'s shape.
+///
+/// Mirrors the same three content shapes handled by [`check_dialogue_content`]:
+///
+/// - `Value(Str(s))` — a single string literal.
+/// - `Block(stmts)` / `ExprList(exprs)` — a list of string literals.
+fn collect_content_literals(content: &Ast, buf: &mut String) {
+    match content.content() {
+        AstContent::Value(RuntimeValue::Str(s)) => push_literals(s, buf),
+        AstContent::Block(items) | AstContent::ExprList(items) => {
+            for item in items {
+                if let AstContent::Value(RuntimeValue::Str(s)) = item.content() {
+                    push_literals(s, buf);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Append every [`StringPart::Literal`] segment in `s` to `buf`, separated by
+/// spaces.  Interpolations and escape sequences are silently skipped so they
+/// don't skew n-gram statistics.
+fn push_literals(s: &ParsedString, buf: &mut String) {
+    for part in s.parts() {
+        if let StringPart::Literal(text) = part {
+            buf.push_str(text);
+            buf.push(' ');
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers — spell-checking
 // ---------------------------------------------------------------------------
 
 /// Dispatch spell-checking to the appropriate handler for `content`'s shape.
@@ -393,6 +562,7 @@ fn tokenize_words(text: &str) -> impl Iterator<Item = &str> + '_ {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::compiler::loader::parse_source;
@@ -620,7 +790,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
@@ -634,7 +804,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         let has_rockeet = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "rockeet"));
@@ -655,7 +825,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         assert!(
             errors.is_empty(),
             "short words should not be flagged, got: {errors:?}"
@@ -672,7 +842,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         let nasa_flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "NASA"));
@@ -693,7 +863,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         assert!(
             errors.is_empty(),
             "interpolation should not produce misspelling errors, got: {errors:?}"
@@ -711,7 +881,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         let misspelling = errors
             .iter()
             .find(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "rockeet"));
@@ -745,7 +915,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "launcch"));
@@ -769,7 +939,7 @@ label start {
         let content = Ast::block(stmts);
         let node = Ast::dialogue(spk, content);
 
-        let errors = check(&node, SpellcheckLanguage::English);
+        let errors = check(&node, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "launcch"));
@@ -789,7 +959,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         let all_warnings = errors
             .iter()
             .all(|e| matches!(e, AnalysisError::Misspelling { .. }) && e.is_warning());
@@ -811,7 +981,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::German);
+        let errors = check(&ast, Some(SpellcheckLanguage::German));
         assert!(
             errors.is_empty(),
             "common German words should not be flagged with the German dictionary, got: {errors:?}"
@@ -832,7 +1002,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word.contains('\'')));
@@ -854,7 +1024,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word.contains('-')));
@@ -876,13 +1046,206 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast, SpellcheckLanguage::English);
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "TheTavern"));
         assert!(
             !flagged,
             "CamelCase words must not be flagged as misspellings, got: {errors:?}"
+        );
+    }
+
+    // ── aggregate_dialogue_text ──────────────────────────────────────────────
+
+    #[test]
+    fn aggregate_collects_literal_text_from_dialogue() {
+        let ast = parse(
+            r#"
+label start {
+    Narrator: "Hello world."
+    Narrator: "Goodbye moon."
+    end!()
+}
+"#,
+        );
+        let text = aggregate_dialogue_text(&ast);
+        assert!(
+            text.contains("Hello"),
+            "expected 'Hello' in aggregated text: {text:?}"
+        );
+        assert!(
+            text.contains("Goodbye"),
+            "expected 'Goodbye' in aggregated text: {text:?}"
+        );
+    }
+
+    #[test]
+    fn aggregate_skips_non_dialogue_nodes() {
+        // A label with only a function call — no dialogue nodes.
+        let ast = parse(
+            r#"
+label start {
+    end!()
+}
+"#,
+        );
+        let text = aggregate_dialogue_text(&ast);
+        assert!(
+            text.is_empty(),
+            "script with no dialogue should produce empty buffer: {text:?}"
+        );
+    }
+
+    // ── detect_language ──────────────────────────────────────────────────────
+
+    #[test]
+    fn detect_returns_none_for_short_text() {
+        // Fewer than MIN_DETECT_BYTES bytes → None.
+        assert!(detect_language("Hello world").is_none());
+    }
+
+    #[test]
+    fn detect_returns_none_for_unreliable_detection() {
+        // Pure digits / punctuation — whatlang returns None → our fn returns None.
+        let gibberish = "1234567890 !@#$%^&*() 1234567890 !@#$%^&*() 1234567890 !@#$%^&*()";
+        assert!(detect_language(gibberish).is_none());
+    }
+
+    #[test]
+    fn detect_english_text() {
+        // Natural prose (not a pangram) gives whatlang enough trigram signal
+        // to produce a reliable English classification.
+        let text = "The old library stood at the end of the narrow street, \
+                    its stone walls covered in ivy and its windows dark even \
+                    in the midday sun.";
+        // >= 50 bytes, should be reliably detected as English.
+        assert_eq!(detect_language(text), Some(SpellcheckLanguage::English));
+    }
+
+    #[test]
+    fn detect_russian_text() {
+        let text = "Быстрая коричневая лисица прыгает через ленивую собаку у старого рынка.";
+        assert_eq!(detect_language(text), Some(SpellcheckLanguage::Russian));
+    }
+
+    #[test]
+    fn detect_unsupported_language_returns_none() {
+        // Japanese — no bundled dictionary → None (skip, not fallback-to-English).
+        let text = "吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。";
+        assert!(
+            detect_language(text).is_none(),
+            "Japanese should return None (no bundled dictionary)"
+        );
+    }
+
+    // ── map_whatlang_lang ────────────────────────────────────────────────────
+
+    #[test]
+    fn map_all_supported_langs() {
+        use whatlang::Lang;
+        assert_eq!(
+            map_whatlang_lang(Lang::Eng),
+            Some(SpellcheckLanguage::English)
+        );
+        assert_eq!(
+            map_whatlang_lang(Lang::Deu),
+            Some(SpellcheckLanguage::German)
+        );
+        assert_eq!(
+            map_whatlang_lang(Lang::Spa),
+            Some(SpellcheckLanguage::Spanish)
+        );
+        assert_eq!(
+            map_whatlang_lang(Lang::Fra),
+            Some(SpellcheckLanguage::French)
+        );
+        assert_eq!(
+            map_whatlang_lang(Lang::Heb),
+            Some(SpellcheckLanguage::Hebrew)
+        );
+        assert_eq!(
+            map_whatlang_lang(Lang::Ita),
+            Some(SpellcheckLanguage::Italian)
+        );
+        assert_eq!(
+            map_whatlang_lang(Lang::Rus),
+            Some(SpellcheckLanguage::Russian)
+        );
+        assert_eq!(
+            map_whatlang_lang(Lang::Cmn),
+            Some(SpellcheckLanguage::Chinese)
+        );
+    }
+
+    #[test]
+    fn map_unsupported_lang_returns_none() {
+        use whatlang::Lang;
+        assert_eq!(map_whatlang_lang(Lang::Jpn), None);
+        assert_eq!(map_whatlang_lang(Lang::Kor), None);
+        assert_eq!(map_whatlang_lang(Lang::Por), None);
+    }
+
+    // ── check with auto-detection ────────────────────────────────────────────
+
+    #[test]
+    fn check_auto_detects_english_and_flags_typo() {
+        // Long enough English text with a deliberate typo — auto-detection picks
+        // English and the typo is flagged.
+        let ast = parse(
+            r#"
+label start {
+    Narrator: "The adventurer walked through the ancient forest carefully, noticing every rockeet and stone beneath the tall trees."
+    end!()
+}
+"#,
+        );
+        let errors = check(&ast, None);
+        let flagged = errors
+            .iter()
+            .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "rockeet"));
+        assert!(
+            flagged,
+            "auto-detected English should flag 'rockeet': {errors:?}"
+        );
+    }
+
+    #[test]
+    fn check_auto_skips_when_text_too_short() {
+        // Very short dialogue — below MIN_DETECT_BYTES → no spellcheck.
+        let ast = parse(
+            r#"
+label start {
+    Narrator: "Hi."
+    end!()
+}
+"#,
+        );
+        let errors = check(&ast, None);
+        assert!(
+            errors.is_empty(),
+            "too-short text must produce no spellcheck errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn check_forced_language_skips_detection() {
+        // Tiny text that would fail auto-detection, but forced language works.
+        let ast = parse(
+            r#"
+label start {
+    Narrator: "The rockeet."
+    end!()
+}
+"#,
+        );
+        let errors = check(&ast, Some(SpellcheckLanguage::English));
+        let flagged = errors
+            .iter()
+            .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "rockeet"));
+        assert!(
+            flagged,
+            "forced language should flag 'rockeet' even for short text: {errors:?}"
         );
     }
 }

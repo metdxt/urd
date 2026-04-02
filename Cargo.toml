@@ -53,6 +53,7 @@ crossterm = "0.28"
 
 # ── Spell checking ────────────────────────────────────────────────────────────
 symspell = "0.5.2"
+whatlang = "0.18"
 
 [profile.dev]
 incremental = true

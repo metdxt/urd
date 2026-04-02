@@ -7,6 +7,7 @@
 mod completion;
 mod document;
 mod semantic;
+#[cfg(feature = "spellcheck")]
 mod user_dict;
 mod workspace;
 
@@ -20,6 +21,7 @@ use tracing::{debug, info};
 
 use document::{Document, byte_span_to_lsp_range, position_to_byte_offset, prefix_start_character};
 use urd::analysis::AnalysisError;
+#[cfg(feature = "spellcheck")]
 use urd::analysis::SpellcheckLanguage;
 use urd::analysis::semantic_suggest::SemanticSuggest;
 use urd::analysis::synonyms::SynonymStore;
@@ -30,6 +32,7 @@ use semantic::{
     find_definition, find_references, find_rename_spans, hover_info,
     semantic_tokens as compute_semantic_tokens,
 };
+#[cfg(feature = "spellcheck")]
 use user_dict::UserDictionary;
 use workspace::WorkspaceIndex;
 
@@ -166,11 +169,15 @@ struct Backend {
     /// Synonym-based suggestion backend used to enrich undefined-variable and
     /// undefined-label diagnostics with "did you mean …?" hints.
     semantic: Arc<dyn SemanticSuggest + Send + Sync>,
-    /// The configured dialogue language for spellchecking.
-    /// Defaults to English; can be overridden via `initializationOptions`.
-    spellcheck_language: std::sync::RwLock<SpellcheckLanguage>,
+    /// Language override for spell-checking.
+    /// `None` (default) = automatic detection via whatlang on every document.
+    /// `Some(lang)` = force this language for all files, bypassing detection.
+    /// Set via `initializationOptions.spellcheckLanguage`.
+    #[cfg(feature = "spellcheck")]
+    spellcheck_language: std::sync::RwLock<Option<SpellcheckLanguage>>,
     /// Per-workspace user dictionary: words exempt from spell-checking.
     /// Loaded from `.urd-dict` in the workspace root on `initialize`.
+    #[cfg(feature = "spellcheck")]
     user_dict: Arc<std::sync::RwLock<UserDictionary>>,
 }
 
@@ -227,14 +234,15 @@ impl Backend {
         }
 
         // Run the spellcheck pass with the currently configured language.
-        // SpellcheckLanguage is Copy, so we deref the guard to get the value
-        // and drop the lock immediately before calling into the document map.
-        let language = *self
-            .spellcheck_language
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        // Hold the dict read-lock while calling run_spellcheck, then drop it.
+        #[cfg(feature = "spellcheck")]
         {
+            // SpellcheckLanguage is Copy, so we deref the guard to get the value
+            // and drop the lock immediately before calling into the document map.
+            let language = *self
+                .spellcheck_language
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            // Hold the dict read-lock while calling run_spellcheck, then drop it.
             let dict = self.user_dict.read().unwrap_or_else(|e| e.into_inner());
             if let Some(mut doc) = self.documents.get_mut(&uri) {
                 doc.run_spellcheck(language, dict.words());
@@ -249,31 +257,35 @@ impl Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
+    #[cfg_attr(not(feature = "spellcheck"), allow(unused_variables))]
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         info!("urd-lsp initializing");
 
-        // Apply spellcheckLanguage from client initializationOptions if provided.
-        if let Some(opts) = params.initialization_options
-            && let Some(lang_val) = opts.get("spellcheckLanguage")
-            && let Ok(lang) = serde_json::from_value::<SpellcheckLanguage>(lang_val.clone())
-            && let Ok(mut guard) = self.spellcheck_language.write()
+        #[cfg(feature = "spellcheck")]
         {
-            *guard = lang;
-        }
+            // Apply spellcheckLanguage from client initializationOptions if provided.
+            if let Some(opts) = params.initialization_options.as_ref()
+                && let Some(lang_val) = opts.get("spellcheckLanguage")
+                && let Ok(lang) = serde_json::from_value::<SpellcheckLanguage>(lang_val.clone())
+                && let Ok(mut guard) = self.spellcheck_language.write()
+            {
+                *guard = Some(lang);
+            }
 
-        // Resolve the workspace root: prefer workspace_folders, fall back to root_uri.
-        let workspace_root = params
-            .workspace_folders
-            .as_deref()
-            .and_then(|folders| folders.first())
-            .and_then(|f| f.uri.to_file_path().ok())
-            .or_else(|| params.root_uri.as_ref().and_then(|u| u.to_file_path().ok()));
+            // Resolve the workspace root: prefer workspace_folders, fall back to root_uri.
+            let workspace_root = params
+                .workspace_folders
+                .as_deref()
+                .and_then(|folders| folders.first())
+                .and_then(|f| f.uri.to_file_path().ok())
+                .or_else(|| params.root_uri.as_ref().and_then(|u| u.to_file_path().ok()));
 
-        if let Some(root) = workspace_root {
-            let dict_path = root.join(".urd-dict");
-            info!("user-dict: loading from {}", dict_path.display());
-            if let Ok(mut guard) = self.user_dict.write() {
-                *guard = UserDictionary::load(dict_path);
+            if let Some(root) = workspace_root {
+                let dict_path = root.join(".urd-dict");
+                info!("user-dict: loading from {}", dict_path.display());
+                if let Ok(mut guard) = self.user_dict.write() {
+                    *guard = UserDictionary::load(dict_path);
+                }
             }
         }
 
@@ -322,10 +334,14 @@ impl LanguageServer for Backend {
                 )),
 
                 // ── Execute command ──────────────────────────────────────
-                execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["urd.addToDictionary".to_string()],
-                    work_done_progress_options: Default::default(),
-                }),
+                execute_command_provider: if cfg!(feature = "spellcheck") {
+                    Some(ExecuteCommandOptions {
+                        commands: vec!["urd.addToDictionary".to_string()],
+                        work_done_progress_options: Default::default(),
+                    })
+                } else {
+                    None
+                },
 
                 // ── Semantic tokens ──────────────────────────────────────
                 semantic_tokens_provider: Some(
@@ -916,6 +932,7 @@ impl LanguageServer for Backend {
         }
 
         // Offer "Add 'word' to dictionary" for every spell-check diagnostic.
+        #[cfg(feature = "spellcheck")]
         for diag in &params.context.diagnostics {
             if diag.source.as_deref() == Some("urd-spell") {
                 let word = diag
@@ -949,6 +966,7 @@ impl LanguageServer for Backend {
         }
     }
 
+    #[cfg(feature = "spellcheck")]
     async fn execute_command(
         &self,
         params: ExecuteCommandParams,
@@ -1052,7 +1070,9 @@ async fn main() {
         documents: DashMap::new(),
         workspace: Arc::new(WorkspaceIndex::new()),
         semantic,
-        spellcheck_language: std::sync::RwLock::new(SpellcheckLanguage::default()),
+        #[cfg(feature = "spellcheck")]
+        spellcheck_language: std::sync::RwLock::new(None),
+        #[cfg(feature = "spellcheck")]
         user_dict: Arc::new(std::sync::RwLock::new(UserDictionary::new(
             std::path::PathBuf::from(".urd-dict"),
         ))),
