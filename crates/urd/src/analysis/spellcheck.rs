@@ -93,7 +93,7 @@
 use std::io::BufRead;
 use std::sync::OnceLock;
 
-use chumsky::span::SimpleSpan;
+use chumsky::span::{SimpleSpan, Span};
 use symspell::{SymSpell, SymSpellBuilder, UnicodeStringStrategy, Verbosity};
 use whatlang;
 
@@ -233,7 +233,7 @@ const MIN_DETECT_BYTES: usize = 50;
 /// vocabulary: even an uncommon word like "замшелый" appears thousands of
 /// times in a large corpus.  For narrative game dialogue a value around 100
 /// strikes a good balance.
-const MIN_DICT_ENTRY_COUNT: i64 = 50;
+const MIN_DICT_ENTRY_COUNT: i64 = 10;
 
 // ---------------------------------------------------------------------------
 // Per-language dictionary singletons
@@ -602,6 +602,11 @@ pub fn detect_language(text: &str) -> Option<SpellcheckLanguage> {
 
 /// Run the spellcheck pass over `ast`.
 ///
+/// ## Parameters
+///
+/// - `source` — The full source text of the document; used to compute precise
+///   per-word diagnostic spans.
+///
 /// ## Language selection
 ///
 /// - `forced_language = Some(lang)` — use `lang` directly, skipping detection.
@@ -616,7 +621,11 @@ pub fn detect_language(text: &str) -> Option<SpellcheckLanguage> {
 /// Language detection is a single pre-pass over the AST that runs once per
 /// `check` invocation.  SymSpell dictionaries are lazily initialised on first
 /// use and cached for the process lifetime.
-pub fn check(ast: &Ast, forced_language: Option<SpellcheckLanguage>) -> Vec<AnalysisError> {
+pub fn check(
+    ast: &Ast,
+    source: &str,
+    forced_language: Option<SpellcheckLanguage>,
+) -> Vec<AnalysisError> {
     let language = match forced_language {
         Some(lang) => {
             log::debug!("spellcheck: using forced language {:?}", lang);
@@ -640,12 +649,12 @@ pub fn check(ast: &Ast, forced_language: Option<SpellcheckLanguage>) -> Vec<Anal
     walk_ast(ast, &mut |node| {
         match node.content() {
             AstContent::Dialogue { content, .. } => {
-                check_dialogue_content(content, checker, &mut errors);
+                check_dialogue_content(content, source, checker, &mut errors);
             }
             // Menu option labels are player-visible text, just like dialogue
             // lines, and should be checked for spelling.
             AstContent::MenuOption { label, .. } => {
-                check_text(label, node.span(), checker, &mut errors);
+                check_text(label, source, node.span(), checker, &mut errors);
             }
             _ => {}
         }
@@ -705,19 +714,20 @@ fn push_literals(s: &ParsedString, buf: &mut String) {
 ///   the real parser when the source reads `Speaker: { "line1" "line2" }`.
 fn check_dialogue_content(
     content: &Ast,
+    source: &str,
     checker: &SymSpell<UnicodeStringStrategy>,
     errors: &mut Vec<AnalysisError>,
 ) {
     match content.content() {
         AstContent::Value(RuntimeValue::Str(s)) => {
-            check_parsed_string(s, content.span(), checker, errors);
+            check_parsed_string(s, source, content.span(), checker, errors);
         }
         // Hand-built ASTs (test helpers) use Block; real parsed source with
         // brace-delimited content uses ExprList — handle both identically.
         AstContent::Block(items) | AstContent::ExprList(items) => {
             for item in items {
                 if let AstContent::Value(RuntimeValue::Str(s)) = item.content() {
-                    check_parsed_string(s, item.span(), checker, errors);
+                    check_parsed_string(s, source, item.span(), checker, errors);
                 }
             }
         }
@@ -731,6 +741,7 @@ fn check_dialogue_content(
 /// word-level logic lives in one place.
 fn check_parsed_string(
     s: &ParsedString,
+    source: &str,
     span: SimpleSpan,
     checker: &SymSpell<UnicodeStringStrategy>,
     errors: &mut Vec<AnalysisError>,
@@ -739,7 +750,7 @@ fn check_parsed_string(
         let StringPart::Literal(text) = part else {
             continue;
         };
-        check_text(text, span, checker, errors);
+        check_text(text, source, span, checker, errors);
     }
 }
 
@@ -747,12 +758,13 @@ fn check_parsed_string(
 /// [`AnalysisError::Misspelling`] for every word that SymSpell cannot match
 /// at edit-distance 0.
 ///
-/// `span` is used as the diagnostic location for every emitted error; callers
-/// should pass the span of the surrounding AST node (dialogue content or menu
-/// option label).
+/// `hint_span` is the span of the surrounding AST node (dialogue content or
+/// menu option label).  For each misspelled word, [`find_word_span`] is used
+/// to narrow the span down to the exact byte range of that word in `source`.
 fn check_text(
     text: &str,
-    span: SimpleSpan,
+    source: &str,
+    hint_span: SimpleSpan,
     checker: &SymSpell<UnicodeStringStrategy>,
     errors: &mut Vec<AnalysisError>,
 ) {
@@ -768,6 +780,7 @@ fn check_text(
             None => {
                 // Word is completely absent from the dictionary.
                 log::trace!("spellcheck: no dictionary match for '{word}'");
+                let span = find_word_span(source, word, hint_span);
                 errors.push(AnalysisError::Misspelling {
                     word: word.to_owned(),
                     suggestion: None,
@@ -781,6 +794,7 @@ fn check_text(
                     top.term,
                     top.distance
                 );
+                let span = find_word_span(source, word, hint_span);
                 errors.push(AnalysisError::Misspelling {
                     word: word.to_owned(),
                     suggestion: Some(top.term.clone()),
@@ -792,6 +806,22 @@ fn check_text(
             }
         }
     }
+}
+
+/// Locate `word` inside `source[hint.start..hint.end]` and return its exact
+/// [`SimpleSpan`].
+///
+/// Returns `hint` unchanged when the word cannot be found (e.g. the span
+/// is a zero span from a hand-built test AST, or the word text differs from
+/// the source due to escape processing).
+fn find_word_span(source: &str, word: &str, hint: SimpleSpan) -> SimpleSpan {
+    let start = hint.start.min(source.len());
+    let end = hint.end.min(source.len());
+    source
+        .get(start..end)
+        .and_then(|region| region.find(word))
+        .map(|offset| SimpleSpan::new((), (start + offset)..(start + offset + word.len())))
+        .unwrap_or(hint)
 }
 
 /// Returns `true` if `word` should be excluded from spell-checking.
@@ -1137,17 +1167,16 @@ label start {
 
     #[test]
     fn menu_option_typo_is_flagged() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     menu {
         "Attak the enemy" { end!() }
         "Run away" { end!() }
     }
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "Attak"));
@@ -1159,17 +1188,16 @@ label start {
 
     #[test]
     fn menu_option_correct_spelling_is_silent() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     menu {
         "Fight the enemy" { end!() }
         "Run away" { end!() }
     }
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         assert!(
             errors.is_empty(),
             "expected no errors for correctly-spelled menu options, got: {errors:?}"
@@ -1178,16 +1206,15 @@ label start {
 
     #[test]
     fn menu_option_typo_diagnostic_is_warning() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     menu {
         "Attak the enemy" { end!() }
     }
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let misspelling = errors
             .iter()
             .find(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "Attak"));
@@ -1205,29 +1232,27 @@ label start {
 
     #[test]
     fn clean_dialogue_is_silent() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "Hello, world!"
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
     #[test]
     fn misspelled_word_is_flagged() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "The rockeet launched."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let has_rockeet = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "rockeet"));
@@ -1240,15 +1265,14 @@ label start {
     #[test]
     fn short_words_are_skipped() {
         // "I" (1), "am" (2), "a" (1), "go" (2) — all below the 3-char threshold.
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "I am a go."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         assert!(
             errors.is_empty(),
             "short words should not be flagged, got: {errors:?}"
@@ -1257,15 +1281,14 @@ label start {
 
     #[test]
     fn all_caps_words_are_skipped() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "The NASA launched the rocket."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let nasa_flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "NASA"));
@@ -1278,15 +1301,14 @@ label start {
     #[test]
     fn interpolation_skipped() {
         // Interpolation segments must never produce spelling errors.
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "Your name is {player.name}."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         assert!(
             errors.is_empty(),
             "interpolation should not produce misspelling errors, got: {errors:?}"
@@ -1296,15 +1318,14 @@ label start {
     #[test]
     fn suggestion_present_for_close_typo() {
         // "rockeet" is edit-distance 1 from "rocket"; SymSpell should suggest it.
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "The rockeet launched."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let misspelling = errors
             .iter()
             .find(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "rockeet"));
@@ -1330,15 +1351,14 @@ label start {
         // The real Urd parser emits AstContent::ExprList for brace-delimited
         // dialogue content: `Narrator: { "line1" "line2" }`.
         // A misspelling inside any string in that list must be caught.
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: { "The launcch was successful." }
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "launcch"));
@@ -1362,7 +1382,7 @@ label start {
         let content = Ast::block(stmts);
         let node = Ast::dialogue(spk, content);
 
-        let errors = check(&node, Some(SpellcheckLanguage::English));
+        let errors = check(&node, "", Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "launcch"));
@@ -1374,15 +1394,14 @@ label start {
 
     #[test]
     fn misspelling_diagnostic_is_a_warning() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "The rockeet launched."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let all_warnings = errors
             .iter()
             .all(|e| matches!(e, AnalysisError::Misspelling { .. }) && e.is_warning());
@@ -1396,15 +1415,14 @@ label start {
     /// dictionary) must produce zero errors when the German checker is used.
     #[test]
     fn german_word_is_clean() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "Die und nicht."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::German));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::German));
         assert!(
             errors.is_empty(),
             "common German words should not be flagged with the German dictionary, got: {errors:?}"
@@ -1417,15 +1435,14 @@ label start {
     /// contractions before they ever reach SymSpell.
     #[test]
     fn contraction_in_dialogue_not_flagged() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "It's a beautiful day."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word.contains('\'')));
@@ -1439,15 +1456,14 @@ label start {
     /// compound words before they ever reach SymSpell.
     #[test]
     fn hyphenated_compound_in_dialogue_not_flagged() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "The low-ceilinged room felt oppressive."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word.contains('-')));
@@ -1461,15 +1477,14 @@ label start {
     /// be flagged — the camel-case exclusion covers them before SymSpell.
     #[test]
     fn camel_case_in_dialogue_not_flagged() {
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "Visit TheTavern today."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "TheTavern"));
@@ -1615,15 +1630,14 @@ label start {
     fn check_auto_detects_english_and_flags_typo() {
         // Long enough English text with a deliberate typo — auto-detection picks
         // English and the typo is flagged.
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "The adventurer walked through the ancient forest carefully, noticing every rockeet and stone beneath the tall trees."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, None);
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, None);
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "rockeet"));
@@ -1636,15 +1650,14 @@ label start {
     #[test]
     fn check_auto_skips_when_text_too_short() {
         // Very short dialogue — below MIN_DETECT_BYTES → no spellcheck.
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "Hi."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, None);
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, None);
         assert!(
             errors.is_empty(),
             "too-short text must produce no spellcheck errors: {errors:?}"
@@ -1654,15 +1667,14 @@ label start {
     #[test]
     fn check_forced_language_skips_detection() {
         // Tiny text that would fail auto-detection, but forced language works.
-        let ast = parse(
-            r#"
+        let src = r#"
 label start {
     Narrator: "The rockeet."
     end!()
 }
-"#,
-        );
-        let errors = check(&ast, Some(SpellcheckLanguage::English));
+"#;
+        let ast = parse(src);
+        let errors = check(&ast, src, Some(SpellcheckLanguage::English));
         let flagged = errors
             .iter()
             .any(|e| matches!(e, AnalysisError::Misspelling { word, .. } if word == "rockeet"));

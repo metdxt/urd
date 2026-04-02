@@ -113,9 +113,10 @@ impl Document {
         language: Option<urd::analysis::SpellcheckLanguage>,
         ignored: &std::collections::HashSet<String>,
     ) {
+        let src = self.rope.to_string();
         match &self.ast {
             Some(ast) => {
-                self.spellcheck_errors = urd::analysis::spellcheck::check(ast, language)
+                self.spellcheck_errors = urd::analysis::spellcheck::check(ast, &src, language)
                     .into_iter()
                     .filter(|e| {
                         if let urd::analysis::AnalysisError::Misspelling { word, .. } = e {
