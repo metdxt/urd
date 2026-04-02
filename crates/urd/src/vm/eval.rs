@@ -64,7 +64,7 @@ pub fn eval_expr(
             match func_path.content() {
                 AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() >= 2 => {
                     // Potentially a method call: receiver = path[0..n-1], method = path[n-1].
-                    let method = path.last().unwrap().as_str();
+                    let method = path[path.len() - 1].as_str();
                     let receiver_path = path[..path.len() - 1].to_vec();
 
                     // Resolve the receiver value through the environment.
@@ -85,14 +85,11 @@ pub fn eval_expr(
                 }
                 _ => {
                     // Check if this is a call to a named function value in scope.
-                    if let AstContent::Value(RuntimeValue::IdentPath(path)) = func_path.content() {
-                        if let Ok(receiver) =
+                    if let AstContent::Value(RuntimeValue::IdentPath(path)) = func_path.content()
+                        && let Ok(RuntimeValue::Function { params, body }) =
                             eval_runtime_value(&RuntimeValue::IdentPath(path.clone()), env)
-                        {
-                            if let RuntimeValue::Function { params, body } = receiver {
-                                return exec_fn_body(&body, &params, &args);
-                            }
-                        }
+                    {
+                        return exec_fn_body(&body, &params, &args);
                     }
                     let path_str = match func_path.content() {
                         AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
@@ -106,7 +103,6 @@ pub fn eval_expr(
             }
         }
 
-        // ── Collection literals — not yet supported ──────────────────────────
         AstContent::List(items) => {
             let mut elements = Vec::with_capacity(items.len());
             for item in items {

@@ -10,7 +10,9 @@
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 /// A persistent, case-insensitive word list used to suppress spellcheck
 /// false-positives in the Urd language server.
@@ -96,7 +98,7 @@ impl UserDictionary {
 
     /// Returns `true` if `word` (compared case-insensitively) is in the
     /// dictionary.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn contains(&self, word: &str) -> bool {
         self.words.contains(&word.to_lowercase())
     }
@@ -150,7 +152,7 @@ impl UserDictionary {
     }
 
     /// The filesystem path this dictionary is backed by.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }

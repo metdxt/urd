@@ -55,10 +55,12 @@ pub(super) fn dispatch(
             let idx = require_int(&args[0], "get", "index")?;
             let pos = resolve_index(idx, list.len())?;
             // SAFETY: `resolve_index` guarantees `pos < list.len()`.
-            Ok(list
-                .into_iter()
-                .nth(pos)
-                .expect("resolve_index guarantees in-bounds pos"))
+            list.into_iter().nth(pos).ok_or_else(|| {
+                super::VmError::TypeError(
+                    "list.get(): index out of bounds (resolve_index guarantee violated)"
+                        .to_string(),
+                )
+            })
         }
 
         "first" => {

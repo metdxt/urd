@@ -284,7 +284,7 @@ pub enum AstContent {
         decl_defs: Box<Ast>,
     },
 
-    /// An `extern const` or `extern global` declaration: value provided by the host runtime.
+    /// An `extern const` declaration: value provided by the host runtime.
     ///
     /// An `extern` declaration: a value provided by the host runtime.
     ///

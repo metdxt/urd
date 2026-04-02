@@ -15,7 +15,6 @@ use std::collections::{HashMap, HashSet};
 
 use chumsky::span::{SimpleSpan, Span};
 
-use crate::analysis::context::AnalysisContext;
 use crate::analysis::semantic_suggest::SemanticSuggest;
 use crate::analysis::{AnalysisError, TypoKind};
 use crate::parser::ast::{Ast, AstContent, Operator, walk_ast};
@@ -35,11 +34,7 @@ use crate::runtime::value::RuntimeValue;
 ///
 /// When `semantic` is `Some`, it is used as a fallback for speaker names
 /// whenever Levenshtein edit distance produces no close match.
-pub fn check(
-    ast: &Ast,
-    _ctx: &AnalysisContext,
-    semantic: Option<&dyn SemanticSuggest>,
-) -> Vec<AnalysisError> {
+pub fn check(ast: &Ast, semantic: Option<&dyn SemanticSuggest>) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
     errors.extend(check_speaker_typos(ast, semantic));
     // check_label_typos removed — label suggestions now live in labels::check
@@ -291,7 +286,7 @@ pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::context::AnalysisContext;
+
     use crate::compiler::loader::parse_source;
 
     fn parse(src: &str) -> Ast {
@@ -453,8 +448,8 @@ label scene {
     // ── Integration: check() aggregates all three sub-checks ─────────────────
 
     /// Helper that calls `check` with `semantic = None` for all existing tests.
-    fn check_no_semantic(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
-        check(ast, ctx, None)
+    fn check_no_semantic(ast: &Ast) -> Vec<AnalysisError> {
+        check(ast, None)
     }
 
     // ── Mock SemanticSuggest ──────────────────────────────────────────────────
@@ -494,8 +489,7 @@ label main_scene {
 }
 "#;
         let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
-        let errors = check_no_semantic(&ast, &ctx);
+        let errors = check_no_semantic(&ast);
 
         let speaker_count = errors
             .iter()
@@ -549,12 +543,11 @@ label scene {
 }
 "#;
         let ast = parse(src);
-        let ctx = AnalysisContext::build(&ast);
         let semantic = MockSemantic {
             query: "narrator",
             answer: "storyteller",
         };
-        let errors = check(&ast, &ctx, Some(&semantic));
+        let errors = check(&ast, Some(&semantic));
         assert!(
             errors.iter().any(|e| matches!(
                 e,

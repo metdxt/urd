@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 //! # quest — interactive Urd script runner & graph exporter
 //!
 //! ## Subcommands

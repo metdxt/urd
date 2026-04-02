@@ -80,13 +80,8 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
             continue;
         }
 
-        let has_escape = component_has_escape_path(
-            &ir,
-            &comp_labels,
-            &clusters,
-            &node_to_label,
-            &entry_to_label,
-        );
+        let has_escape =
+            component_has_escape_path(&ir, &comp_labels, &node_to_label, &entry_to_label);
         if has_escape {
             continue;
         }
@@ -432,7 +427,6 @@ fn is_cyclic_component(g: &StableDiGraph<String, ()>, comp: &[NodeIndex]) -> boo
 fn component_has_escape_path(
     ir: &crate::ir::IrGraph,
     comp_labels: &[String],
-    clusters: &HashMap<String, HashSet<NodeIndex>>,
     node_to_label: &HashMap<NodeIndex, String>,
     entry_to_label: &HashMap<NodeIndex, String>,
 ) -> bool {
@@ -523,7 +517,6 @@ fn component_has_escape_path(
     }
 
     // No escaping path discovered.
-    let _ = clusters; // kept in signature for future refinement/debugging context.
     false
 }
 

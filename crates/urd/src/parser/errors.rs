@@ -153,7 +153,6 @@ fn format_pattern(pattern: &RichPattern<'_, Token>) -> String {
 /// | 1     | `"expected foo"`                            |
 /// | 2     | `"expected foo or bar"`                     |
 /// | N     | `"expected one of: foo, bar, …, or baz"`    |
-#[allow(clippy::expect_used)]
 fn format_expected(patterns: &[RichPattern<'_, Token>]) -> String {
     let mut seen = HashSet::new();
     let mut items: Vec<String> = patterns
@@ -170,8 +169,13 @@ fn format_expected(patterns: &[RichPattern<'_, Token>]) -> String {
         [a] => format!("expected {a}"),
         [a, b] => format!("expected {a} or {b}"),
         many => {
-            let (last, rest) = many.split_last().expect("non-empty slice");
-            format!("expected one of: {}, or {last}", rest.join(", "))
+            // INVARIANT: `many` is non-empty — this arm is only reached when
+            // `items` has ≥ 3 elements (the `[]`, `[a]`, and `[a, b]` arms
+            // above exhaust the 0-, 1-, and 2-element cases), so `split_last`
+            // cannot return `None`.
+            many.split_last().map_or_else(String::new, |(last, rest)| {
+                format!("expected one of: {}, or {last}", rest.join(", "))
+            })
         }
     }
 }

@@ -179,14 +179,14 @@ fn check_refs(
 /// that appears in a dialogue `speakers` position.
 fn collect_speaker_refs(node: &Ast, refs: &mut Vec<(String, SimpleSpan)>) {
     walk_ast(node, &mut |n| {
-        if let AstContent::Dialogue { speakers, .. } = n.content() {
-            if let AstContent::ExprList(items) = speakers.content() {
-                for item in items {
-                    if let AstContent::Value(RuntimeValue::IdentPath(path)) = item.content()
-                        && path.len() == 1
-                    {
-                        refs.push((path[0].clone(), item.span()));
-                    }
+        if let AstContent::Dialogue { speakers, .. } = n.content()
+            && let AstContent::ExprList(items) = speakers.content()
+        {
+            for item in items {
+                if let AstContent::Value(RuntimeValue::IdentPath(path)) = item.content()
+                    && path.len() == 1
+                {
+                    refs.push((path[0].clone(), item.span()));
                 }
             }
         }

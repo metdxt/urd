@@ -172,6 +172,8 @@ fn escape_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result<String
                 .map(|c| c.to_string())
                 .ok_or(LexerError::InvalidEscape(code.to_string()))
         }
+        // INVARIANT: the EscapedChar regex only matches the sequences handled by the
+        // arms above, so this branch is structurally unreachable.
         _ => unreachable!("Regex for EscapedChar should cover all matched cases"),
     }
 }

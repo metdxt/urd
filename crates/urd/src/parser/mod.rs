@@ -17,6 +17,7 @@ pub mod ast;
 pub mod block;
 pub mod errors;
 pub mod expr;
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_util;
 
 /// Helper macro to generate boilerplate for parsing text using Urd lexer.
@@ -28,6 +29,7 @@ pub mod test_util;
 /// Uses `into_output_errors` internally so that all borrowed data from the token
 /// slice is consumed (and errors stringified) before the temporary `Vec` is dropped,
 /// avoiding lifetime issues with the slice-backed input type.
+#[cfg(any(test, feature = "test-support"))]
 #[macro_export]
 macro_rules! parse_test {
     ($parser:expr, $src:expr) => {{

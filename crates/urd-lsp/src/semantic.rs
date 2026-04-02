@@ -243,20 +243,6 @@ fn ident_name_from_ast(ast: &Ast) -> Option<String> {
     }
 }
 
-/// Return the full ident path joined with `.` if the AST is an IdentPath value.
-#[allow(dead_code)]
-fn ident_path_from_ast(ast: &Ast) -> Option<String> {
-    if let AstContent::Value(RuntimeValue::IdentPath(parts)) = ast.content() {
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join("."))
-        }
-    } else {
-        None
-    }
-}
-
 /// Extract the `[_a-zA-Z0-9]+` identifier word that the cursor sits inside.
 ///
 /// Returns an empty string when `byte_offset` is not on an identifier character.

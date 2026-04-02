@@ -866,7 +866,7 @@ fn run_passes_with_semantic(
     errors.extend(overwritten_assign::check(ast));
     errors.extend(unused_var::check(ast));
     errors.extend(dead_branch::check(ast));
-    errors.extend(possible_typo::check(ast, ctx, semantic));
+    errors.extend(possible_typo::check(ast, semantic));
 
     // ── Opt-in ────────────────────────────────────────────────────────────
     errors.extend(loop_detection::check(ast));
@@ -881,10 +881,10 @@ fn run_passes_with_semantic(
 ///
 /// ## Pass order (errors first, then warnings)
 ///
-/// **Errors:** `top_level` → `exhaustiveness` → `types` → `dead_end` →
+/// **Errors:** `exhaustiveness` → `types` → `dead_end` →
 /// `menu_structure` (empty menus) → `const_reassign`
 ///
-/// **Warnings:** `labels` → `unreachable_label` → `menu_structure` (single-option) →
+/// **Warnings:** `top_level` → `labels` → `unreachable_label` → `menu_structure` (single-option) →
 /// `empty_dialogue` → `duplicate_menu_dest` → `overwritten_assign` →
 /// `unused_var` → `dead_branch` → `possible_typo`
 ///

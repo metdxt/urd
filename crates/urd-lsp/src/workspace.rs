@@ -37,8 +37,7 @@ type ImportedTypeDefs = (
 pub struct ImportedModule {
     /// The local alias written in source (`import "foo.urd" as alias` → `"alias"`).
     pub alias: String,
-    /// The raw import path string as written in source (e.g. `"helpers.urd"`).
-    pub _path: String,
+
     /// Resolved `file://` URI of the imported file (`None` if the file could
     /// not be found or if the importer itself has no file URI).
     pub uri: Option<Url>,
@@ -274,15 +273,6 @@ impl WorkspaceIndex {
         None
     }
 
-    /// Return the list of directly imported modules for `uri`, if the index
-    /// has an entry for it.
-    pub fn _modules_for(
-        &self,
-        uri: &Url,
-    ) -> Option<dashmap::mapref::one::Ref<'_, Url, Vec<ImportedModule>>> {
-        self.imports.get(uri)
-    }
-
     /// Return imported struct and enum definitions for use in cross-file analysis.
     ///
     /// Returns two maps:
@@ -479,7 +469,6 @@ fn load_module(
             // rest of the index stays consistent.
             return ImportedModule {
                 alias: alias.to_owned(),
-                _path: path.to_owned(),
                 uri,
                 source: String::new(),
                 symbols: Vec::new(),
@@ -494,7 +483,6 @@ fn load_module(
 
     ImportedModule {
         alias: alias.to_owned(),
-        _path: path.to_owned(),
         uri,
         source,
         symbols,

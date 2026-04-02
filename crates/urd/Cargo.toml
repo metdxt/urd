@@ -28,5 +28,14 @@ dirs = { workspace = true, optional = true }
 ## Enable with: cargo build -p urd --features spellcheck
 spellcheck = ["dep:symspell", "dep:whatlang", "dep:ureq", "dep:dirs"]
 
+## Expose `parser::test_util` and the `parse_test!` macro for use in
+## integration tests and downstream test helpers.  Never enable this in
+## production builds — the module is test scaffolding only.
+test-support = []
+
+[[test]]
+name = "integration"
+required-features = ["test-support"]
+
 [lints]
 workspace = true
