@@ -29,6 +29,9 @@ pub struct Document {
     pub parse_errors: Vec<(String, SimpleSpan)>,
     /// Analysis diagnostics from the last successful parse.
     pub analysis_errors: Vec<AnalysisError>,
+    /// Spelling diagnostics from the most recent spellcheck pass.
+    /// Populated by [`Document::run_spellcheck`]; empty if spellcheck is disabled.
+    pub spellcheck_errors: Vec<AnalysisError>,
 }
 
 impl Document {
@@ -40,6 +43,7 @@ impl Document {
             last_clean_ast: None,
             parse_errors: Vec::new(),
             analysis_errors: Vec::new(),
+            spellcheck_errors: Vec::new(),
         };
         doc.reparse();
         doc
@@ -85,6 +89,38 @@ impl Document {
                 imported_labels,
                 semantic.as_deref(),
             );
+        }
+    }
+
+    /// Run the spell-check pass over the current AST using the given language.
+    ///
+    /// Results are stored in [`Self::spellcheck_errors`] and included in the
+    /// next call to [`Self::diagnostics`].  If no AST is currently available
+    /// (last parse failed entirely) the previous results are cleared.
+    ///
+    /// Any [`urd::analysis::AnalysisError::Misspelling`] whose lowercased word
+    /// appears in `ignored` is silently dropped from the results.
+    pub fn run_spellcheck(
+        &mut self,
+        language: urd::analysis::SpellcheckLanguage,
+        ignored: &std::collections::HashSet<String>,
+    ) {
+        match &self.ast {
+            Some(ast) => {
+                self.spellcheck_errors = urd::analysis::spellcheck::check(ast, language)
+                    .into_iter()
+                    .filter(|e| {
+                        if let urd::analysis::AnalysisError::Misspelling { word, .. } = e {
+                            !ignored.contains(&word.to_lowercase())
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+            }
+            None => {
+                self.spellcheck_errors.clear();
+            }
         }
     }
 
@@ -164,6 +200,30 @@ impl Document {
                 severity: Some(severity),
                 source: Some("urd".into()),
                 message: err.to_string(),
+                ..Default::default()
+            });
+        }
+
+        // Spellcheck errors are always warnings (Misspelling variant).
+        for err in &self.spellcheck_errors {
+            let span = err.span();
+            let range = byte_span_to_lsp_range(&src, span);
+            let severity = if err.is_warning() {
+                DiagnosticSeverity::WARNING
+            } else {
+                DiagnosticSeverity::ERROR
+            };
+            let data = if let urd::analysis::AnalysisError::Misspelling { word, .. } = err {
+                Some(serde_json::json!({ "word": word }))
+            } else {
+                None
+            };
+            diags.push(Diagnostic {
+                range,
+                severity: Some(severity),
+                source: Some("urd-spell".into()),
+                message: err.to_string(),
+                data,
                 ..Default::default()
             });
         }

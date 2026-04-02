@@ -51,6 +51,9 @@ ropey = "1.6"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 
+# ── Spell checking ────────────────────────────────────────────────────────────
+symspell = "0.5.2"
+
 [profile.dev]
 incremental = true
 

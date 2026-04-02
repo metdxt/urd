@@ -380,6 +380,7 @@ pub fn dialogue<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     let content = select! {
         Token::StrLit(s) => Ast::value(RuntimeValue::Str(s)),
     }
+    .map_with(|ast, extra| ast.with_span(extra.span()))
     .or(expr()
         .separated_by(
             just(Token::Comma)
@@ -1062,6 +1063,115 @@ mod tests {
             children[0].doc_comment.as_deref(),
             Some("The player"),
             "doc comment must be attached to the child statement inside the block"
+        );
+    }
+
+    /// Regression test: the single-string content node of a dialogue statement
+    /// must carry a non-zero span so that LSP diagnostics (e.g. spellcheck
+    /// warnings) point at the actual string location, not at byte 0 of the file.
+    ///
+    /// Before the fix, `select! { Token::StrLit(s) => Ast::value(...) }` in
+    /// `dialogue()` lacked a `.map_with(|ast, extra| ast.with_span(extra.span()))`
+    /// call, causing every single-string dialogue content node to retain the
+    /// default `SimpleSpan::new(0, 0)`.
+    #[test]
+    fn dialogue_single_string_content_span_is_nonzero() {
+        use crate::compiler::loader::parse_source;
+
+        // The string literal starts at some non-zero offset inside the label
+        // block. After the fix, content.span() must reflect that.
+        let src = r#"
+label start {
+    narrator: "Hello, world!"
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("source should parse");
+
+        // Walk the AST to find the Dialogue node.
+        let mut found = false;
+        crate::parser::ast::walk_ast(&ast, &mut |node| {
+            if let AstContent::Dialogue { content, .. } = node.content() {
+                let span = content.span();
+                assert!(
+                    span.start > 0 || span.end > 0,
+                    "dialogue content span must not be the default zero span (0..0); \
+                     got {}..{}",
+                    span.start,
+                    span.end,
+                );
+                // The span must enclose at least the string literal characters.
+                assert!(
+                    span.end > span.start,
+                    "dialogue content span end ({}) must be greater than start ({})",
+                    span.end,
+                    span.start,
+                );
+                found = true;
+            }
+        });
+
+        assert!(
+            found,
+            "expected to find at least one Dialogue node in the AST"
+        );
+    }
+
+    /// Companion test: the block-form dialogue (`speaker: { "line1" "line2" }`)
+    /// already had correct spans on individual items via `expr()` → `atom_internal`.
+    /// Verify both items carry non-zero, distinct spans.
+    #[test]
+    fn dialogue_block_content_item_spans_are_nonzero() {
+        use crate::compiler::loader::parse_source;
+        use crate::runtime::value::RuntimeValue;
+
+        let src = r#"
+label start {
+    narrator: {
+        "First line."
+        "Second line."
+    }
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("source should parse");
+
+        let mut item_spans: Vec<(usize, usize)> = Vec::new();
+        crate::parser::ast::walk_ast(&ast, &mut |node| {
+            if let AstContent::Dialogue { content, .. } = node.content() {
+                match content.content() {
+                    AstContent::ExprList(items) | AstContent::Block(items) => {
+                        for item in items {
+                            if let AstContent::Value(RuntimeValue::Str(_)) = item.content() {
+                                let span = item.span();
+                                item_spans.push((span.start, span.end));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        assert_eq!(
+            item_spans.len(),
+            2,
+            "expected two string items in the block dialogue"
+        );
+        for (start, end) in &item_spans {
+            assert!(
+                end > start,
+                "each item span must be non-empty; got {}..{}",
+                start,
+                end,
+            );
+        }
+        // The two strings are on different lines, so their spans must not overlap.
+        let (s0, e0) = item_spans[0];
+        let (s1, _) = item_spans[1];
+        assert!(
+            s1 >= e0,
+            "second item span start ({s1}) must be >= first item span end ({e0})"
         );
     }
 }

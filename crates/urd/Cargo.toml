@@ -15,6 +15,14 @@ petgraph.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 log.workspace = true
+symspell = { workspace = true, optional = true }
+
+[features]
+## Embed frequency dictionaries and enable the SymSpell-based spellcheck
+## analysis pass.  Disabled by default to avoid bloating binaries that do
+## not need spell-checking (CLI runners, the VM, etc.).
+## Enable with: cargo build -p urd --features spellcheck
+spellcheck = ["dep:symspell"]
 
 [lints]
 workspace = true

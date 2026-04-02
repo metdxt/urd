@@ -44,6 +44,10 @@ pub mod menu_structure;
 pub mod overwritten_assign;
 pub mod possible_typo;
 pub mod semantic_suggest;
+#[cfg(feature = "spellcheck")]
+pub mod spellcheck;
+#[cfg(feature = "spellcheck")]
+pub use spellcheck::SpellcheckLanguage;
 pub mod synonyms;
 pub mod top_level;
 pub mod types;
@@ -333,6 +337,19 @@ pub enum AnalysisError {
         span: SimpleSpan,
     },
 
+    /// A word in a dialogue line appears to be misspelled.
+    ///
+    /// Only present when the `spellcheck` feature is enabled.
+    #[cfg(feature = "spellcheck")]
+    Misspelling {
+        /// The misspelled word as written in the source.
+        word: String,
+        /// The best spelling suggestion, if any.
+        suggestion: Option<String>,
+        /// Source span of the dialogue content node containing the misspelled word.
+        span: SimpleSpan,
+    },
+
     // ── Errors (continued) ────────────────────────────────────────────────
     /// A variable was referenced but was never declared in any visible scope.
     UndefinedVariable {
@@ -381,6 +398,8 @@ impl AnalysisError {
             AnalysisError::UnusedVariable { span, .. } => *span,
             AnalysisError::AlwaysDeadBranch { span, .. } => *span,
             AnalysisError::PossibleTypo { span, .. } => *span,
+            #[cfg(feature = "spellcheck")]
+            AnalysisError::Misspelling { span, .. } => *span,
             AnalysisError::InfiniteDialogueLoop { span, .. } => *span,
             AnalysisError::UndefinedVariable { span, .. } => *span,
         }
@@ -388,18 +407,20 @@ impl AnalysisError {
 
     /// Returns `true` if this diagnostic is a warning rather than a hard error.
     pub fn is_warning(&self) -> bool {
-        matches!(
-            self,
-            AnalysisError::UnreachableLabel { .. }
-                | AnalysisError::SingleOptionMenu { .. }
-                | AnalysisError::EmptyDialogue { .. }
-                | AnalysisError::DuplicateMenuDestination { .. }
-                | AnalysisError::OverwrittenAssignment { .. }
-                | AnalysisError::UnusedVariable { .. }
-                | AnalysisError::AlwaysDeadBranch { .. }
-                | AnalysisError::PossibleTypo { .. }
-                | AnalysisError::InfiniteDialogueLoop { .. }
-        )
+        match self {
+            Self::UnreachableLabel { .. }
+            | Self::SingleOptionMenu { .. }
+            | Self::EmptyDialogue { .. }
+            | Self::DuplicateMenuDestination { .. }
+            | Self::OverwrittenAssignment { .. }
+            | Self::UnusedVariable { .. }
+            | Self::AlwaysDeadBranch { .. }
+            | Self::PossibleTypo { .. }
+            | Self::InfiniteDialogueLoop { .. } => true,
+            #[cfg(feature = "spellcheck")]
+            Self::Misspelling { .. } => true,
+            _ => false,
+        }
     }
 
     /// Returns `true` if the span is a zero span (i.e. no real source location).
@@ -564,6 +585,14 @@ impl AnalysisError {
                 )
             }
 
+            #[cfg(feature = "spellcheck")]
+            AnalysisError::Misspelling {
+                word, suggestion, ..
+            } => match suggestion {
+                Some(s) => format!("Spelling: '{word}' may be misspelled — did you mean '{s}'?"),
+                None => format!("Spelling: '{word}' may be misspelled"),
+            },
+
             AnalysisError::InfiniteDialogueLoop { label, .. } => {
                 format!(
                     "Infinite dialogue loop: label '{label}' is part of a cycle with no \
@@ -681,6 +710,14 @@ impl AnalysisError {
             } => {
                 format!("'{written}' — did you mean the {kind} '{suggestion}'?")
             }
+
+            #[cfg(feature = "spellcheck")]
+            AnalysisError::Misspelling {
+                word, suggestion, ..
+            } => match suggestion {
+                Some(s) => format!("'{word}' — did you mean '{s}'?"),
+                None => format!("'{word}' may be misspelled"),
+            },
 
             AnalysisError::InfiniteDialogueLoop { label, .. } => {
                 format!("label '{label}' anchors an infinite loop")

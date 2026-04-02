@@ -11,7 +11,7 @@ name = "urd-lsp"
 path = "src/main.rs"
 
 [dependencies]
-urd.workspace = true
+urd = { workspace = true, features = ["spellcheck"] }
 tower-lsp.workspace = true
 tokio.workspace = true
 dashmap.workspace = true
