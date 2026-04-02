@@ -931,17 +931,52 @@ impl LanguageServer for Backend {
             }
         }
 
-        // Offer "Add 'word' to dictionary" for every spell-check diagnostic.
+        // Offer "Replace with '…'" and "Add '…' to dictionary" for every
+        // spell-check diagnostic.  The replacement action is preferred (shown
+        // first and triggered by the default quick-fix keybinding); the
+        // dictionary action is always available as an alternative.
         #[cfg(feature = "spellcheck")]
         for diag in &params.context.diagnostics {
             if diag.source.as_deref() == Some("urd-spell") {
-                let word = diag
-                    .data
-                    .as_ref()
+                let data = diag.data.as_ref();
+
+                let word = data
                     .and_then(|d| d.get("word"))
                     .and_then(|v| v.as_str())
                     .map(str::to_owned);
 
+                // `suggestion` is `null` in JSON when SymSpell had no candidate.
+                let suggestion = data
+                    .and_then(|d| d.get("suggestion"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+
+                // "Replace with 'X'" — only when a suggestion is available.
+                if let (Some(w), Some(sug)) = (&word, &suggestion) {
+                    let corrected = match_casing(w, sug);
+                    let mut changes = std::collections::HashMap::new();
+                    changes.insert(
+                        uri.clone(),
+                        vec![TextEdit {
+                            range: diag.range,
+                            new_text: corrected.clone(),
+                        }],
+                    );
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Replace with '{corrected}'"),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diag.clone()]),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(changes),
+                            ..Default::default()
+                        }),
+                        is_preferred: Some(true),
+                        ..Default::default()
+                    }));
+                }
+
+                // "Add '…' to dictionary" — always available regardless of
+                // whether a suggestion exists.
                 if let Some(word) = word {
                     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                         title: format!("Add '{word}' to dictionary"),
@@ -1026,6 +1061,50 @@ impl LanguageServer for Backend {
     }
 }
 
+/// Adjust the casing of `suggestion` to mirror the pattern of `original`.
+///
+/// Three patterns are recognised:
+///
+/// - **All-caps** — every alphabetic character in `original` is uppercase
+///   (e.g. `"NASA"`, `"ROCKEET"`): the suggestion is uppercased.
+/// - **Title-case** — `original` starts with an uppercase letter
+///   (e.g. `"Rocket"`, `"Доргу"`): the first character of the suggestion is
+///   uppercased and the rest are left as-is.
+/// - **Lowercase / other** — `original` starts with a lowercase letter or
+///   the pattern is not recognised: `suggestion` is returned unchanged.
+#[cfg(feature = "spellcheck")]
+fn match_casing(original: &str, suggestion: &str) -> String {
+    let mut orig_chars = original.chars();
+    let first = match orig_chars.next() {
+        Some(c) => c,
+        None => return suggestion.to_owned(),
+    };
+
+    // All-caps: every alphabetic character is uppercase.
+    if first.is_uppercase()
+        && original
+            .chars()
+            .all(|c| c.is_uppercase() || !c.is_alphabetic())
+    {
+        return suggestion.to_uppercase();
+    }
+
+    // Title-case: only the first character is uppercase.
+    if first.is_uppercase() {
+        let mut result = String::new();
+        let mut sug = suggestion.chars();
+        if let Some(c) = sug.next() {
+            for upper in c.to_uppercase() {
+                result.push(upper);
+            }
+        }
+        result.push_str(sug.as_str());
+        return result;
+    }
+
+    suggestion.to_owned()
+}
+
 /// Thin wrapper around [`document::byte_offset_to_position`] for use inside
 /// the semantic-token encoder (avoids a public re-export clash).
 fn byte_offset_to_lsp_position(src: &str, byte_offset: usize) -> Position {
@@ -1087,6 +1166,44 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── match_casing ─────────────────────────────────────────────────────────
+
+    #[test]
+    #[cfg(feature = "spellcheck")]
+    fn match_casing_lowercase_unchanged() {
+        assert_eq!(match_casing("rockeet", "rocket"), "rocket");
+    }
+
+    #[test]
+    #[cfg(feature = "spellcheck")]
+    fn match_casing_title_case_capitalises_first() {
+        assert_eq!(match_casing("Rockeet", "rocket"), "Rocket");
+    }
+
+    #[test]
+    #[cfg(feature = "spellcheck")]
+    fn match_casing_all_caps_uppercases_suggestion() {
+        assert_eq!(match_casing("ROCKEET", "rocket"), "ROCKET");
+    }
+
+    #[test]
+    #[cfg(feature = "spellcheck")]
+    fn match_casing_cyrillic_lowercase_unchanged() {
+        assert_eq!(match_casing("доргу", "дорогу"), "дорогу");
+    }
+
+    #[test]
+    #[cfg(feature = "spellcheck")]
+    fn match_casing_cyrillic_title_case() {
+        assert_eq!(match_casing("Доргу", "дорогу"), "Дорогу");
+    }
+
+    #[test]
+    #[cfg(feature = "spellcheck")]
+    fn match_casing_empty_original_returns_suggestion() {
+        assert_eq!(match_casing("", "rocket"), "rocket");
+    }
 
     // -- word_at_offset ----------------------------------------------------
 

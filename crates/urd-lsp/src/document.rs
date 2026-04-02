@@ -223,8 +223,11 @@ impl Document {
             } else {
                 DiagnosticSeverity::ERROR
             };
-            let data = if let urd::analysis::AnalysisError::Misspelling { word, .. } = err {
-                Some(serde_json::json!({ "word": word }))
+            let data = if let urd::analysis::AnalysisError::Misspelling {
+                word, suggestion, ..
+            } = err
+            {
+                Some(serde_json::json!({ "word": word, "suggestion": suggestion }))
             } else {
                 None
             };
