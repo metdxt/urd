@@ -233,7 +233,7 @@ const MIN_DETECT_BYTES: usize = 50;
 /// vocabulary: even an uncommon word like "замшелый" appears thousands of
 /// times in a large corpus.  For narrative game dialogue a value around 100
 /// strikes a good balance.
-const MIN_DICT_ENTRY_COUNT: i64 = 10;
+const MIN_DICT_ENTRY_COUNT: i64 = 5;
 
 // ---------------------------------------------------------------------------
 // Per-language dictionary singletons
