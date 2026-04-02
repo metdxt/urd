@@ -88,6 +88,7 @@ fn disallowed_description(node: &Ast) -> Option<String> {
         | AstContent::EnumDecl { .. }
         | AstContent::StructDecl { .. }
         | AstContent::DecoratorDef { .. }
+        | AstContent::FnDef { .. }
         | AstContent::Import { .. }
         | AstContent::LabeledBlock { .. } => None,
 

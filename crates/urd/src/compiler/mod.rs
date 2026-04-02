@@ -731,6 +731,47 @@ impl CompilerState {
                 Ok(Some(id))
             }
 
+            // ── FnDef ────────────────────────────────────────────────────────
+            //
+            // Named functions are stored as `RuntimeValue::Function` in the
+            // environment via `IrNodeKind::DefineFunction`, making them
+            // callable by name from any expression that follows in scope.
+            //
+            // Anonymous functions in statement position are wrapped in an
+            // `IrNodeKind::Eval` node; `eval_expr` handles the
+            // `AstContent::FnDef { name: None }` arm and produces the
+            // `RuntimeValue::Function` value there.
+            AstContent::FnDef {
+                name, params, body, ..
+            } => {
+                match name {
+                    Some(fn_name) => {
+                        // Named function — strip type annotations; store as DefineFunction.
+                        let param_names: Vec<String> =
+                            params.iter().map(|p| p.name.clone()).collect();
+                        let id = self.graph.push(IrNodeKind::DefineFunction {
+                            name: fn_name.clone(),
+                            params: param_names,
+                            body: *body.clone(),
+                        });
+                        if let Some(n) = next {
+                            self.graph.add_edge(id, n, IrEdge::Next);
+                        }
+                        Ok(Some(id))
+                    }
+                    None => {
+                        // Anonymous function in statement position — emit as Eval.
+                        // `eval_expr` handles `FnDef { name: None }` →
+                        // `RuntimeValue::Function`.
+                        let id = self.graph.push(IrNodeKind::Eval { expr: ast.clone() });
+                        if let Some(n) = next {
+                            self.graph.add_edge(id, n, IrEdge::Next);
+                        }
+                        Ok(Some(id))
+                    }
+                }
+            }
+
             // ── Extern declaration ──────────────────────────────────────────
             AstContent::ExternDeclaration { name, .. } => {
                 let var = extract_name(name)?;

@@ -632,6 +632,7 @@ fn walk_ast_content(content: &AstContent, out: &mut Vec<Symbol>) {
         | AstContent::EnumDecl { .. }
         | AstContent::StructDecl { .. }
         | AstContent::DecoratorDef { .. }
+        | AstContent::FnDef { .. }
         | AstContent::Import { .. }
         | AstContent::LetCall { .. }
         | AstContent::ExternDeclaration { .. } => {}
@@ -1976,6 +1977,18 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
 
         AstContent::DecoratorDef { body, .. } => {
             let kw_len = "decorator".len().min(len);
+            if len > 0 {
+                out.push(SemanticTokenInfo {
+                    start: span.start,
+                    length: kw_len,
+                    token_type: SemanticTokenType::Keyword,
+                });
+            }
+            emit_semantic_tokens(body, out);
+        }
+
+        AstContent::FnDef { body, .. } => {
+            let kw_len = "fn".len().min(len);
             if len > 0 {
                 out.push(SemanticTokenInfo {
                     start: span.start,

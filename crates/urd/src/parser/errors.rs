@@ -52,6 +52,7 @@ fn format_token(token: &Token) -> String {
         // ── Keywords ──────────────────────────────────────────────────────
         Token::Const => "'const'".to_owned(),
         Token::Let => "'let'".to_owned(),
+        Token::Fn => "'fn'".to_owned(),
         Token::Global => "'global'".to_owned(),
         Token::Extern => "'extern'".to_owned(),
         Token::If => "'if'".to_owned(),
@@ -79,6 +80,7 @@ fn format_token(token: &Token) -> String {
 
         // ── Arithmetic / bitwise operators ────────────────────────────────
         Token::Plus => "'+'".to_owned(),
+        Token::Arrow => "'->'".to_owned(),
         Token::Minus => "'-'".to_owned(),
         Token::Star => "'*'".to_owned(),
         Token::Slash => "'/'".to_owned(),

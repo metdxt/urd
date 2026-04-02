@@ -9,8 +9,8 @@ use crate::{
     lexer::Token,
     parser::{
         ast::{
-            Ast, Decorator, DecoratorParam, EventConstraint, ImportSymbol, MatchArm, MatchPattern,
-            StructField,
+            Ast, Decorator, DecoratorParam, EventConstraint, FnParam, ImportSymbol, MatchArm,
+            MatchPattern, StructField, TypeAnnotation,
         },
         expr::{comma_separated_exprs, declaration, expr, extern_declaration, type_annotation},
     },
@@ -274,6 +274,7 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
         .or(enum_decl_parser())
         .or(struct_decl_parser())
         .or(match_parser(block.clone()))
+        .or(fn_def_parser(block.clone()))
         .or(decorator_def_parser(block))
         .or(decorated)
         .or(decoratable)
@@ -354,8 +355,79 @@ fn decorator_params_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
         .delimited_by(just(Token::LeftParen), just(Token::RightParen))
 }
 
+/// Parses `(name: Type, name2, ...)` — the parameter list of a function definition.
+fn fn_params_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
+    'tok,
+    I,
+    Vec<FnParam>,
+    chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
+> + Clone {
+    let param = select! {
+        Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
+    }
+    .labelled("parameter name")
+    .then(type_annotation().or_not())
+    .map(|(name, type_annotation)| FnParam {
+        name,
+        type_annotation,
+    });
+
+    param
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LeftParen), just(Token::RightParen))
+}
+
+/// Parses `-> TypeName` — the return-type annotation on a function definition.
+fn return_type_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
+    'tok,
+    I,
+    TypeAnnotation,
+    chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
+> + Clone {
+    just(Token::Arrow).ignore_then(
+        select! {
+            Token::Null                                     => TypeAnnotation::Null,
+            Token::IdentPath(path) if path == ["int"]   => TypeAnnotation::Int,
+            Token::IdentPath(path) if path == ["float"] => TypeAnnotation::Float,
+            Token::IdentPath(path) if path == ["bool"]  => TypeAnnotation::Bool,
+            Token::IdentPath(path) if path == ["str"]   => TypeAnnotation::Str,
+            Token::IdentPath(path) if path == ["list"]  => TypeAnnotation::List,
+            Token::IdentPath(path) if path == ["map"]   => TypeAnnotation::Map,
+            Token::IdentPath(path) if path == ["dice"]  => TypeAnnotation::Dice,
+            Token::Label                                    => TypeAnnotation::Label,
+            Token::IdentPath(path)                      => TypeAnnotation::Named(path),
+        }
+        .labelled("return type"),
+    )
+}
+
+/// Parses a full function definition:
+/// `fn name(param: Type, ...) -> RetType { body }`
+///
+/// The return type and parameters are both optional.
+fn fn_def_parser<'tok, I: UrdInput<'tok>>(
+    block: impl UrdParser<'tok, I> + 'tok,
+) -> impl UrdParser<'tok, I> {
+    let name = select! {
+        Token::IdentPath(p) if p.len() == 1 => p[0].clone(),
+    }
+    .labelled("function name");
+
+    just(Token::Fn)
+        .ignore_then(name)
+        .then(fn_params_parser())
+        .then(return_type_parser().or_not())
+        .then(block)
+        .map_with(|(((name, params), ret_type), body), extra| {
+            Ast::fn_def(Some(name), params, ret_type, body).with_span(extra.span())
+        })
+        .boxed()
+}
+
 /// Parses a full decorator definition:
-/// `decorator name<event: dialogue>(param: Type, ...) { body }`
+/// `decorator name<event: dialogue|choice>(param: Type, ...) { body }`
 fn decorator_def_parser<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
@@ -676,6 +748,96 @@ pub fn script<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 mod tests {
     use super::*;
     use crate::{parse_test, parser::ast::AstContent};
+
+    #[test]
+    fn test_fn_def_parses() {
+        use crate::parser::ast::{FnParam, TypeAnnotation};
+        let result = parse_test!(
+            code_block(),
+            "{\n  fn add(x: int, y: int) -> int { return x }\n}"
+        );
+        assert!(result.is_ok(), "fn def failed to parse: {:?}", result);
+        if let Ok(ast) = result {
+            if let AstContent::Block(stmts) = ast.content() {
+                assert_eq!(stmts.len(), 1);
+                let stmt = &stmts[0];
+                assert!(
+                    matches!(stmt.content(), AstContent::FnDef { name: Some(n), .. } if n == "add"),
+                    "expected FnDef named 'add', got {:?}",
+                    stmt.content()
+                );
+                if let AstContent::FnDef {
+                    name,
+                    params,
+                    ret_type,
+                    ..
+                } = stmt.content()
+                {
+                    assert_eq!(name.as_deref(), Some("add"));
+                    assert_eq!(
+                        params,
+                        &vec![
+                            FnParam {
+                                name: "x".into(),
+                                type_annotation: Some(TypeAnnotation::Int)
+                            },
+                            FnParam {
+                                name: "y".into(),
+                                type_annotation: Some(TypeAnnotation::Int)
+                            },
+                        ]
+                    );
+                    assert_eq!(*ret_type, Some(TypeAnnotation::Int));
+                }
+            } else {
+                panic!("expected Block, got {:?}", ast.content());
+            }
+        }
+    }
+
+    #[test]
+    fn test_fn_def_no_return_type() {
+        let result = parse_test!(code_block(), "{\n  fn noop() { end! }\n}");
+        assert!(
+            result.is_ok(),
+            "fn def without return type failed: {:?}",
+            result
+        );
+        if let Ok(ast) = result {
+            if let AstContent::Block(stmts) = ast.content() {
+                assert_eq!(stmts.len(), 1);
+                if let AstContent::FnDef { ret_type, .. } = stmts[0].content() {
+                    assert_eq!(*ret_type, None, "expected no return type");
+                } else {
+                    panic!("expected FnDef, got {:?}", stmts[0].content());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_fn_def_no_params() {
+        let result = parse_test!(code_block(), "{\n  fn zero() -> int { return 0 }\n}");
+        assert!(result.is_ok(), "fn def with no params failed: {:?}", result);
+        if let Ok(ast) = result {
+            if let AstContent::Block(stmts) = ast.content() {
+                assert_eq!(stmts.len(), 1);
+                if let AstContent::FnDef {
+                    params, ret_type, ..
+                } = stmts[0].content()
+                {
+                    assert!(params.is_empty(), "expected empty params");
+                    assert_eq!(
+                        *ret_type,
+                        Some(crate::parser::ast::TypeAnnotation::Int),
+                        "expected int return type"
+                    );
+                } else {
+                    panic!("expected FnDef, got {:?}", stmts[0].content());
+                }
+            }
+        }
+    }
 
     #[test]
     fn import_statement_parses() {

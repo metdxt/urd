@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::lexer::strings::{Interpolation, ParsedString, StringPart};
-use crate::parser::ast::{AstContent, Operator, UnaryOperator};
+use crate::parser::ast::{AstContent, DeclKind, Operator, UnaryOperator};
 use crate::runtime::value::RuntimeValue;
 
 use super::VmError;
@@ -84,8 +84,16 @@ pub fn eval_expr(
                     }
                 }
                 _ => {
-                    // Single-segment path or complex expression — plain function call,
-                    // not yet implemented (end!/todo! are handled at compile time).
+                    // Check if this is a call to a named function value in scope.
+                    if let AstContent::Value(RuntimeValue::IdentPath(path)) = func_path.content() {
+                        if let Ok(receiver) =
+                            eval_runtime_value(&RuntimeValue::IdentPath(path.clone()), env)
+                        {
+                            if let RuntimeValue::Function { params, body } = receiver {
+                                return exec_fn_body(&body, &params, &args);
+                            }
+                        }
+                    }
                     let path_str = match func_path.content() {
                         AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
                         _ => "<unknown>".to_string(),
@@ -178,6 +186,17 @@ pub fn eval_expr(
         AstContent::DecoratorDef { .. } => Err(VmError::InvalidExpression(
             "DecoratorDef cannot appear in expression context".to_string(),
         )),
+        AstContent::FnDef { params, body, .. } => {
+            // Both named and anonymous fn expressions produce a Function value.
+            // Named fn *declarations* (statement position) are lowered to
+            // IrNodeKind::DefineFunction by the compiler and never reach
+            // eval_expr.  Anonymous fn expressions reach this arm directly.
+            let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            Ok(RuntimeValue::Function {
+                params: param_names,
+                body: body.clone(),
+            })
+        }
         AstContent::Subscript { object, key } => {
             let obj_val = eval_expr(object, env)?;
             let key_val = eval_expr(key, env)?;
@@ -442,6 +461,9 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
                 format!("[{}]", parts.join(", "))
             }
             RuntimeValue::ScriptDecorator { .. } => "<decorator>".to_string(),
+            RuntimeValue::Function { params, .. } => {
+                format!("fn({})", params.join(", "))
+            }
         },
     }
 }
@@ -719,10 +741,191 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
     }
 }
 
+// ── Pure function execution ───────────────────────────────────────────────────
+
+/// Internal result type for function body execution.
+///
+/// Separates normal last-expression completion from an explicit `return`
+/// statement so that early-exit propagation works correctly across nested
+/// `if`/`block` calls without relying on panics or side-channels.
+enum FnExecResult {
+    /// Normal fall-through — value is the last evaluated expression.
+    Normal(RuntimeValue),
+    /// Explicit `return expr;` was encountered; propagate upward immediately.
+    Return(RuntimeValue),
+}
+
+/// Execute a pure function body with the given arguments.
+///
+/// Creates a **fully isolated** [`Environment`] containing only the bound
+/// parameters — no access to outer-scope variables.  This is the purity
+/// guarantee: function bodies cannot read or write ambient state.
+///
+/// Both explicit `return expr` and the implicit last-expression return are
+/// supported.
+///
+/// # Errors
+///
+/// - [`VmError::TypeError`] on arity mismatch.
+/// - Any [`VmError`] produced by evaluating the body.
+pub(super) fn exec_fn_body(
+    body: &crate::parser::ast::Ast,
+    params: &[String],
+    args: &[RuntimeValue],
+) -> Result<RuntimeValue, VmError> {
+    if params.len() != args.len() {
+        return Err(VmError::TypeError(format!(
+            "function expects {} argument(s), got {}",
+            params.len(),
+            args.len()
+        )));
+    }
+
+    // Isolated environment — pure: no globals, no externs, no outer scope.
+    let mut fn_env = Environment::new();
+    for (name, val) in params.iter().zip(args.iter()) {
+        fn_env.set(name, val.clone(), &DeclKind::Variable)?;
+    }
+
+    match exec_fn_block(body, &mut fn_env)? {
+        FnExecResult::Normal(v) | FnExecResult::Return(v) => Ok(v),
+    }
+}
+
+/// Execute a block AST node in a function context, propagating `return`.
+fn exec_fn_block(
+    block: &crate::parser::ast::Ast,
+    env: &mut Environment,
+) -> Result<FnExecResult, VmError> {
+    match block.content() {
+        AstContent::Block(stmts) => {
+            let mut last = RuntimeValue::Null;
+            for stmt in stmts {
+                match exec_fn_stmt(stmt, env)? {
+                    FnExecResult::Return(v) => return Ok(FnExecResult::Return(v)),
+                    FnExecResult::Normal(v) => last = v,
+                }
+            }
+            Ok(FnExecResult::Normal(last))
+        }
+        // Bare expression body — treat as a single implicit-return expression.
+        _ => eval_expr(block, env).map(FnExecResult::Normal),
+    }
+}
+
+/// Execute a single statement within a function body.
+///
+/// Handles:
+/// - `return` (explicit early exit)
+/// - `let` / `const` declarations
+/// - `if` / `else` branches
+/// - `x = expr` assignments
+/// - nested blocks
+/// - nested `fn` definitions (inner closures stored in scope)
+/// - bare expressions (value becomes the block's last value)
+///
+/// Deliberate **omissions** (invalid in pure function bodies):
+/// `dialogue`, `menu`, `jump`, `import` — side-effectful or
+/// control-flow-across-labels operations that violate purity.  These
+/// fall through to `eval_expr` which returns an appropriate error.
+fn exec_fn_stmt(
+    stmt: &crate::parser::ast::Ast,
+    env: &mut Environment,
+) -> Result<FnExecResult, VmError> {
+    match stmt.content() {
+        // ── Explicit return ───────────────────────────────────────────────
+        AstContent::Return { value } => {
+            let val = match value {
+                Some(expr) => eval_expr(expr, env)?,
+                None => RuntimeValue::Null,
+            };
+            Ok(FnExecResult::Return(val))
+        }
+
+        // ── Nested block ──────────────────────────────────────────────────
+        AstContent::Block(_) => exec_fn_block(stmt, env),
+
+        // ── If / else ────────────────────────────────────────────────────
+        AstContent::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            let cond = eval_expr(condition, env)?;
+            if is_truthy(&cond) {
+                exec_fn_block(then_block, env)
+            } else if let Some(else_branch) = else_block {
+                exec_fn_block(else_branch, env)
+            } else {
+                Ok(FnExecResult::Normal(RuntimeValue::Null))
+            }
+        }
+
+        // ── Variable declaration: let / const ─────────────────────────────
+        AstContent::Declaration {
+            kind,
+            decl_name,
+            decl_defs,
+            ..
+        } => {
+            let name = match decl_name.content() {
+                AstContent::Value(RuntimeValue::IdentPath(p)) if p.len() == 1 => p[0].clone(),
+                _ => {
+                    return Err(VmError::InvalidExpression(
+                        "declaration name must be a simple identifier".into(),
+                    ));
+                }
+            };
+            let val = eval_expr(decl_defs, env)?;
+            env.set(&name, val, kind)?;
+            Ok(FnExecResult::Normal(RuntimeValue::Null))
+        }
+
+        // ── Assignment: x = expr ──────────────────────────────────────────
+        AstContent::BinOp {
+            op: Operator::Assign,
+            left,
+            right,
+        } => {
+            let val = eval_expr(right, env)?;
+            match left.content() {
+                AstContent::Value(RuntimeValue::IdentPath(p)) if p.len() == 1 => {
+                    env.set(&p[0], val, &DeclKind::Variable)?;
+                }
+                _ => {
+                    return Err(VmError::InvalidExpression(
+                        "assignment target in function body must be a simple identifier".into(),
+                    ));
+                }
+            }
+            Ok(FnExecResult::Normal(RuntimeValue::Null))
+        }
+
+        // ── Nested fn definition ──────────────────────────────────────────
+        AstContent::FnDef {
+            name: Some(n),
+            params,
+            body,
+            ..
+        } => {
+            let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            let func = RuntimeValue::Function {
+                params: param_names,
+                body: body.clone(),
+            };
+            env.set(n, func, &DeclKind::Variable)?;
+            Ok(FnExecResult::Normal(RuntimeValue::Null))
+        }
+
+        // ── Bare expression (implicit last-value return) ───────────────────
+        _ => eval_expr(stmt, env).map(FnExecResult::Normal),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{Ast, DeclKind};
+    use crate::parser::ast::{Ast, DeclKind, Operator};
     use crate::runtime::value::RuntimeValue;
     use crate::vm::env::Environment;
 
@@ -893,5 +1096,78 @@ mod tests {
             eval_expr(&call_miss, &env).unwrap(),
             RuntimeValue::Bool(false)
         );
+    }
+
+    #[test]
+    fn test_exec_fn_body_basic() {
+        // fn add(x, y): x + y — implicit last-expression return.
+        let body = Ast::block(vec![Ast::binop(
+            Operator::Plus,
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::IdentPath(vec!["y".into()])),
+        )]);
+        let result = exec_fn_body(
+            &body,
+            &["x".to_string(), "y".to_string()],
+            &[RuntimeValue::Int(3), RuntimeValue::Int(4)],
+        )
+        .unwrap();
+        assert_eq!(result, RuntimeValue::Int(7));
+    }
+
+    #[test]
+    fn test_exec_fn_body_explicit_return() {
+        // fn double(x): return x * 2 — explicit early return.
+        let body = Ast::block(vec![Ast::return_stmt(Some(Ast::binop(
+            Operator::Multiply,
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::Int(2)),
+        )))]);
+        let result = exec_fn_body(&body, &["x".to_string()], &[RuntimeValue::Int(5)]).unwrap();
+        assert_eq!(result, RuntimeValue::Int(10));
+    }
+
+    #[test]
+    fn test_exec_fn_body_wrong_arg_count() {
+        // Arity mismatch must produce a TypeError.
+        let body = Ast::block(vec![]);
+        let err = exec_fn_body(&body, &["x".to_string()], &[]).unwrap_err();
+        assert!(
+            matches!(err, VmError::TypeError(_)),
+            "expected TypeError, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_exec_fn_body_no_outer_scope() {
+        // Pure functions must not see variables from the call site.
+        // `outer` only exists in the host env; exec_fn_body must NOT receive it.
+        let body = Ast::block(vec![Ast::value(RuntimeValue::IdentPath(vec![
+            "outer".into(),
+        ]))]);
+        // exec_fn_body creates a fresh isolated environment — outer is absent.
+        let err = exec_fn_body(&body, &[], &[]).unwrap_err();
+        assert!(
+            matches!(err, VmError::UndefinedVariable(_)),
+            "expected UndefinedVariable, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_function_shows_params() {
+        let val = RuntimeValue::Function {
+            params: vec!["x".to_string(), "y".to_string()],
+            body: Box::new(Ast::block(vec![])),
+        };
+        assert_eq!(format_runtime_value(&val, None), "fn(x, y)");
+    }
+
+    #[test]
+    fn test_format_function_no_params() {
+        let val = RuntimeValue::Function {
+            params: vec![],
+            body: Box::new(Ast::block(vec![])),
+        };
+        assert_eq!(format_runtime_value(&val, None), "fn()");
     }
 }

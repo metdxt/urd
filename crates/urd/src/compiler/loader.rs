@@ -574,6 +574,7 @@ fn patch_prologue_tail(graph: &mut IrGraph, from: NodeIndex, new_next: NodeIndex
                     | IrNodeKind::Eval { .. }
                     | IrNodeKind::DefineEnum { .. }
                     | IrNodeKind::DefineScriptDecorator { .. }
+                    | IrNodeKind::DefineFunction { .. }
                     | IrNodeKind::Nop
             )
         );

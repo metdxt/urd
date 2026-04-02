@@ -382,6 +382,21 @@ pub enum IrNodeKind {
         body: crate::parser::ast::Ast,
     },
 
+    /// Register a user-defined pure function in the VM's environment.
+    ///
+    /// Executing this node stores a `RuntimeValue::Function` into the
+    /// environment under `name`, making it callable via `name(args)`.
+    ///
+    /// Continues via a single [`IrEdge::Next`] edge.
+    DefineFunction {
+        /// The function's name (the environment key).
+        name: String,
+        /// Ordered parameter names (type annotations stripped at compile time).
+        params: Vec<String>,
+        /// The function body, kept as raw `Ast` for inline evaluation on each call.
+        body: crate::parser::ast::Ast,
+    },
+
     /// Validate that a runtime-provided extern value was injected before execution.
     ///
     /// When executed, the VM checks that the host called

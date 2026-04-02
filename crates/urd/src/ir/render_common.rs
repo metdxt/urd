@@ -105,6 +105,7 @@ pub(super) fn rv_summary(rv: &RuntimeValue) -> String {
         RuntimeValue::Label { name, .. } => format!(":{name}"),
         RuntimeValue::Map(m) => format!("⟨map({})⟩", m.len()),
         RuntimeValue::List(items) => format!("⟨list({})⟩", items.len()),
+        RuntimeValue::Function { params, .. } => format!("⟨fn({})⟩", params.len()),
         RuntimeValue::ScriptDecorator { .. } => "⟨decorator⟩".into(),
     }
 }

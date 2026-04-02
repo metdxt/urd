@@ -199,9 +199,30 @@ pub(super) fn dispatch(
         }
 
         // ── Stubs ─────────────────────────────────────────────────────────────
-        "map" => Err(super::VmError::NotImplemented(
-            "list.map() requires function values, not yet supported".to_string(),
-        )),
+        "map" => {
+            require_args("map", args, 1)?;
+            let (params, body) = match &args[0] {
+                RuntimeValue::Function { params, body } => (params.clone(), body.as_ref()),
+                other => {
+                    return Err(super::VmError::TypeError(format!(
+                        "list.map() expects a function argument, got {:?}",
+                        other
+                    )));
+                }
+            };
+            if params.len() != 1 {
+                return Err(super::VmError::TypeError(format!(
+                    "list.map() function must take exactly 1 parameter, got {}",
+                    params.len()
+                )));
+            }
+            let mut result = Vec::with_capacity(list.len());
+            for item in list {
+                let mapped = super::eval::exec_fn_body(body, &params, &[item])?;
+                result.push(mapped);
+            }
+            Ok(RuntimeValue::List(result))
+        }
 
         // ── Unknown ───────────────────────────────────────────────────────────
         other => Err(super::VmError::TypeError(format!(
@@ -516,6 +537,60 @@ mod tests {
         // [1, 2, 3].join(", ") → "1, 2, 3"
         let result = call(vec![int(1), int(2), int(3)], "join", vec![str_val(", ")]).unwrap();
         assert_eq!(result, str_val("1, 2, 3"));
+    }
+
+    // ── map ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_map_doubles_elements() {
+        use crate::parser::ast::{Ast, Operator};
+
+        // Build fn(x) { x * 2 } as a RuntimeValue::Function
+        let body = Box::new(Ast::block(vec![Ast::binop(
+            Operator::Multiply,
+            Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
+            Ast::value(RuntimeValue::Int(2)),
+        )]));
+        let func = RuntimeValue::Function {
+            params: vec!["x".to_string()],
+            body,
+        };
+
+        let list = vec![
+            RuntimeValue::Int(1),
+            RuntimeValue::Int(2),
+            RuntimeValue::Int(3),
+        ];
+        let result = dispatch(list, "map", &[func]).unwrap();
+        assert_eq!(
+            result,
+            RuntimeValue::List(vec![
+                RuntimeValue::Int(2),
+                RuntimeValue::Int(4),
+                RuntimeValue::Int(6),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_map_wrong_arg_type() {
+        let list = vec![RuntimeValue::Int(1)];
+        let err = dispatch(list, "map", &[RuntimeValue::Int(42)]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
+    }
+
+    #[test]
+    fn test_map_wrong_function_arity() {
+        use crate::parser::ast::Ast;
+        // Function that takes 2 params — should error for map
+        let body = Box::new(Ast::block(vec![]));
+        let func = RuntimeValue::Function {
+            params: vec!["x".to_string(), "y".to_string()],
+            body,
+        };
+        let list = vec![RuntimeValue::Int(1)];
+        let err = dispatch(list, "map", &[func]).unwrap_err();
+        assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
     // ── unknown method ───────────────────────────────────────────────────────

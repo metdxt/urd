@@ -191,6 +191,10 @@ fn check_node(
             check_node(body, ctx, span, scope, errors);
         }
 
+        AstContent::FnDef { body, .. } => {
+            check_node(body, ctx, span, scope, errors);
+        }
+
         // Leaf nodes or nodes that cannot contain a Match.
         AstContent::Value(_)
         | AstContent::Jump { .. }

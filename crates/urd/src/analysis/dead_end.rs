@@ -394,6 +394,7 @@ fn termination_of(
         | AstContent::EnumDecl { .. }
         | AstContent::StructDecl { .. }
         | AstContent::DecoratorDef { .. }
+        | AstContent::FnDef { .. }
         | AstContent::Subscript { .. }
         | AstContent::SubscriptAssign { .. }
         | AstContent::Import { .. }

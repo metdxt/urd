@@ -575,6 +575,22 @@ impl Vm {
                     state.cursor = next_of(graph, node_idx);
                 }
 
+                // ── User-defined function registration ───────────────────────
+                //
+                // Stores a `RuntimeValue::Function` in the environment under
+                // `name`, making it callable as `name(args)` from any
+                // expression that follows in the same scope.
+                IrNodeKind::DefineFunction { name, params, body } => {
+                    let func_val = RuntimeValue::Function {
+                        params: params.clone(),
+                        body: Box::new(body.clone()),
+                    };
+                    if let Err(e) = state.env.set(name, func_val, &DeclKind::Variable) {
+                        return VmStep::Error(e);
+                    }
+                    state.cursor = next_of(graph, node_idx);
+                }
+
                 // ── Extern declaration validation ────────────────────────────
                 IrNodeKind::ExternDecl { name, .. } => {
                     // Verify the host runtime injected a value for this extern.

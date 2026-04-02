@@ -265,6 +265,11 @@ fn check_node(
             check_node(body, ctx, span, scope, errors);
         }
 
+        // ── FnDef ─────────────────────────────────────────────────────────
+        AstContent::FnDef { body, .. } => {
+            check_node(body, ctx, span, scope, errors);
+        }
+
         // ── Extern declaration ────────────────────────────────────────────
         AstContent::ExternDeclaration {
             name,
@@ -657,6 +662,7 @@ fn runtime_value_type_name(value: &RuntimeValue) -> String {
         RuntimeValue::Label { name, .. } => format!("label '{name}'"),
         RuntimeValue::Map(_) => "map".to_owned(),
         RuntimeValue::List(_) => "list".to_owned(),
+        RuntimeValue::Function { .. } => "fn".to_owned(),
         RuntimeValue::ScriptDecorator { .. } => "decorator".to_owned(),
     }
 }

@@ -440,6 +440,7 @@ pub fn render_dot(graph: &IrGraph) -> String {
             | IrNodeKind::ExitScope { .. }
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::DefineFunction { .. }
             | IrNodeKind::ExternDecl { .. }
             | IrNodeKind::Dialogue { .. } => {
                 let next_idx = graph
@@ -787,6 +788,12 @@ fn node_attrs(
             format!("def_decorator\n@{name} ({} params)", params.len()),
         ),
 
+        IrNodeKind::DefineFunction { name, params, .. } => (
+            "box",
+            "#E6F5E6",
+            format!("fn {name} ({} params)", params.len()),
+        ),
+
         IrNodeKind::ExternDecl { name } => ("box", "#c8e6c9", format!("extern {name}")),
 
         IrNodeKind::Nop => {
@@ -935,6 +942,7 @@ fn is_preamble_kind(kind: &IrNodeKind) -> bool {
         IrNodeKind::Assign { .. }
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::DefineFunction { .. }
             | IrNodeKind::Eval { .. }
     )
 }
@@ -948,6 +956,7 @@ fn preamble_summary(kind: &IrNodeKind) -> String {
         }
         IrNodeKind::DefineEnum { name, .. } => format!("enum {name}"),
         IrNodeKind::DefineScriptDecorator { name, .. } => format!("decorator {name}"),
+        IrNodeKind::DefineFunction { name, .. } => format!("fn {name}"),
         IrNodeKind::Eval { .. } => "⟨eval⟩".into(),
         _ => "⟨init⟩".into(),
     }
@@ -968,6 +977,7 @@ fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<N
             IrNodeKind::Assign { .. }
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::DefineFunction { .. }
             | IrNodeKind::Nop
             | IrNodeKind::Eval { .. } => {
                 // Follow the Next edge.

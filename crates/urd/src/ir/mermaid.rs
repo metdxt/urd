@@ -152,6 +152,11 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
     .ok();
     writeln!(
         out,
+        "    classDef fnDef fill:#c8e6c9,stroke:#388e3c,color:#000"
+    )
+    .ok();
+    writeln!(
+        out,
         "    classDef endNode fill:#c0392b,stroke:#922b21,color:#fff"
     )
     .ok();
@@ -490,6 +495,7 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             | IrNodeKind::ExitScope { .. }
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::DefineFunction { .. }
             | IrNodeKind::ExternDecl { .. }
             | IrNodeKind::Dialogue { .. } => {
                 let next_raw = graph
@@ -800,6 +806,13 @@ fn mermaid_node_def(
             format!("{n}[\"{text}\"]:::decoratorDef")
         }
 
+        // ── DefineFunction ─────────────────────────────────────────────────
+        IrNodeKind::DefineFunction { name, params, .. } => {
+            let raw = format!("def_fn<br/>fn {name} ({} params)", params.len());
+            let text = escape_mermaid(&raw);
+            format!("{n}[\"{text}\"]:::fnDef")
+        }
+
         // ── ExternDecl ─────────────────────────────────────────────────────
         IrNodeKind::ExternDecl { name } => {
             let text = escape_mermaid(&format!("extern {name}"));
@@ -929,6 +942,7 @@ fn is_preamble_kind(kind: &IrNodeKind) -> bool {
         IrNodeKind::Assign { .. }
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::DefineFunction { .. }
             | IrNodeKind::Eval { .. }
     )
 }
@@ -945,6 +959,7 @@ fn preamble_summary(kind: &IrNodeKind) -> String {
         IrNodeKind::DefineScriptDecorator { name, .. } => {
             format!("decorator {name}")
         }
+        IrNodeKind::DefineFunction { name, .. } => format!("fn {name}"),
         IrNodeKind::Eval { .. } => "⟨eval⟩".to_string(),
         _ => "⟨init⟩".to_string(),
     }
@@ -966,6 +981,7 @@ fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<N
             IrNodeKind::Assign { .. }
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::DefineFunction { .. }
             | IrNodeKind::Nop
             | IrNodeKind::Eval { .. } => {
                 // Follow the Next edge.

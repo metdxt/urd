@@ -204,6 +204,15 @@ pub struct DecoratorParam {
     pub type_annotation: Option<TypeAnnotation>,
 }
 
+/// A single parameter in a [`AstContent::FnDef`] parameter list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnParam {
+    /// The parameter name.
+    pub name: String,
+    /// Optional type annotation (stripped at compile time; documentation only).
+    pub type_annotation: Option<TypeAnnotation>,
+}
+
 /// A single field in a `struct` definition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
@@ -396,6 +405,28 @@ pub enum AstContent {
         scrutinee: Box<Ast>,
         /// Ordered list of match arms
         arms: Vec<MatchArm>,
+    },
+
+    /// A function definition (named or anonymous).
+    ///
+    /// - Named: `fn foo(x: int, y: str) -> int { x + 1 }` — introduces `foo` into scope as a
+    ///   `RuntimeValue::Function`. Compiled to `IrNodeKind::DefineFunction`.
+    /// - Anonymous: `fn(x: int) -> int { x + 1 }` — an expression that evaluates to
+    ///   `RuntimeValue::Function`. Can be passed as a value (e.g. to `list.map`).
+    ///
+    /// # Purity
+    /// Function bodies run in an isolated environment containing only the bound
+    /// parameters — no access to outer scope variables.
+    FnDef {
+        /// `Some(name)` for a named function declaration; `None` for an anonymous
+        /// function expression.
+        name: Option<String>,
+        /// Ordered parameter list.
+        params: Vec<FnParam>,
+        /// Optional return-type annotation (documentation only; not enforced at runtime).
+        ret_type: Option<TypeAnnotation>,
+        /// The function body block.
+        body: Box<Ast>,
     },
 
     /// Definition of a script-level decorator: `decorator name<event: kind>(params) { body }`
@@ -742,6 +773,21 @@ impl Ast {
         })
     }
 
+    /// Construct a [`AstContent::FnDef`] node.
+    pub fn fn_def(
+        name: Option<String>,
+        params: Vec<FnParam>,
+        ret_type: Option<TypeAnnotation>,
+        body: Ast,
+    ) -> Self {
+        Self::new(AstContent::FnDef {
+            name,
+            params,
+            ret_type,
+            body: Box::new(body),
+        })
+    }
+
     /// Create a subscript-read node (`obj[key]`)
     pub fn subscript(object: Ast, key: Ast) -> Self {
         Self::new(AstContent::Subscript {
@@ -842,6 +888,8 @@ impl Ast {
                 }
                 c
             }
+
+            AstContent::FnDef { body, .. } => vec![body.as_ref()],
 
             AstContent::DecoratorDef { body, .. } => vec![body.as_ref()],
 

@@ -325,6 +325,7 @@ fn decode_node(
         | IrNodeKind::Eval { .. }
         | IrNodeKind::DefineEnum { .. }
         | IrNodeKind::DefineScriptDecorator { .. }
+        | IrNodeKind::DefineFunction { .. }
         | IrNodeKind::ExternDecl { .. }
         | IrNodeKind::EnterScope { .. }
         | IrNodeKind::ExitScope { .. } => Action::Skip(next_of(graph, node_idx)),
@@ -482,7 +483,8 @@ fn find_entry_label(graph: &IrGraph) -> String {
                 | IrNodeKind::Assign { .. }
                 | IrNodeKind::Eval { .. }
                 | IrNodeKind::DefineEnum { .. }
-                | IrNodeKind::DefineScriptDecorator { .. },
+                | IrNodeKind::DefineScriptDecorator { .. }
+                | IrNodeKind::DefineFunction { .. },
             ) => {
                 // Follow the Next edge.
                 cursor = graph

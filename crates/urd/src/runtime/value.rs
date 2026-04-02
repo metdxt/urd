@@ -100,6 +100,20 @@ pub enum RuntimeValue {
     /// serialisation time (same constraint as `Map` values).
     List(Vec<RuntimeValue>),
 
+    /// A user-defined pure function value: `fn(x: int) -> int { x + 1 }`.
+    ///
+    /// Functions run in an isolated environment containing only their bound
+    /// parameters — no access to the outer scope (pure).
+    ///
+    /// `Ast` is not serialisable, so this variant is excluded from serde.
+    #[serde(skip)]
+    Function {
+        /// Ordered parameter names (type annotations stripped at compile time).
+        params: Vec<String>,
+        /// The function body, kept as raw `Ast` for inline evaluation on each call.
+        body: Box<crate::parser::ast::Ast>,
+    },
+
     /// A script-defined decorator, stored as a first-class runtime value.
     ///
     /// `Ast` is not serialisable, so this variant is excluded from serde

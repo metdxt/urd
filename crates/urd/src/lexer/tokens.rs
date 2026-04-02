@@ -87,6 +87,10 @@ pub enum Token {
     #[token("+")]
     Plus,
 
+    /// `->` arrow, separates function parameters from the return type.
+    #[token("->")]
+    Arrow,
+
     #[token("-")]
     Minus,
 
@@ -186,6 +190,10 @@ pub enum Token {
     Global,
     #[token("extern")]
     Extern,
+
+    /// The `fn` keyword, introduces a function definition.
+    #[token("fn")]
+    Fn,
 
     #[token("if")]
     If,
