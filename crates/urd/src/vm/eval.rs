@@ -8,6 +8,7 @@ use crate::runtime::value::RuntimeValue;
 
 use super::VmError;
 use super::env::Environment;
+use super::list_methods;
 
 // ─── Expression evaluator ─────────────────────────────────────────────────────
 
@@ -48,23 +49,53 @@ pub fn eval_expr(
             Ok(last)
         }
 
-        // ── Function call — not yet implemented ──────────────────────────────
+        // ── Function / method call ────────────────────────────────────────────
         AstContent::Call { func_path, params } => {
-            // Evaluate arguments so their side-effects (if any) still run.
-            if let AstContent::ExprList(args) = params.content() {
-                for arg in args {
-                    let _ = eval_expr(arg, env)?;
+            // Evaluate all arguments eagerly (preserves side-effects, and we
+            // need the values regardless of dispatch outcome).
+            let args: Vec<RuntimeValue> = match params.content() {
+                AstContent::ExprList(items) => items
+                    .iter()
+                    .map(|a| eval_expr(a, env))
+                    .collect::<Result<_, _>>()?,
+                _ => vec![eval_expr(params, env)?],
+            };
+
+            match func_path.content() {
+                AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() >= 2 => {
+                    // Potentially a method call: receiver = path[0..n-1], method = path[n-1].
+                    let method = path.last().unwrap().as_str();
+                    let receiver_path = path[..path.len() - 1].to_vec();
+
+                    // Resolve the receiver value through the environment.
+                    let receiver =
+                        eval_runtime_value(&RuntimeValue::IdentPath(receiver_path), env)?;
+
+                    match receiver {
+                        RuntimeValue::List(list) => list_methods::dispatch(list, method, &args),
+                        _ => {
+                            let path_str = path.join(".");
+                            log::warn!(
+                                "method call to '{path_str}' on non-list receiver is not yet \
+                                 implemented; returning Null"
+                            );
+                            Ok(RuntimeValue::Null)
+                        }
+                    }
+                }
+                _ => {
+                    // Single-segment path or complex expression — plain function call,
+                    // not yet implemented (end!/todo! are handled at compile time).
+                    let path_str = match func_path.content() {
+                        AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
+                        _ => "<unknown>".to_string(),
+                    };
+                    log::warn!(
+                        "function call to '{path_str}' is not yet implemented; returning Null"
+                    );
+                    Ok(RuntimeValue::Null)
                 }
             }
-            let path_str = match func_path.content() {
-                AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
-                _ => "<unknown>".to_string(),
-            };
-            log::warn!(
-                "function call to '{}' is not yet implemented; returning Null",
-                path_str
-            );
-            Ok(RuntimeValue::Null)
         }
 
         // ── Collection literals — not yet supported ──────────────────────────
@@ -691,7 +722,7 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::Ast;
+    use crate::parser::ast::{Ast, DeclKind};
     use crate::runtime::value::RuntimeValue;
     use crate::vm::env::Environment;
 
@@ -777,5 +808,90 @@ mod tests {
         ]);
         let formatted = format_runtime_value(&list, None);
         assert_eq!(formatted, "[1, true, hello]");
+    }
+
+    #[test]
+    fn test_call_list_len_method() {
+        let mut env = Environment::new();
+        env.set(
+            "xs",
+            RuntimeValue::List(vec![
+                RuntimeValue::Int(10),
+                RuntimeValue::Int(20),
+                RuntimeValue::Int(30),
+            ]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        // xs.len() parses as Call { func_path: IdentPath(["xs","len"]), params: ExprList([]) }
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["xs".into(), "len".into()])),
+            Ast::expr_list(vec![]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(3));
+    }
+
+    #[test]
+    fn test_call_list_append_method() {
+        let mut env = Environment::new();
+        env.set(
+            "xs",
+            RuntimeValue::List(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["xs".into(), "append".into()])),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::Int(3))]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(
+            result,
+            RuntimeValue::List(vec![
+                RuntimeValue::Int(1),
+                RuntimeValue::Int(2),
+                RuntimeValue::Int(3),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_call_list_contains_method() {
+        let mut env = Environment::new();
+        env.set(
+            "xs",
+            RuntimeValue::List(vec![
+                RuntimeValue::Int(1),
+                RuntimeValue::Int(2),
+                RuntimeValue::Int(3),
+            ]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+
+        let call_hit = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec![
+                "xs".into(),
+                "contains".into(),
+            ])),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::Int(2))]),
+        );
+        assert_eq!(
+            eval_expr(&call_hit, &env).unwrap(),
+            RuntimeValue::Bool(true)
+        );
+
+        let call_miss = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec![
+                "xs".into(),
+                "contains".into(),
+            ])),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::Int(99))]),
+        );
+        assert_eq!(
+            eval_expr(&call_miss, &env).unwrap(),
+            RuntimeValue::Bool(false)
+        );
     }
 }

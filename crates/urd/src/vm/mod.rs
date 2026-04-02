@@ -22,6 +22,7 @@
 
 pub mod env;
 pub mod eval;
+mod list_methods;
 pub mod loader;
 pub mod registry;
 
