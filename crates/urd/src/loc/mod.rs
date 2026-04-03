@@ -159,6 +159,7 @@ pub enum EventKind {
 /// ```
 ///
 /// IDs are assembled with all segments joined by `"-"`.
+#[derive(Clone)]
 pub struct IdContext {
     /// Slug derived from the file stem.
     file_slug: String,

@@ -15,7 +15,7 @@
 
 pub mod loader;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use petgraph::stable_graph::NodeIndex;
 use thiserror::Error;
@@ -126,6 +126,7 @@ impl Compiler {
             graph: IrGraph::new(),
             label_placeholders: HashMap::new(),
             id_ctx: Some(IdContext::new(file_stem)),
+            preassign_ids: None,
         };
         state.scan_labels(ast)?;
         let entry = state.compile_top_level(ast)?;
@@ -179,6 +180,14 @@ pub(super) struct CompilerState {
     pub(super) label_placeholders: HashMap<String, NodeIndex>,
     /// ID generation context. `None` when no file stem was provided (inline tests, etc.).
     pub(super) id_ctx: Option<IdContext>,
+    /// Pre-assigned localisation IDs consumed during right-to-left block compilation.
+    ///
+    /// `Some` while inside a "replay" pass (i.e. the forward pre-pass has already
+    /// assigned all IDs in source order and packed them into this queue).  Every
+    /// ID-generating site pops from the front of this queue instead of calling
+    /// [`IdContext`] methods directly, keeping counters stable.  `None` at all
+    /// other times.
+    pub(super) preassign_ids: Option<VecDeque<Option<String>>>,
 }
 
 impl CompilerState {
@@ -187,6 +196,7 @@ impl CompilerState {
             graph: IrGraph::new(),
             label_placeholders: HashMap::new(),
             id_ctx: None,
+            preassign_ids: None,
         }
     }
 
@@ -377,11 +387,34 @@ impl CompilerState {
                     }
                     return Ok(Some(id));
                 }
+
+                // Run forward pre-pass only at the outermost block entry (not for
+                // nested blocks already inside a pre-assigned subtree).
+                let was_outermost = self.id_ctx.is_some() && self.preassign_ids.is_none();
+                if was_outermost {
+                    let mut id_ctx_pre = self.id_ctx.as_ref().unwrap().clone();
+                    let pre_ids = preassign_subtree(ast, &mut id_ctx_pre);
+                    // Advance actual IdContext to post-block state so counters
+                    // are not re-incremented during the compilation pass.
+                    self.id_ctx = Some(id_ctx_pre);
+                    self.preassign_ids = Some(pre_ids);
+                }
+
                 // Compile right-to-left, threading `next` through each statement.
                 let mut continuation = next;
                 for stmt in stmts.iter().rev() {
                     continuation = self.compile_node(stmt, continuation)?;
                 }
+
+                if was_outermost {
+                    // Exit replay mode; queue must be exhausted at this point.
+                    debug_assert!(
+                        self.preassign_ids.as_ref().map_or(true, |q| q.is_empty()),
+                        "preassign_ids should be exhausted after block compilation"
+                    );
+                    self.preassign_ids = None;
+                }
+
                 Ok(continuation)
             }
 
@@ -479,8 +512,12 @@ impl CompilerState {
                 } else {
                     None
                 };
-                if let Some(ctx) = &mut self.id_ctx {
-                    ctx.push_container(EventKind::If, if_override);
+                // Skip push/pop in replay mode — counters were already advanced
+                // by the forward pre-pass.
+                if self.preassign_ids.is_none() {
+                    if let Some(ctx) = &mut self.id_ctx {
+                        ctx.push_container(EventKind::If, if_override);
+                    }
                 }
 
                 let then_entry = self.compile_node(then_block, Some(merge))?.unwrap_or(merge);
@@ -489,8 +526,10 @@ impl CompilerState {
                     None => merge,
                 };
 
-                if let Some(ctx) = &mut self.id_ctx {
-                    ctx.pop_container();
+                if self.preassign_ids.is_none() {
+                    if let Some(ctx) = &mut self.id_ctx {
+                        ctx.pop_container();
+                    }
                 }
 
                 let id = self.graph.push(IrNodeKind::Branch {
@@ -510,14 +549,16 @@ impl CompilerState {
                     .copied()
                     .ok_or_else(|| CompilerError::UnknownLabel(label.clone()))?;
 
-                // Push label scope for ID generation.
+                // Push label scope for ID generation (skip in replay mode).
                 let id_override = if self.id_ctx.is_some() {
                     extract_id_override(ast.decorators())
                 } else {
                     None
                 };
-                if let Some(ctx) = &mut self.id_ctx {
-                    ctx.push_label(label, id_override);
+                if self.preassign_ids.is_none() {
+                    if let Some(ctx) = &mut self.id_ctx {
+                        ctx.push_label(label, id_override);
+                    }
                 }
 
                 // Emit the ExitScope node that runs *after* the block body.
@@ -547,9 +588,11 @@ impl CompilerState {
                 // Register in the graph's public label map.
                 self.graph.labels.insert(label.clone(), placeholder_id);
 
-                // Pop label scope.
-                if let Some(ctx) = &mut self.id_ctx {
-                    ctx.pop_label();
+                // Pop label scope (skip in replay mode).
+                if self.preassign_ids.is_none() {
+                    if let Some(ctx) = &mut self.id_ctx {
+                        ctx.pop_label();
+                    }
                 }
 
                 Ok(Some(placeholder_id))
@@ -610,7 +653,10 @@ impl CompilerState {
                 } else {
                     None
                 };
-                let loc_id = if let Some(ctx) = &mut self.id_ctx {
+                let loc_id = if let Some(q) = &mut self.preassign_ids {
+                    // Replay mode: consume the pre-assigned ID from the queue.
+                    q.pop_front().flatten()
+                } else if let Some(ctx) = &mut self.id_ctx {
                     ctx.next_dialogue_id(id_override)
                 } else {
                     None
@@ -635,7 +681,10 @@ impl CompilerState {
                 } else {
                     None
                 };
-                let choice_loc_id = if let Some(ctx) = &mut self.id_ctx {
+                let choice_loc_id = if let Some(q) = &mut self.preassign_ids {
+                    // Replay mode: consume the pre-assigned choice ID.
+                    q.pop_front().flatten()
+                } else if let Some(ctx) = &mut self.id_ctx {
                     ctx.push_container(EventKind::Menu, menu_override);
                     ctx.current_full_path()
                 } else {
@@ -653,7 +702,10 @@ impl CompilerState {
                             } else {
                                 None
                             };
-                            let opt_loc_id = if let Some(ctx) = &mut self.id_ctx {
+                            let opt_loc_id = if let Some(q) = &mut self.preassign_ids {
+                                // Replay mode: consume the pre-assigned option ID.
+                                q.pop_front().flatten()
+                            } else if let Some(ctx) = &mut self.id_ctx {
                                 ctx.next_option_id(label, opt_override)
                             } else {
                                 None
@@ -677,9 +729,11 @@ impl CompilerState {
                     }
                 }
 
-                // Pop the menu container.
-                if let Some(ctx) = &mut self.id_ctx {
-                    ctx.pop_container();
+                // Pop the menu container (skip in replay mode — already advanced).
+                if self.preassign_ids.is_none() {
+                    if let Some(ctx) = &mut self.id_ctx {
+                        ctx.pop_container();
+                    }
                 }
 
                 let id = self.graph.push(IrNodeKind::Choice {
@@ -701,14 +755,16 @@ impl CompilerState {
                     self.graph.add_edge(merge, n, IrEdge::Next);
                 }
 
-                // Push match_N container.
+                // Push match_N container (skip in replay mode).
                 let match_override = if self.id_ctx.is_some() {
                     extract_id_override(ast.decorators())
                 } else {
                     None
                 };
-                if let Some(ctx) = &mut self.id_ctx {
-                    ctx.push_container(EventKind::Match, match_override);
+                if self.preassign_ids.is_none() {
+                    if let Some(ctx) = &mut self.id_ctx {
+                        ctx.push_container(EventKind::Match, match_override);
+                    }
                 }
 
                 let mut switch_arms: Vec<SwitchArm> = Vec::with_capacity(arms.len());
@@ -730,8 +786,10 @@ impl CompilerState {
                     }
                 }
 
-                if let Some(ctx) = &mut self.id_ctx {
-                    ctx.pop_container();
+                if self.preassign_ids.is_none() {
+                    if let Some(ctx) = &mut self.id_ctx {
+                        ctx.pop_container();
+                    }
                 }
 
                 let id = self.graph.push(IrNodeKind::Switch {
@@ -896,6 +954,97 @@ impl CompilerState {
                 Ok(Some(id))
             }
         }
+    }
+}
+
+// ─── Forward pre-pass ────────────────────────────────────────────────────────
+
+/// Walk `ast` in **source order** (left-to-right), assigning every
+/// localisation ID that `compile_node` would normally assign during its
+/// right-to-left pass, and collect them into a [`VecDeque`].
+///
+/// The queue is built so that **popping from the front** during the
+/// right-to-left compilation pass yields each node's correctly
+/// source-ordered ID.  The key trick is that for a [`AstContent::Block`] we
+/// collect per-statement sub-queues left-to-right, then concatenate them in
+/// **reversed** order — this makes front-pops during right-to-left
+/// compilation consume IDs in the same order the statements appear in source.
+///
+/// Non-block containers (`Menu`, `If`, `Match`, `LabeledBlock`) are handled
+/// symmetrically in both the pre-pass and the compilation pass, so their
+/// sub-queues are appended without reversal.
+fn preassign_subtree(ast: &Ast, id_ctx: &mut IdContext) -> VecDeque<Option<String>> {
+    let override_id = extract_id_override(ast.decorators());
+    match ast.content() {
+        AstContent::Block(stmts) => {
+            // Collect per-statement queues LEFT-TO-RIGHT so counters advance
+            // in source order.
+            let stmt_queues: Vec<VecDeque<_>> =
+                stmts.iter().map(|s| preassign_subtree(s, id_ctx)).collect();
+            // Concatenate REVERSED so that pop_front during right-to-left
+            // compilation gives each node its source-ordered ID.
+            let mut q = VecDeque::new();
+            for sub in stmt_queues.into_iter().rev() {
+                q.extend(sub);
+            }
+            q
+        }
+
+        AstContent::Dialogue { .. } => {
+            let id = id_ctx.next_dialogue_id(override_id);
+            let mut q = VecDeque::new();
+            q.push_back(id);
+            q
+        }
+
+        AstContent::Menu { options } => {
+            let mut q = VecDeque::new();
+            id_ctx.push_container(EventKind::Menu, override_id);
+            q.push_back(id_ctx.current_full_path());
+            for opt_ast in options {
+                if let AstContent::MenuOption { label, content } = opt_ast.content() {
+                    let opt_override = extract_id_override(opt_ast.decorators());
+                    q.push_back(id_ctx.next_option_id(label, opt_override));
+                    q.extend(preassign_subtree(content, id_ctx));
+                }
+            }
+            id_ctx.pop_container();
+            q
+        }
+
+        AstContent::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            id_ctx.push_container(EventKind::If, override_id);
+            let mut q = preassign_subtree(then_block, id_ctx);
+            if let Some(eb) = else_block {
+                q.extend(preassign_subtree(eb, id_ctx));
+            }
+            id_ctx.pop_container();
+            q
+        }
+
+        AstContent::Match { arms, .. } => {
+            id_ctx.push_container(EventKind::Match, override_id);
+            let mut q = VecDeque::new();
+            for arm in arms {
+                q.extend(preassign_subtree(&arm.body, id_ctx));
+            }
+            id_ctx.pop_container();
+            q
+        }
+
+        AstContent::LabeledBlock { label, block, .. } => {
+            id_ctx.push_label(label, override_id);
+            let q = preassign_subtree(block, id_ctx);
+            id_ctx.pop_label();
+            q
+        }
+
+        // All other node kinds produce no localisation IDs.
+        _ => VecDeque::new(),
     }
 }
 
@@ -2016,5 +2165,63 @@ mod tests {
             .collect();
         choice_ids.sort();
         assert_eq!(choice_ids, vec!["file-start-menu_1", "file-start-menu_2"]);
+    }
+
+    /// Two dialogues in the same labeled block must receive loc IDs in **source
+    /// order**: the first speaker in the source file gets `line_1`, the second
+    /// gets `line_2`.  This is a regression test for the bug where the
+    /// right-to-left compilation pass caused IDs to be assigned in reverse.
+    #[test]
+    fn test_two_dialogues_in_same_block_get_source_order_ids() {
+        // narrator appears first in source → must get line_1
+        // elara appears second in source → must get line_2
+        let narrator_lines = Ast::expr_list(vec![str_lit("You step into the Wandering Bazaar.")]);
+        let elara_lines = Ast::expr_list(vec![str_lit("Welcome! I am Elara.")]);
+        let narrator_dlg = Ast::dialogue(Ast::expr_list(vec![str_lit("narrator")]), narrator_lines);
+        let elara_dlg = Ast::dialogue(Ast::expr_list(vec![str_lit("elara")]), elara_lines);
+        let label_body = Ast::block(vec![narrator_dlg, elara_dlg]);
+        let ast = Ast::block(vec![Ast::labeled_block("start".to_string(), label_body)]);
+
+        let graph = Compiler::compile_named(&ast, "merchant").expect("compile failed");
+
+        // Collect (first-string-content, loc_id) for every Dialogue node.
+        let mut id_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for idx in graph.graph.node_indices() {
+            if let IrNodeKind::Dialogue {
+                loc_id: Some(id),
+                lines,
+                ..
+            } = &graph.graph[idx]
+            {
+                // The lines node is an ExprList whose first element is a Str.
+                // We identify which dialogue this is by inspecting the text.
+                let hint = format!("{:?}", lines);
+                id_map.insert(hint, id.clone());
+            }
+        }
+
+        // Find the entry matching each expected loc_id.
+        let narrator_id = id_map
+            .iter()
+            .find(|(hint, _)| hint.contains("Wandering Bazaar"))
+            .map(|(_, id)| id.as_str());
+        let elara_id = id_map
+            .iter()
+            .find(|(hint, _)| hint.contains("Elara"))
+            .map(|(_, id)| id.as_str());
+
+        assert_eq!(
+            narrator_id,
+            Some("merchant-start-line_1"),
+            "narrator (first in source) must be merchant-start-line_1; got: {:?}",
+            id_map,
+        );
+        assert_eq!(
+            elara_id,
+            Some("merchant-start-line_2"),
+            "elara (second in source) must be merchant-start-line_2; got: {:?}",
+            id_map,
+        );
     }
 }

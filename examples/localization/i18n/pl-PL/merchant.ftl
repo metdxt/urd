@@ -29,11 +29,11 @@ merchant-start-menu_1-browse_the_wares = Przejrzyj towary
 merchant-start-menu_1-ask_about_the_bazaar = Zapytaj o bazar
 merchant-start-menu_1-walk_away = Odejdź
 
-merchant-start-line_1 = Witaj! Jestem Elara, handlarka wyjątkowych osobliwości.
-    Czy mogę zainteresować cię dzisiaj miksturą zdrowia?
-
-merchant-start-line_2 = Wchodzisz do Wędrującego Bazaru.
+merchant-start-line_1 = Wchodzisz do Wędrującego Bazaru.
     Płócienne stragany rozciągają się w każdą stronę, oświetlone kołyszącymi się lampionami.
+
+merchant-start-line_2 = Witaj! Jestem Elara, handlarka wyjątkowych osobliwości.
+    Czy mogę zainteresować cię dzisiaj miksturą zdrowia?
 
 ## label: browse
 # @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold), $item (urd: item)
@@ -102,10 +102,8 @@ merchant-buy-if_1-line_2 = Masz tylko { $gold } złotych — brakuje ci do { $pr
 ## label: farewell
 # @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold)
 
-merchant-farewell-if_1-line_1 = Ta mikstura uratowała niejedne życie. Obyś żył długo i szczęśliwie.
-
 # interpolation: $gold
-merchant-farewell-if_1-line_2 =
+merchant-farewell-if_1-line_1 =
     Opuszczasz bazar z miksturą w plecaku i { $gold ->
         [0]     bez ani jednej złotej monety — zdrowie kosztuje
         [one]   jedną złotą monetą w kieszeni
@@ -113,16 +111,18 @@ merchant-farewell-if_1-line_2 =
        *[other] { $gold } złotymi monetami w sakiewce
     }.
 
-merchant-farewell-if_1-line_3 = Wróć, gdy czegoś będziesz potrzebował. Będę tu na ciebie czekać.
+merchant-farewell-if_1-line_2 = Ta mikstura uratowała niejedne życie. Obyś żył długo i szczęśliwie.
 
 # interpolation: $gold
-merchant-farewell-if_1-line_4 =
+merchant-farewell-if_1-line_3 =
     Opuszczasz Wędrujący Bazar z { $gold ->
         [0]     pustą sakiewką
         [one]   jedną złotą monetą
         [few]   { $gold } złotymi monetami
        *[other] { $gold } złotymi monetami
     } i niezaspokojoną ciekawością.
+
+merchant-farewell-if_1-line_4 = Wróć, gdy czegoś będziesz potrzebował. Będę tu na ciebie czekać.
 
 ## label: _end
 # @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold)
