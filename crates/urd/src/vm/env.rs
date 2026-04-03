@@ -104,8 +104,18 @@ impl Environment {
 
     /// Pops the innermost local scope, discarding all variables in it.
     ///
-    /// Always keeps at least one root scope alive.
+    /// # Panics (debug only)
+    /// Panics in debug builds if called when only the root scope is present
+    /// (`scopes.len() == 1`).  This indicates an `EnterScope`/`ExitScope`
+    /// imbalance in the compiler output.
     pub fn pop_scope(&mut self) {
+        debug_assert!(
+            self.scopes.len() > 1 && self.scopes.len() == self.fluent_bindings.len(),
+            "pop_scope invariant violated: scopes.len()={} fluent_bindings.len()={} — \
+             EnterScope/ExitScope are unbalanced or scope/fluent vecs have drifted",
+            self.scopes.len(),
+            self.fluent_bindings.len()
+        );
         if self.scopes.len() > 1 {
             self.scopes.pop();
             self.fluent_bindings.pop();
@@ -431,6 +441,39 @@ mod tests {
     fn fluent_bindings_empty_by_default() {
         let env = Environment::new();
         assert!(env.collect_fluent_bindings().is_empty());
+    }
+
+    /// In debug builds the `debug_assert!` fires, so we expect a panic.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "EnterScope/ExitScope are unbalanced")]
+    fn pop_scope_underflow_panics_in_debug() {
+        let mut env = Environment::new();
+        env.pop_scope(); // debug_assert! must fire
+    }
+
+    /// In release builds the `debug_assert!` is compiled out; the `if` guard
+    /// silently keeps the root scope alive.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn pop_scope_underflow_is_noop_in_release() {
+        let mut env = Environment::new();
+        env.pop_scope(); // guarded by `if` — must be a silent no-op
+        assert_eq!(env.depth(), 1, "root scope must survive underflow attempt");
+    }
+
+    #[test]
+    fn push_and_pop_scope_are_balanced() {
+        let mut env = Environment::new();
+        assert_eq!(env.depth(), 1);
+        env.push_scope();
+        assert_eq!(env.depth(), 2);
+        env.push_scope();
+        assert_eq!(env.depth(), 3);
+        env.pop_scope();
+        assert_eq!(env.depth(), 2);
+        env.pop_scope();
+        assert_eq!(env.depth(), 1);
     }
 }
 
