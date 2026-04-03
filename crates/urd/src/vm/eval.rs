@@ -577,7 +577,11 @@ pub(super) fn eval_unary(op: &UnaryOperator, val: RuntimeValue) -> Result<Runtim
     match op {
         UnaryOperator::Not => Ok(RuntimeValue::Bool(!is_truthy(&val))),
         UnaryOperator::Negate => match val {
-            RuntimeValue::Int(i) => Ok(RuntimeValue::Int(-i)),
+            RuntimeValue::Int(i) => i.checked_neg().map(RuntimeValue::Int).ok_or_else(|| {
+                VmError::TypeError(
+                    "integer overflow: cannot negate the minimum integer value".into(),
+                )
+            }),
             RuntimeValue::Float(f) => Ok(RuntimeValue::Float(-f)),
             other => Err(VmError::TypeError(format!(
                 "cannot negate non-numeric value {:?}",
@@ -645,6 +649,11 @@ pub(super) fn numeric_div(lv: RuntimeValue, rv: RuntimeValue) -> Result<RuntimeV
             if *b == 0 {
                 return Err(VmError::TypeError("integer division by zero".to_string()));
             }
+            if *a == i64::MIN && *b == -1 {
+                return Err(VmError::TypeError(
+                    "integer overflow: i64::MIN / -1 is not representable".into(),
+                ));
+            }
             Ok(RuntimeValue::Int(a / b))
         }
         (RuntimeValue::Float(a), RuntimeValue::Float(b)) => Ok(RuntimeValue::Float(a / b)),
@@ -658,6 +667,16 @@ pub(super) fn numeric_div(lv: RuntimeValue, rv: RuntimeValue) -> Result<RuntimeV
     }
 }
 
+fn int_floor_div(a: i64, b: i64) -> i64 {
+    let d = a / b;
+    let r = a % b;
+    if (r != 0) && ((r < 0) != (b < 0)) {
+        d - 1
+    } else {
+        d
+    }
+}
+
 pub(super) fn numeric_floordiv(
     lv: RuntimeValue,
     rv: RuntimeValue,
@@ -667,7 +686,12 @@ pub(super) fn numeric_floordiv(
             if *b == 0 {
                 return Err(VmError::TypeError("floor division by zero".to_string()));
             }
-            Ok(RuntimeValue::Int(a.div_euclid(*b)))
+            if *a == i64::MIN && *b == -1 {
+                return Err(VmError::TypeError(
+                    "integer overflow: i64::MIN // -1 is not representable".into(),
+                ));
+            }
+            Ok(RuntimeValue::Int(int_floor_div(*a, *b)))
         }
         _ => {
             let a = to_float(&lv)
