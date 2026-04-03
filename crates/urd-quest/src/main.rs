@@ -201,7 +201,7 @@ fn display_value(val: &RuntimeValue) -> String {
 //  Terminal utilities
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Print a separator line.
+// Print a separator line.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Locale discovery & interactive picker
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -861,7 +861,7 @@ fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
         let locales = discover_locales(&i18n_dir);
         match locales.len() {
             0 => None,
-            1 => Some(locales.into_iter().next().expect("len == 1")),
+            1 => locales.into_iter().next(),
             _ => {
                 let idx = if is_tty {
                     pick_locale_tty(&locales)
@@ -872,7 +872,7 @@ fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
                     );
                     0
                 };
-                Some(locales.into_iter().nth(idx).expect("valid index"))
+                locales.into_iter().nth(idx)
             }
         }
     };
