@@ -648,12 +648,12 @@ impl Vm {
                     // If there is no matching frame, the label was entered via a plain
                     // Jump (tail-transfer) — continue at the graph's natural successor.
                     let current_depth = state.env.depth();
-                    let next_id = if state
+                    let frame_matches = state
                         .call_stack
                         .last()
-                        .map_or(false, |f| f.scope_depth == current_depth)
-                    {
-                        state.call_stack.pop().unwrap().return_cursor
+                        .is_some_and(|f| f.scope_depth == current_depth);
+                    let next_id = if frame_matches {
+                        state.call_stack.pop().and_then(|f| f.return_cursor)
                     } else {
                         exit_scope_map.get(label.as_str()).and_then(|v| *v)
                     };
