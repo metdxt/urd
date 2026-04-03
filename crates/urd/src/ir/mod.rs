@@ -282,6 +282,10 @@ pub enum IrNodeKind {
         scope: DeclKind,
         /// The initialiser / right-hand-side expression (kept as raw [`Ast`]).
         expr: Ast,
+        /// Fluent variable name for this binding, if tagged `@fluent`.
+        /// `None` — not fluent-tagged.
+        /// `Some(alias)` — inject into Fluent context under `alias` each time this is assigned.
+        fluent_alias: Option<String>,
     },
 
     /// Evaluate an expression purely for its side effects and discard the result.
@@ -495,6 +499,12 @@ pub enum Event {
         fields: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
         /// Localization key for this dialogue, or `None` if no file context was provided.
         loc_id: Option<String>,
+        /// Fluent variable bindings collected from the active scope when this event fired.
+        /// Includes both `@fluent`-tagged variables and string-interpolation variables.
+        fluent_vars: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
+        /// Pre-localized dialogue text populated when a `Localizer` is attached to the VM.
+        /// `None` if no localizer is present or `loc_id` is `None`.
+        localized_text: Option<String>,
     },
     /// The player is presented with a set of options to choose from.
     Choice {
@@ -504,6 +514,8 @@ pub enum Event {
         fields: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
         /// Localization key for this choice event (the menu as a whole), or `None`.
         loc_id: Option<String>,
+        /// Fluent variable bindings for this choice event's scope context.
+        fluent_vars: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
     },
 }
 
@@ -516,6 +528,10 @@ pub struct ChoiceEvent {
     pub fields: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
     /// Localization key for this option, or `None` if no file context was provided.
     pub loc_id: Option<String>,
+    /// Fluent variable bindings for this option.
+    pub fluent_vars: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
+    /// Pre-localized option label populated when a `Localizer` is attached.
+    pub localized_label: Option<String>,
 }
 
 // ─── VmStep ──────────────────────────────────────────────────────────────────

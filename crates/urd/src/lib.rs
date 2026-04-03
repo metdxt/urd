@@ -79,6 +79,9 @@ pub use vm::registry::DecoratorRegistry;
 /// File loader trait and built-in implementations.
 pub use vm::loader::{FileLoader, FsLoader, MemLoader};
 
+/// Frontend-agnostic localisation trait — implement to plug translated text into the VM.
+pub use loc::Localizer;
+
 /// Compiler error type.
 pub use compiler::CompilerError;
 
@@ -86,7 +89,7 @@ pub use compiler::CompilerError;
 /// engine integration typically needs.
 pub mod prelude {
     pub use super::{
-        ChoiceEvent, CompilerError, DecoratorRegistry, Event, FileLoader, FsLoader, MemLoader,
-        RuntimeValue, Vm, VmError, VmStep,
+        ChoiceEvent, CompilerError, DecoratorRegistry, Event, FileLoader, FsLoader, Localizer,
+        MemLoader, RuntimeValue, Vm, VmError, VmStep,
     };
 }

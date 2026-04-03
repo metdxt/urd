@@ -31,10 +31,29 @@ use petgraph::visit::EdgeRef as _;
 
 use crate::{
     ir::{IrEdge, IrGraph, IrNodeKind, namespace},
+    loc::IdContext,
     parser::ast::{Ast, AstContent},
 };
 
 use super::{CompilerError, CompilerState};
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Extract the file stem from a module path string.
+///
+/// Examples:
+/// - `"cave.urd"`              → `"cave"`
+/// - `"path/to/tavern.urd"`   → `"tavern"`
+/// - `"intro"`                 → `"intro"`
+/// - `""`                      → `None`
+fn file_stem_of(path: &str) -> Option<&str> {
+    if path.is_empty() {
+        return None;
+    }
+    let name = path.rsplit('/').next().unwrap_or(path);
+    // Strip the .urd extension if present; leave other extensions alone.
+    Some(name.strip_suffix(".urd").unwrap_or(name))
+}
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 
@@ -100,7 +119,7 @@ fn compile_flat(
     shared_graph.labels = global_labels;
 
     // Phase 4 — emit IR for every module into the shared graph.
-    emit_all(&all, local_labels, shared_graph)
+    emit_all(&all, local_labels, shared_graph, root_path)
 }
 
 // ─── Phase 1 · Load ───────────────────────────────────────────────────────────
@@ -408,6 +427,7 @@ fn emit_all(
     all: &AllModules,
     local_labels: HashMap<String, HashMap<String, NodeIndex>>,
     shared_graph: IrGraph,
+    root_path: Option<&str>,
 ) -> Result<IrGraph, CompilerError> {
     let mut state = CompilerState::new();
     // Install the pre-populated shared graph (Nop stubs + global label map).
@@ -422,6 +442,9 @@ fn emit_all(
         };
 
         state.label_placeholders = local_labels.get(path).cloned().unwrap_or_default();
+        // Give each imported module its own fresh IdContext so its dialogue and
+        // choice nodes receive stable, file-scoped loc_ids.
+        state.id_ctx = file_stem_of(path).map(IdContext::new);
         let entry = state.compile_top_level(ast)?;
 
         // Track modules that have a preamble (non-label executable nodes).
@@ -441,6 +464,9 @@ fn emit_all(
         CompilerError::InvalidStatement("internal: root AST missing from compilation unit".into())
     })?;
     state.label_placeholders = local_labels.get("").cloned().unwrap_or_default();
+    // Use the root path's file stem for loc_id generation if provided;
+    // fall back gracefully to no id_ctx for unnamed/inline compilations.
+    state.id_ctx = root_path.and_then(file_stem_of).map(IdContext::new);
     let root_entry = state.compile_top_level(root_ast)?;
 
     // Reverse so chain_prologues wires them in deepest-dependency-first order:

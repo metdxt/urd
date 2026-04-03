@@ -393,10 +393,12 @@ impl CompilerState {
                 ..
             } => {
                 let var = extract_name(decl_name)?;
+                let fluent_alias = extract_fluent_alias(ast.decorators(), &var);
                 let id = self.graph.push(IrNodeKind::Assign {
                     var,
                     scope: kind.clone(),
                     expr: *decl_defs.clone(),
+                    fluent_alias,
                 });
                 if let Some(n) = next {
                     self.graph.add_edge(id, n, IrEdge::Next);
@@ -420,6 +422,7 @@ impl CompilerState {
                     var,
                     scope,
                     expr: *right.clone(),
+                    fluent_alias: None,
                 });
                 if let Some(n) = next {
                     self.graph.add_edge(id, n, IrEdge::Next);
@@ -897,6 +900,36 @@ impl CompilerState {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Extracts the Fluent variable alias from a `@fluent` / `@fluent("alias")` decorator.
+///
+/// Returns:
+/// - `None` if no `@fluent` decorator is present.
+/// - `Some(var_name.to_string())` if `@fluent` is bare (no arguments).
+/// - `Some(alias)` if `@fluent("alias")` provides an explicit alias.
+///
+/// The analysis pass has already validated that the argument (if present) is a
+/// plain string literal, so this function does not need to re-validate.
+fn extract_fluent_alias(
+    decorators: &[crate::parser::ast::Decorator],
+    var_name: &str,
+) -> Option<String> {
+    let dec = decorators.iter().find(|d| d.name() == "fluent")?;
+
+    let items = match dec.args().content() {
+        AstContent::ExprList(items) => items,
+        _ => return Some(var_name.to_string()),
+    };
+
+    if items.is_empty() {
+        return Some(var_name.to_string());
+    }
+
+    match items[0].content() {
+        AstContent::Value(RuntimeValue::Str(ps)) => Some(ps.to_string()),
+        _ => Some(var_name.to_string()),
+    }
+}
 
 /// Extract a plain variable name string from a name-bearing AST node.
 ///

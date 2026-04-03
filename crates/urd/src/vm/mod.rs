@@ -35,12 +35,14 @@ pub use eval::{eval_expr, eval_expr_list};
 pub use registry::DecoratorRegistry;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use petgraph::Direction;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use thiserror::Error;
 
+use crate::loc::Localizer;
 use crate::{
     compiler::CompilerError,
     ir::{ChoiceEvent, Event, IrChoiceOption, IrEdge, IrGraph, IrNodeKind, VmStep},
@@ -235,7 +237,6 @@ struct VmState {
 /// Splitting the struct this way lets the borrow checker prove that reading
 /// nodes from the graph never aliases the mutable cursor / environment /
 /// call-stack state — no `unsafe` required.
-#[derive(Debug)]
 pub struct Vm {
     /// The compiled IR graph (immutable during execution).
     graph: IrGraph,
@@ -245,6 +246,19 @@ pub struct Vm {
     exit_scope_map: HashMap<String, Option<NodeIndex>>,
     /// All mutable execution state.
     state: VmState,
+    /// Optional localizer for translating dialogue and choice events.
+    localizer: Option<Arc<dyn Localizer>>,
+}
+
+impl std::fmt::Debug for Vm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vm")
+            .field("graph", &self.graph)
+            .field("exit_scope_map", &self.exit_scope_map)
+            .field("state", &self.state)
+            .field("localizer", &self.localizer.as_ref().map(|_| "<Localizer>"))
+            .finish()
+    }
 }
 
 impl Vm {
@@ -339,7 +353,22 @@ impl Vm {
                 pending_choice: None,
                 registry,
             },
+            localizer: None,
         })
+    }
+
+    /// Attach a [`Localizer`] to the VM.
+    ///
+    /// When a localizer is present, the VM calls
+    /// [`Localizer::localize`] for every [`Event::Dialogue`] and every
+    /// [`ChoiceEvent`] that has a `loc_id`. If the localizer returns
+    /// `Some(text)`, it is stored in `localized_text` / `localized_label`
+    /// on the emitted event.
+    ///
+    /// Call this before the first [`Vm::next`] invocation.
+    pub fn with_localizer(mut self, localizer: Arc<dyn Localizer>) -> Self {
+        self.localizer = Some(localizer);
+        self
     }
 
     /// Advance the VM by one observable step and return the next [`Event`].
@@ -357,6 +386,7 @@ impl Vm {
         let graph = &self.graph;
         let exit_scope_map = &self.exit_scope_map;
         let state = &mut self.state;
+        let localizer = &self.localizer;
 
         loop {
             let node_idx = match state.cursor {
@@ -384,13 +414,21 @@ impl Vm {
                 }
 
                 // ── Variable assignment ──────────────────────────────────────
-                IrNodeKind::Assign { var, scope, expr } => {
+                IrNodeKind::Assign {
+                    var,
+                    scope,
+                    expr,
+                    fluent_alias,
+                } => {
                     let value = match eval_expr(expr, &state.env) {
                         Ok(v) => v,
                         Err(e) => return VmStep::Error(e),
                     };
-                    if let Err(e) = state.env.set(var, value, scope) {
+                    if let Err(e) = state.env.set(var, value.clone(), scope) {
                         return VmStep::Error(e);
+                    }
+                    if let Some(alias) = fluent_alias {
+                        state.env.set_fluent_binding(alias, value);
                     }
                     state.cursor = next_of(graph, node_idx);
                 }
@@ -697,12 +735,20 @@ impl Vm {
                         }
                     }
 
+                    let fluent_vars = collect_fluent_vars(&state.env, lines);
+                    let localized_text = localizer.as_ref().and_then(|loc| {
+                        loc_id
+                            .as_deref()
+                            .and_then(|id| loc.localize(id, &fluent_vars))
+                    });
                     state.cursor = next_of(graph, node_idx);
                     return VmStep::Event(Event::Dialogue {
                         speakers: speakers_vec,
                         lines: lines_vec,
                         fields,
                         loc_id: loc_id.clone(),
+                        fluent_vars,
+                        localized_text,
                     });
                 }
 
@@ -729,6 +775,7 @@ impl Vm {
                                     loc_id,
                                     &state.env,
                                     &state.registry,
+                                    localizer.as_ref(),
                                 );
                             }
                             // Follow the Option(idx) edge to the chosen option's entry.
@@ -767,6 +814,7 @@ impl Vm {
                                 loc_id,
                                 &state.env,
                                 &state.registry,
+                                localizer.as_ref(),
                             );
                         }
                     }
@@ -1085,6 +1133,66 @@ fn apply_decorator(
     Ok(event.into_iter().chain(extra_fields).collect())
 }
 
+// ─── Fluent variable helpers ──────────────────────────────────────────────────
+
+/// Collect Fluent variable bindings from the current environment.
+///
+/// Merges two sources:
+/// 1. `@fluent`-tagged bindings accumulated in the environment's fluent scope.
+/// 2. Variable names referenced via string interpolation in `lines_ast` —
+///    resolved against the environment and added if not already present.
+///
+/// The result is ready to pass to a [`Localizer`].
+fn collect_fluent_vars(
+    env: &Environment,
+    lines_ast: &crate::parser::ast::Ast,
+) -> HashMap<String, RuntimeValue> {
+    let mut vars = env.collect_fluent_bindings();
+
+    // Also pull in variables used in string interpolation.
+    for path in collect_interpolation_paths(lines_ast) {
+        // Use the last path segment as the Fluent key (e.g. "user.name" → "name").
+        // If the path has no dot, the key IS the path.
+        let key = path
+            .rsplit_once('.')
+            .map(|(_, tail)| tail.to_string())
+            .unwrap_or_else(|| path.clone());
+
+        // Only insert if not already set by a @fluent binding.
+        if let std::collections::hash_map::Entry::Vacant(e) = vars.entry(key)
+            && let Ok(value) = env.get(&path)
+        {
+            e.insert(value);
+        }
+    }
+
+    vars
+}
+
+/// Recursively collect all interpolation variable paths from an AST node.
+fn collect_interpolation_paths(ast: &crate::parser::ast::Ast) -> Vec<String> {
+    let mut paths: HashSet<String> = HashSet::new();
+    collect_interpolation_paths_inner(ast, &mut paths);
+    let mut result: Vec<String> = paths.into_iter().collect();
+    result.sort();
+    result
+}
+
+fn collect_interpolation_paths_inner(ast: &crate::parser::ast::Ast, paths: &mut HashSet<String>) {
+    use crate::lexer::strings::StringPart;
+
+    if let AstContent::Value(RuntimeValue::Str(ps)) = ast.content() {
+        for part in ps.parts() {
+            if let StringPart::Interpolation(interp) = part {
+                paths.insert(interp.path.clone());
+            }
+        }
+    }
+    for child in ast.children() {
+        collect_interpolation_paths_inner(child, paths);
+    }
+}
+
 // ─── Choice event builder ─────────────────────────────────────────────────────
 
 /// Builds an [`Event::Choice`] from a set of choice options and decorators.
@@ -1094,6 +1202,7 @@ fn build_choice_event(
     loc_id: &Option<String>,
     env: &Environment,
     registry: &DecoratorRegistry,
+    localizer: Option<&Arc<dyn Localizer>>,
 ) -> VmStep {
     // Evaluate top-level choice decorators.
     let mut fields: HashMap<String, RuntimeValue> = HashMap::new();
@@ -1114,10 +1223,18 @@ fn build_choice_event(
                 Err(e) => return VmStep::Error(e),
             }
         }
+        let option_fluent_vars = env.collect_fluent_bindings();
+        let localized_label = localizer.and_then(|loc| {
+            opt.loc_id
+                .as_deref()
+                .and_then(|id| loc.localize(id, &option_fluent_vars))
+        });
         choice_options.push(ChoiceEvent {
             label: opt.label.clone(),
             fields: opt_fields,
             loc_id: opt.loc_id.clone(),
+            fluent_vars: option_fluent_vars,
+            localized_label,
         });
     }
 
@@ -1125,6 +1242,7 @@ fn build_choice_event(
         options: choice_options,
         fields,
         loc_id: loc_id.clone(),
+        fluent_vars: env.collect_fluent_bindings(),
     })
 }
 

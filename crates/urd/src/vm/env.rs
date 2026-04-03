@@ -24,6 +24,16 @@ use super::{DefaultDiceRoller, DiceRoller, VmError};
 pub struct Environment {
     /// Stack of local scopes; `scopes.last()` is the innermost one.
     scopes: Vec<HashMap<String, RuntimeValue>>,
+    /// Scope-parallel fluent variable bindings.
+    ///
+    /// Each entry corresponds to the same-indexed entry in `scopes`.
+    /// When a variable declared with `@fluent` is assigned, its current value is
+    /// also stored here under the configured fluent key.
+    ///
+    /// On [`Self::push_scope`] a new empty `HashMap` is pushed; on
+    /// [`Self::pop_scope`] the innermost map is popped, making `@fluent`
+    /// bindings automatically scope-bound.
+    fluent_bindings: Vec<std::collections::HashMap<String, crate::runtime::value::RuntimeValue>>,
     /// Registered enum types — maps enum name → ordered variant name list.
     enums: HashMap<String, Vec<String>>,
     /// Registered struct types — maps struct name → ordered field name list.
@@ -57,6 +67,7 @@ impl fmt::Debug for Environment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Environment")
             .field("scopes", &self.scopes)
+            .field("fluent_bindings", &self.fluent_bindings)
             .field("enums", &self.enums)
             .field("structs", &self.structs)
             .field("globals", &self.globals)
@@ -73,6 +84,7 @@ impl Environment {
     pub fn new() -> Self {
         Environment {
             scopes: vec![HashMap::new()],
+            fluent_bindings: vec![std::collections::HashMap::new()],
             externs: HashMap::new(),
             roller: Some(Arc::new(DefaultDiceRoller)),
             ..Default::default()
@@ -87,6 +99,7 @@ impl Environment {
     /// Pushes a fresh local scope onto the scope stack.
     pub fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.fluent_bindings.push(std::collections::HashMap::new());
     }
 
     /// Pops the innermost local scope, discarding all variables in it.
@@ -95,7 +108,41 @@ impl Environment {
     pub fn pop_scope(&mut self) {
         if self.scopes.len() > 1 {
             self.scopes.pop();
+            self.fluent_bindings.pop();
         }
+    }
+
+    /// Registers a Fluent variable binding in the innermost scope.
+    ///
+    /// Called by the VM when processing an `Assign` node whose IR has
+    /// `fluent_alias = Some(key)`. The binding is automatically discarded
+    /// when the scope is popped.
+    ///
+    /// Silently overwrites any previous binding with the same `key` in the
+    /// innermost scope.
+    pub fn set_fluent_binding(&mut self, key: &str, value: crate::runtime::value::RuntimeValue) {
+        if let Some(scope) = self.fluent_bindings.last_mut() {
+            scope.insert(key.to_string(), value);
+        }
+    }
+
+    /// Collects all active Fluent variable bindings from every scope.
+    ///
+    /// Scopes are iterated from outermost to innermost, so inner-scope bindings
+    /// overwrite outer-scope ones for the same key — exactly mirroring the
+    /// variable lookup behaviour of [`Self::get`].
+    ///
+    /// Returns a flat `HashMap` ready to be passed to a [`crate::loc::Localizer`].
+    pub fn collect_fluent_bindings(
+        &self,
+    ) -> std::collections::HashMap<String, crate::runtime::value::RuntimeValue> {
+        let mut result = std::collections::HashMap::new();
+        for scope in &self.fluent_bindings {
+            for (k, v) in scope {
+                result.insert(k.clone(), v.clone());
+            }
+        }
+        result
     }
 
     /// Declares or assigns `name` according to `kind`.
@@ -335,6 +382,55 @@ mod tests {
         } else {
             panic!("expected Str");
         }
+    }
+
+    #[test]
+    fn fluent_binding_set_and_collect() {
+        let mut env = Environment::new();
+        env.set_fluent_binding("gold", RuntimeValue::Int(42));
+        let bindings = env.collect_fluent_bindings();
+        assert_eq!(bindings.get("gold"), Some(&RuntimeValue::Int(42)));
+    }
+
+    #[test]
+    fn fluent_binding_is_scope_bound() {
+        let mut env = Environment::new();
+        env.set_fluent_binding("outer", RuntimeValue::Int(1));
+        env.push_scope();
+        env.set_fluent_binding("inner", RuntimeValue::Int(2));
+        {
+            let b = env.collect_fluent_bindings();
+            assert_eq!(b.get("outer"), Some(&RuntimeValue::Int(1)));
+            assert_eq!(b.get("inner"), Some(&RuntimeValue::Int(2)));
+        }
+        env.pop_scope();
+        let b = env.collect_fluent_bindings();
+        assert_eq!(b.get("outer"), Some(&RuntimeValue::Int(1)));
+        assert_eq!(
+            b.get("inner"),
+            None,
+            "inner-scope fluent binding should be gone after pop"
+        );
+    }
+
+    #[test]
+    fn fluent_binding_inner_shadows_outer() {
+        let mut env = Environment::new();
+        env.set_fluent_binding("score", RuntimeValue::Int(10));
+        env.push_scope();
+        env.set_fluent_binding("score", RuntimeValue::Int(99));
+        let b = env.collect_fluent_bindings();
+        assert_eq!(
+            b.get("score"),
+            Some(&RuntimeValue::Int(99)),
+            "inner scope should shadow outer"
+        );
+    }
+
+    #[test]
+    fn fluent_bindings_empty_by_default() {
+        let env = Environment::new();
+        assert!(env.collect_fluent_bindings().is_empty());
     }
 }
 

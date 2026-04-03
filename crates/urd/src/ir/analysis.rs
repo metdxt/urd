@@ -364,12 +364,14 @@ mod tests {
             var: "x".into(),
             scope: DeclKind::Variable,
             expr: dummy_expr,
+            fluent_alias: None,
         });
         let n1 = g.push(IrNodeKind::End);
         let n2 = g.push(IrNodeKind::Assign {
             var: "y".into(),
             scope: DeclKind::Variable,
             expr: dummy_var,
+            fluent_alias: None,
         });
         g.add_edge(n0, n1, IrEdge::Next);
         // n2 has no incoming edges and is therefore unreachable from entry.

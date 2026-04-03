@@ -6,8 +6,11 @@
 //! - **`export`** — compiles a `.urd` file and exports its IR graph as
 //!   Graphviz DOT, Mermaid flowchart, or Mermaid sequence diagram.
 
+mod localizer;
+
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::{
@@ -26,6 +29,8 @@ use urd::parser::errors::render_parse_errors_stderr;
 use urd::runtime::value::RuntimeValue;
 use urd::vm::loader::FsLoader;
 use urd::vm::{DecoratorRegistry, Vm};
+
+use localizer::FsLocalizer;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  CLI
@@ -60,6 +65,18 @@ enum Command {
         /// Write output to a file instead of stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+
+    /// Generate a Fluent `.ftl` stub file from a compiled Urd script.
+    #[command(name = "gen-l10n")]
+    GenL10n {
+        /// Path to the `.urd` script to process.
+        script: std::path::PathBuf,
+
+        /// Output directory where `.ftl` file(s) are written.
+        /// Defaults to `i18n/en-US/` relative to the script's parent directory.
+        #[arg(short, long, value_name = "DIR")]
+        output: Option<std::path::PathBuf>,
     },
 }
 
@@ -212,9 +229,13 @@ fn wait_for_enter(stdin: &mut impl BufRead, is_tty: bool) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Display a `Dialogue` event and wait for Enter (only when running on a TTY).
+///
+/// If `localized_text` is `Some`, it is shown as a single pre-formatted block;
+/// otherwise each entry in `lines` is rendered individually via [`display_value`].
 fn handle_dialogue(
     speakers: &[RuntimeValue],
     lines: &[RuntimeValue],
+    localized_text: Option<&str>,
     stdin: &mut impl BufRead,
     is_tty: bool,
 ) {
@@ -224,8 +245,14 @@ fn handle_dialogue(
         println!("  {}{}{RESET}:", ch.color, ch.name);
     }
 
-    for line_val in lines {
-        println!("    {}", display_value(line_val));
+    if let Some(text) = localized_text {
+        // Show localized text as a single block.
+        println!("    {}", text);
+    } else {
+        // Fall back to raw lines.
+        for line_val in lines {
+            println!("    {}", display_value(line_val));
+        }
     }
 
     wait_for_enter(stdin, is_tty);
@@ -238,6 +265,8 @@ fn handle_dialogue(
 /// Render all options with `selected` highlighted using a bold-yellow arrow.
 /// Each line is cleared before printing to prevent stale text from bleeding
 /// through when option labels differ in length across redraws.
+///
+/// Shows `localized_label` when available, falling back to `label`.
 fn render_menu(options: &[urd::ir::ChoiceEvent], selected: usize) {
     let mut out = std::io::stdout();
     for (i, opt) in options.iter().enumerate() {
@@ -249,10 +278,11 @@ fn render_menu(options: &[urd::ir::ChoiceEvent], selected: usize) {
             terminal::Clear(ClearType::CurrentLine)
         )
         .ok();
+        let display = opt.localized_label.as_deref().unwrap_or(&opt.label);
         if i == selected {
-            println!("  \x1b[1;93m▶  {}\x1b[0m", opt.label);
+            println!("  \x1b[1;93m▶  {}\x1b[0m", display);
         } else {
-            println!("   \x1b[2m  {}\x1b[0m", opt.label);
+            println!("   \x1b[2m  {}\x1b[0m", display);
         }
     }
 }
@@ -332,10 +362,11 @@ fn handle_choice_tty(options: &[urd::ir::ChoiceEvent]) -> usize {
             terminal::Clear(ClearType::CurrentLine)
         )
         .ok();
+        let display = opt.localized_label.as_deref().unwrap_or(&opt.label);
         if i == selected {
-            println!("  \x1b[92m✓  {}\x1b[0m", opt.label);
+            println!("  \x1b[92m✓  {}\x1b[0m", display);
         } else {
-            println!("     \x1b[2m{}\x1b[0m", opt.label);
+            println!("     \x1b[2m{}\x1b[0m", display);
         }
     }
 
@@ -353,7 +384,8 @@ fn handle_choice_pipe(options: &[urd::ir::ChoiceEvent], stdin: &mut impl BufRead
     println!();
     println!("  What do you do?");
     for (i, opt) in options.iter().enumerate() {
-        println!("  {}. {}", i + 1, opt.label);
+        let display = opt.localized_label.as_deref().unwrap_or(&opt.label);
+        println!("  {}. {}", i + 1, display);
     }
 
     let input = match read_line(stdin) {
@@ -625,11 +657,31 @@ fn cmd_run(script_path: &Path) {
         }
     };
 
-    let mut vm = match build_vm(graph) {
+    let vm = match build_vm(graph) {
         Ok(vm) => vm,
         Err(msg) => {
             eprintln!("\n\x1b[91mError:\x1b[0m {}\n", msg);
             std::process::exit(1);
+        }
+    };
+
+    // Optionally load a localizer if an i18n directory exists next to the script.
+    let mut vm = {
+        let locale = "en-US";
+        let i18n_dir = script_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("i18n");
+
+        match FsLocalizer::load(&i18n_dir, locale) {
+            Ok(localizer) => {
+                log::info!("Loaded locale '{}' from '{}'", locale, i18n_dir.display());
+                vm.with_localizer(Arc::new(localizer))
+            }
+            Err(e) => {
+                log::debug!("No localizer loaded: {}", e);
+                vm
+            }
         }
     };
 
@@ -652,9 +704,18 @@ fn cmd_run(script_path: &Path) {
                 std::process::exit(1);
             }
             VmStep::Event(Event::Dialogue {
-                speakers, lines, ..
+                speakers,
+                lines,
+                localized_text,
+                ..
             }) => {
-                handle_dialogue(&speakers, &lines, &mut stdin_lock, is_tty);
+                handle_dialogue(
+                    &speakers,
+                    &lines,
+                    localized_text.as_deref(),
+                    &mut stdin_lock,
+                    is_tty,
+                );
                 choice = None;
             }
             VmStep::Event(Event::Choice { options, .. }) => {
@@ -667,6 +728,66 @@ fn cmd_run(script_path: &Path) {
             }
         }
     }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Subcommand: gen-l10n
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Compile `script_path` and write a Fluent `.ftl` stub to `output_dir`.
+///
+/// The output file is named `<script_stem>.ftl` and placed under
+/// `<output_dir>/` (defaults to `i18n/en-US/` next to the script).
+fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) {
+    let graph = match build_graph(script_path) {
+        Ok(g) => g,
+        Err(msg) => {
+            eprintln!("\x1b[91mError:\x1b[0m {}", msg);
+            std::process::exit(1);
+        }
+    };
+
+    // Determine the file slug from the script name.
+    let file_slug = script_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("script");
+
+    let ftl_content = urd::loc::ftl::generate_ftl(&graph, file_slug);
+
+    // Determine output path.
+    let out_dir = output_dir.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        let parent = script_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        parent.join("i18n").join("en-US")
+    });
+
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        eprintln!(
+            "\x1b[91mError:\x1b[0m could not create '{}': {}",
+            out_dir.display(),
+            e
+        );
+        std::process::exit(1);
+    }
+
+    let out_file = out_dir.join(format!("{}.ftl", file_slug));
+
+    if let Err(e) = std::fs::write(&out_file, &ftl_content) {
+        eprintln!(
+            "\x1b[91mError:\x1b[0m could not write '{}': {}",
+            out_file.display(),
+            e
+        );
+        std::process::exit(1);
+    }
+
+    eprintln!(
+        "Generated Fluent file: \x1b[32m{}\x1b[0m",
+        out_file.display()
+    );
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -736,6 +857,9 @@ fn main() {
             output,
         }) => {
             cmd_export(&script, format, output.as_deref());
+        }
+        Some(Command::GenL10n { script, output }) => {
+            cmd_gen_l10n(&script, output.as_deref());
         }
     }
 }

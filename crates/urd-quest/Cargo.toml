@@ -17,6 +17,8 @@ crossterm.workspace = true
 env_logger.workspace = true
 log.workspace = true
 chumsky.workspace = true
+fluent-bundle.workspace = true
+unic-langid.workspace = true
 
 [lints]
 workspace = true

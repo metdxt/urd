@@ -12,6 +12,11 @@
 //! - [`extract_id_override`] – reads a `@id("…")` decorator from a node.
 //! - [`EventKind`] – classifies AST nodes that introduce counters or scopes.
 //! - [`IdContext`] – stateful cursor that vends the next ID during an AST walk.
+//! - [`Localizer`] – frontend-agnostic localisation provider trait.
+
+pub mod ftl;
+pub mod localizer;
+pub use localizer::Localizer;
 
 use std::collections::HashMap;
 

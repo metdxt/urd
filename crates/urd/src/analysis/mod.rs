@@ -39,6 +39,7 @@ pub mod dead_end;
 pub mod duplicate_menu_dest;
 pub mod empty_dialogue;
 pub mod exhaustiveness;
+pub mod fluent_decorator;
 pub mod id_decorator;
 pub mod labels;
 pub mod loop_detection;
@@ -407,6 +408,27 @@ pub enum AnalysisError {
         /// Source span of the offending node.
         span: SimpleSpan,
     },
+
+    // ── @fluent decorator validation ───────────────────────────────────────
+    /// `@fluent` decorator was used incorrectly on a variable declaration.
+    ///
+    /// This is a hard error — the compiler will reject the file.
+    InvalidFluentDecorator {
+        /// Human-readable explanation of what is wrong.
+        reason: String,
+        /// Source span of the offending decorator or node.
+        span: SimpleSpan,
+    },
+
+    /// `@fluent` was applied to a node type that is not a variable declaration.
+    ///
+    /// This is a warning — the decorator has no effect but is not necessarily wrong.
+    FluentOnUnsupportedNode {
+        /// A short description of the node kind (e.g. `"Dialogue"`).
+        node_kind: String,
+        /// Source span of the offending node.
+        span: SimpleSpan,
+    },
 }
 
 impl AnalysisError {
@@ -440,6 +462,8 @@ impl AnalysisError {
             AnalysisError::InvalidIdDecorator { span, .. } => *span,
             AnalysisError::DuplicateId { second_span, .. } => *second_span,
             AnalysisError::IdOnUnsupportedNode { span, .. } => *span,
+            AnalysisError::InvalidFluentDecorator { span, .. } => *span,
+            AnalysisError::FluentOnUnsupportedNode { span, .. } => *span,
         }
     }
 
@@ -456,7 +480,8 @@ impl AnalysisError {
             | Self::PossibleTypo { .. }
             | Self::InfiniteDialogueLoop { .. }
             | Self::UndefinedLabel { .. }
-            | Self::IdOnUnsupportedNode { .. } => true,
+            | Self::IdOnUnsupportedNode { .. }
+            | Self::FluentOnUnsupportedNode { .. } => true,
             #[cfg(feature = "spellcheck")]
             Self::Misspelling { .. } => true,
             _ => false,
@@ -660,6 +685,14 @@ impl AnalysisError {
             AnalysisError::IdOnUnsupportedNode { node_kind, .. } => {
                 format!("@id has no effect on `{node_kind}` nodes")
             }
+
+            AnalysisError::InvalidFluentDecorator { reason, .. } => {
+                format!("invalid @fluent decorator: {reason}")
+            }
+
+            AnalysisError::FluentOnUnsupportedNode { node_kind, .. } => {
+                format!("@fluent has no effect on `{node_kind}` nodes")
+            }
         }
     }
 
@@ -793,6 +826,14 @@ impl AnalysisError {
             AnalysisError::IdOnUnsupportedNode { node_kind, .. } => {
                 format!("@id has no effect on `{node_kind}` nodes")
             }
+
+            AnalysisError::InvalidFluentDecorator { reason, .. } => {
+                format!("invalid @fluent: {reason}")
+            }
+
+            AnalysisError::FluentOnUnsupportedNode { node_kind, .. } => {
+                format!("@fluent has no effect on `{node_kind}` nodes")
+            }
         }
     }
 }
@@ -914,6 +955,7 @@ fn run_passes_with_semantic(
     let mut errors: Vec<AnalysisError> = Vec::new();
 
     // ── Errors ────────────────────────────────────────────────────────────
+    errors.extend(fluent_decorator::check(ast));
     errors.extend(id_decorator::check(ast));
     errors.extend(top_level::check(ast));
     errors.extend(exhaustiveness::check(ast, ctx));

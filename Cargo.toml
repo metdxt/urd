@@ -50,6 +50,10 @@ tokio = { version = "1", features = ["full"] }
 dashmap = "6"
 ropey = "1.6"
 
+# ── Localisation ──────────────────────────────────────────────────────────────
+fluent-bundle = "0.15"
+unic-langid = { version = "0.9", features = ["macros"] }
+
 # ── CLI (optional) ────────────────────────────────────────────────────────────
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
