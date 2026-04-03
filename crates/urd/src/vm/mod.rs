@@ -522,7 +522,24 @@ impl Vm {
 
                 // ── Unconditional jump ───────────────────────────────────────
                 IrNodeKind::Jump => {
-                    // Jump does NOT push a call frame — it is a tail transfer.
+                    // Tail-transfer semantics: discard any label scopes accumulated since
+                    // the last LetCall boundary (or the script root if there is none).
+                    // Each LetCall frame records `scope_depth` = the depth _before_ its
+                    // own push_scope, so the "live base" for this context is
+                    // `scope_depth + 1`.  Without any subroutine on the stack, the base is
+                    // the root scope at depth 1.
+                    //
+                    // NOTE: a LetCall frame that is orphaned by a jump-without-return inside
+                    // the subroutine body is a known limitation: the frame remains on the
+                    // call_stack until the next ExitScope or Return that depth-matches it.
+                    let target_depth = state
+                        .call_stack
+                        .last()
+                        .map(|f| f.scope_depth + 1)
+                        .unwrap_or(1);
+                    while state.env.depth() > target_depth {
+                        state.env.pop_scope();
+                    }
                     let target = graph
                         .graph
                         .edges_directed(node_idx, Direction::Outgoing)
@@ -613,31 +630,32 @@ impl Vm {
                 }
 
                 // ── Enter labeled-block scope ────────────────────────────────
-                IrNodeKind::EnterScope { label } => {
-                    // O(1) lookup via pre-built map instead of O(n) scan.
-                    let return_cursor = exit_scope_map.get(label.as_str()).and_then(|v| *v);
-
+                IrNodeKind::EnterScope { .. } => {
+                    // Only manage scope; CallFrame is pushed exclusively by LetCall for
+                    // subroutine calls.  Plain Jump transfers never push a frame — they are
+                    // tail-call semantics.
                     state.env.push_scope();
-                    state.call_stack.push(CallFrame {
-                        return_cursor,
-                        scope_depth: state.env.depth() - 1,
-                        assign_to_var: None,
-                    });
                     state.cursor = next_of(graph, node_idx);
                 }
 
                 // ── Exit labeled-block scope ─────────────────────────────────
-                IrNodeKind::ExitScope { .. } => {
+                IrNodeKind::ExitScope { label } => {
                     state.env.pop_scope();
-                    // Pop the matching call frame (pushed by either EnterScope
-                    // on normal fall-through, or LetCall on a subroutine call).
-                    // Use the frame's `return_cursor` rather than the ExitScope's
-                    // Next edge so that LetCall fall-throughs land at the
-                    // call-site continuation (LetCall's Ret edge), not back at
-                    // the LetCall node itself.
-                    let next_id = match state.call_stack.pop() {
-                        Some(frame) => frame.return_cursor,
-                        None => None,
+                    // After pop_scope(), current depth equals the depth at which LetCall
+                    // pushed its scope.  If the top frame's scope_depth matches, this
+                    // ExitScope is the fall-through exit of a subroutine; pop the frame
+                    // and return to the call-site continuation.
+                    // If there is no matching frame, the label was entered via a plain
+                    // Jump (tail-transfer) — continue at the graph's natural successor.
+                    let current_depth = state.env.depth();
+                    let next_id = if state
+                        .call_stack
+                        .last()
+                        .map_or(false, |f| f.scope_depth == current_depth)
+                    {
+                        state.call_stack.pop().unwrap().return_cursor
+                    } else {
+                        exit_scope_map.get(label.as_str()).and_then(|v| *v)
                     };
                     state.cursor = next_id;
                 }
@@ -2846,6 +2864,12 @@ label beta {
              Plain `jump` must not accumulate frames on the call stack. \
              Fix: only push a CallFrame for LetCall (subroutine), not for Jump.",
             vm.state.call_stack.len()
+        );
+        assert!(
+            vm.state.env.depth() <= 2,
+            "BUG: jump loop grew scope stack to depth {} after 20 steps. \
+             Plain `jump` must not accumulate scopes (base 1 + current label = 2 max).",
+            vm.state.env.depth()
         );
     }
 }
