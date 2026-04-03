@@ -1168,22 +1168,14 @@ fn collect_fluent_vars(
     let mut vars = env.collect_fluent_bindings();
 
     for (path, format) in collect_interpolations(lines_ast) {
-        // Use the last path segment as the Fluent key (e.g. "user.name" → "name").
-        // If the path has no dot, the key IS the path.
-        let key = path
-            .rsplit_once('.')
-            .map(|(_, tail)| tail.to_string())
-            .unwrap_or_else(|| path.clone());
+        // Full dotted path → Fluent key: dots become hyphens (e.g. "inv.gold" → "inv-gold").
+        // Single-segment paths are unchanged.
+        let key = path.replace('.', "-");
 
-        // Interpolation paths always reflect the current runtime value.
-        // This ensures that a mutable variable mutated after its @fluent
-        // declaration (e.g. `@fluent global gold = 50` followed by
-        // `gold = gold - price`) is seen with its CURRENT value in the
-        // Fluent context, not the stale initial value stored in the
-        // fluent_bindings cache.  The @fluent alias entry (a DIFFERENT key)
-        // is left untouched, so `$item` (alias) and `$item_name` (interpolation)
-        // can coexist correctly.
-        if let Ok(raw_val) = env.get(&path) {
+        // Use the shared resolution helper so that namespace paths
+        // ("inv.gold" → env key "inv::gold") are handled identically to
+        // the inline string evaluator, not just via flat env.get().
+        if let Ok(raw_val) = eval::resolve_interp_path(&path, env) {
             let value = if let Some(ref fmt) = format {
                 // Pre-format using the same logic as the inline string evaluator
                 // so Fluent receives the already-formatted string (e.g. "30.00")
@@ -1315,11 +1307,9 @@ fn build_choice_event(
         // semantics applied to Dialogue events in `collect_fluent_vars`.
         let mut option_fluent_vars = env.collect_fluent_bindings();
         for (path, format) in extract_label_interp_vars(&opt.label) {
-            let key = path
-                .rsplit_once('.')
-                .map(|(_, tail)| tail.to_string())
-                .unwrap_or_else(|| path.clone());
-            if let Ok(raw_val) = env.get(&path) {
+            // Full dotted path → Fluent key: dots become hyphens (e.g. "inv.gold" → "inv-gold").
+            let key = path.replace('.', "-");
+            if let Ok(raw_val) = eval::resolve_interp_path(&path, env) {
                 let value = if let Some(ref fmt) = format {
                     let formatted = eval::format_runtime_value(&raw_val, Some(fmt));
                     RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain(&formatted))
@@ -2925,6 +2915,72 @@ label start {
             localized.as_deref(),
             Some("str:30.00"),
             "FTL context must carry pre-formatted price=\"30.00\", not raw Float(30.0)"
+        );
+    }
+
+    /// Verify that a dotted-path interpolation (`{inv.gold}`) produces a Fluent
+    /// key using `-` as the separator (`inv-gold`) and resolves the value via
+    /// the module-namespace lookup (`inv::gold` in the environment).
+    #[test]
+    fn fluent_vars_dotted_path_uses_hyphen_key() {
+        use crate::compiler::Compiler;
+        use crate::compiler::loader::parse_source;
+        use crate::vm::Vm;
+        use crate::vm::registry::DecoratorRegistry;
+        use std::sync::Arc;
+
+        let src = r#"
+const n = :{ name: "N", name_color: "white" }
+@entry
+label start {
+    n: "You have {inv.gold} coins."
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile_named(&ast, "test").expect("compile");
+        let mut vm = Vm::new(graph, DecoratorRegistry::default()).expect("vm");
+        // Inject the namespaced variable so that resolve_interp_path("inv.gold")
+        // finds "inv::gold" in the externs slot.
+        vm.provide_extern("inv::gold", RuntimeValue::Int(77));
+
+        struct CapturingLocalizer;
+        impl crate::Localizer for CapturingLocalizer {
+            fn localize(
+                &self,
+                id: &str,
+                vars: &std::collections::HashMap<String, RuntimeValue>,
+            ) -> Option<String> {
+                if id == "test-start-line_1" {
+                    // Key must be "inv-gold" (hyphen), not "inv_gold" (underscore)
+                    // and not "gold" (last segment only).
+                    let val = vars.get("inv-gold")?;
+                    Some(format!("inv-gold={val:?}"))
+                } else {
+                    None
+                }
+            }
+        }
+
+        let mut vm = vm.with_localizer(Arc::new(CapturingLocalizer));
+
+        let mut localized: Option<String> = None;
+        for _ in 0..20 {
+            match vm.next(None) {
+                VmStep::Event(crate::ir::Event::Dialogue { localized_text, .. }) => {
+                    localized = localized_text;
+                    break;
+                }
+                VmStep::Ended => break,
+                VmStep::Error(e) => panic!("VM error: {:?}", e),
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            localized.as_deref(),
+            Some("inv-gold=Int(77)"),
+            "Fluent vars must use hyphen separator and resolve namespaced env key"
         );
     }
 

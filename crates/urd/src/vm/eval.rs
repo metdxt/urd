@@ -400,6 +400,27 @@ pub(super) fn eval_runtime_value(
     }
 }
 
+/// Resolve a dotted interpolation path (e.g. `"inv.gold"`) against the
+/// environment, using the same rules as inline string interpolation:
+///
+/// - 1 segment  → direct env lookup
+/// - 2 segments → enum-variant lookup, then module-namespaced key (`a::b`)
+/// - 3+ segments → module-namespaced key for first two segments (`a::b`)
+///
+/// This is the single authoritative resolution routine shared by
+/// [`interpolate_string`] and `vm::collect_fluent_vars` / `vm::build_choice_event`.
+pub(super) fn resolve_interp_path(path: &str, env: &Environment) -> Result<RuntimeValue, VmError> {
+    let segments: Vec<&str> = path.split('.').collect();
+    match segments.len() {
+        0 => Err(VmError::UndefinedVariable("<empty>".to_string())),
+        1 => env.get(segments[0]),
+        2 => env
+            .get_enum_variant(segments[0], segments[1])
+            .or_else(|_| env.get(&crate::ir::namespace(segments[0], segments[1]))),
+        _ => env.get(&crate::ir::namespace(segments[0], segments[1])),
+    }
+}
+
 /// Resolve all [`StringPart::Interpolation`] segments in `ps` by looking up
 /// their variable paths in `env`.
 ///
@@ -411,25 +432,7 @@ pub(super) fn interpolate_string(ps: &ParsedString, env: &Environment) -> Parsed
     for part in ps.parts() {
         match part {
             StringPart::Interpolation(interp) => {
-                let segments: Vec<&str> = interp.path.split('.').collect();
-                let resolved = match segments.len() {
-                    0 => Err(VmError::UndefinedVariable("<empty>".to_string())),
-                    1 => env.get(segments[0]),
-                    2 => env
-                        .get_enum_variant(segments[0], segments[1])
-                        // Try module-namespaced key: `inv.gold` → `inv::gold`
-                        .or_else(|_| {
-                            let ns = crate::ir::namespace(segments[0], segments[1]);
-                            env.get(&ns)
-                        }),
-                    _ => {
-                        // 3+ segments: try `alias::name` for the first two.
-                        let ns = crate::ir::namespace(segments[0], segments[1]);
-                        env.get(&ns)
-                    }
-                };
-
-                match resolved {
+                match resolve_interp_path(&interp.path, env) {
                     Ok(val) => {
                         let s = format_runtime_value(&val, interp.format.as_deref());
                         new_parts.push(StringPart::Literal(s));
@@ -1604,5 +1607,38 @@ mod tests {
             !values_equal(&make("Point", 1), &make("Vec", 1)),
             "different type names must not be equal"
         );
+    }
+
+    // ── resolve_interp_path ───────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_interp_path_single_segment_found() {
+        let mut env = Environment::new();
+        env.set("gold", RuntimeValue::Int(42), &DeclKind::Variable)
+            .unwrap();
+        let result = resolve_interp_path("gold", &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(42));
+    }
+
+    #[test]
+    fn resolve_interp_path_single_segment_missing_returns_err() {
+        let env = Environment::new();
+        let result = resolve_interp_path("missing", &env);
+        assert!(
+            result.is_err(),
+            "undefined single-segment path must return Err"
+        );
+    }
+
+    #[test]
+    fn resolve_interp_path_two_segment_module_namespaced_key() {
+        // Store "inv::gold" (the compiled namespace form) and resolve via the
+        // dotted path "inv.gold" — the helper must expand the dot to "::".
+        let mut env = Environment::new();
+        let ns_key = crate::ir::namespace("inv", "gold");
+        env.set(&ns_key, RuntimeValue::Int(99), &DeclKind::Variable)
+            .unwrap();
+        let result = resolve_interp_path("inv.gold", &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(99));
     }
 }

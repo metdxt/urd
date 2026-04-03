@@ -34,7 +34,7 @@ use crate::runtime::value::RuntimeValue;
 ///
 /// Returned paths are de-duplicated and sorted alphabetically.  Paths keep
 /// their original dot-separated form (e.g. `"user.name"`); callers that need a
-/// Fluent-safe identifier should replace `.` with `_` themselves.
+/// Fluent-safe identifier should replace `.` with `-` themselves.
 ///
 /// # Example
 ///
@@ -78,7 +78,7 @@ fn collect_paths_inner(ast: &Ast, paths: &mut Vec<String>) {
 /// |---|---|
 /// | [`StringPart::Literal`]`(s)` | `s` verbatim |
 /// | [`StringPart::EscapedChar`]`(s)` | `s` verbatim (already decoded) |
-/// | [`StringPart::Interpolation`] | `{ $var }` with `.` replaced by `_` |
+/// | [`StringPart::Interpolation`] | `{ $var }` with `.` replaced by `-` |
 /// | [`StringPart::ExitString`] | *(empty)* |
 ///
 /// # Example
@@ -88,13 +88,13 @@ fn collect_paths_inner(ast: &Ast, paths: &mut Vec<String>) {
 ///     StringPart::Literal("hello ".into()),
 ///     StringPart::Interpolation(Interpolation { path: "user.name".into(), format: None }),
 /// ]);
-/// assert_eq!(render_parsed_string_as_ftl(&ps), "hello { $user_name }");
+/// assert_eq!(render_parsed_string_as_ftl(&ps), "hello { $user-name }");
 /// ```
 /// Converts a menu option label string (already rendered via [`ParsedString`]'s
 /// `Display` impl, so interpolations appear as `{var}`) into a Fluent message
 /// value where those interpolations become `{ $var }`.
 ///
-/// Dots in variable paths are replaced with underscores to match Fluent
+/// Dots in variable paths are replaced with hyphens to match Fluent
 /// identifier rules (mirrors what [`render_parsed_string_as_ftl`] does).
 ///
 /// Format specifiers (`{var:fmt}`) are stripped — Fluent handles formatting
@@ -116,7 +116,7 @@ fn label_to_ftl_value(label: &str) -> String {
             if closed && !inner.is_empty() {
                 // Strip any `:format` specifier before converting.
                 let var_path = inner.split(':').next().unwrap_or(&inner);
-                let ftl_var = var_path.replace('.', "_");
+                let ftl_var = var_path.replace('.', "-");
                 out.push_str(&format!("{{ ${ftl_var} }}"));
             } else {
                 // Malformed brace expression — pass through unchanged.
@@ -139,7 +139,7 @@ pub fn render_parsed_string_as_ftl(ps: &ParsedString) -> String {
         match part {
             StringPart::Literal(s) | StringPart::EscapedChar(s) => out.push_str(s),
             StringPart::Interpolation(interp) => {
-                let ftl_var = interp.path.replace('.', "_");
+                let ftl_var = interp.path.replace('.', "-");
                 out.push_str(&format!("{{ ${ftl_var} }}"));
             }
             StringPart::ExitString => {}
@@ -289,7 +289,7 @@ pub fn generate_ftl(graph: &IrGraph, file_slug: &str) -> String {
                     if !paths.is_empty() {
                         let path_list = paths
                             .iter()
-                            .map(|p| format!("${p}"))
+                            .map(|p| format!("${}", p.replace('.', "-")))
                             .collect::<Vec<_>>()
                             .join(", ");
                         block.push_str(&format!("# interpolation: {path_list}\n"));
@@ -461,12 +461,12 @@ mod tests {
     }
 
     #[test]
-    fn render_dotted_interpolation_replaces_dots_with_underscores() {
+    fn render_dotted_interpolation_replaces_dots_with_hyphens() {
         let ps = ParsedString::new_from_parts(vec![StringPart::Interpolation(Interpolation {
             path: "user.name".to_string(),
             format: None,
         })]);
-        assert_eq!(render_parsed_string_as_ftl(&ps), "{ $user_name }");
+        assert_eq!(render_parsed_string_as_ftl(&ps), "{ $user-name }");
     }
 
     #[test]
