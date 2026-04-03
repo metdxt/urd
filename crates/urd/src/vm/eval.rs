@@ -714,6 +714,20 @@ pub(super) fn numeric_cmp(
         (RuntimeValue::Float(a), RuntimeValue::Float(b)) => {
             Ok(RuntimeValue::Bool(float_cmp(*a, *b)))
         }
+        (RuntimeValue::Int(a), RuntimeValue::Float(b)) => {
+            if b.fract() == 0.0 && *b >= i64::MIN as f64 && *b < (i64::MAX as f64) {
+                Ok(RuntimeValue::Bool(int_cmp(*a, *b as i64)))
+            } else {
+                Ok(RuntimeValue::Bool(float_cmp(*a as f64, *b)))
+            }
+        }
+        (RuntimeValue::Float(a), RuntimeValue::Int(b)) => {
+            if a.fract() == 0.0 && *a >= i64::MIN as f64 && *a < (i64::MAX as f64) {
+                Ok(RuntimeValue::Bool(int_cmp(*a as i64, *b)))
+            } else {
+                Ok(RuntimeValue::Bool(float_cmp(*a, *b as f64)))
+            }
+        }
         _ => {
             let a = to_float(&lv)
                 .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", lv)))?;
@@ -798,14 +812,59 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
         (RuntimeValue::Bool(x), RuntimeValue::Bool(y)) => x == y,
         (RuntimeValue::Int(x), RuntimeValue::Int(y)) => x == y,
         (RuntimeValue::Float(x), RuntimeValue::Float(y)) => x == y,
-        // Cross-type numeric equality.
-        (RuntimeValue::Int(x), RuntimeValue::Float(y)) => (*x as f64) == *y,
-        (RuntimeValue::Float(x), RuntimeValue::Int(y)) => *x == (*y as f64),
+        // Cross-type numeric equality — avoid i64→f64 bit loss above 2^53.
+        // Use `< (i64::MAX as f64)` rather than `<=` because i64::MAX = 2^63-1 rounds
+        // UP to 2^63 when cast to f64; accepting the rounded value would produce a
+        // false equality when casting it back to i64 (saturating cast → i64::MAX).
+        (RuntimeValue::Int(x), RuntimeValue::Float(y)) => {
+            if y.fract() != 0.0 {
+                false
+            } else if *y >= i64::MIN as f64 && *y < (i64::MAX as f64) {
+                (*y as i64) == *x
+            } else {
+                false
+            }
+        }
+        (RuntimeValue::Float(x), RuntimeValue::Int(y)) => {
+            if x.fract() != 0.0 {
+                false
+            } else if *x >= i64::MIN as f64 && *x < (i64::MAX as f64) {
+                (*x as i64) == *y
+            } else {
+                false
+            }
+        }
         (RuntimeValue::Str(x), RuntimeValue::Str(y)) => x.to_string() == y.to_string(),
         (RuntimeValue::Label { node_id: x, .. }, RuntimeValue::Label { node_id: y, .. }) => x == y,
         (RuntimeValue::List(xs), RuntimeValue::List(ys)) => {
             xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(a, b)| values_equal(a, b))
         }
+        (RuntimeValue::Map(xs), RuntimeValue::Map(ys)) => {
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .all(|(k, v)| ys.get(k).is_some_and(|yv| values_equal(v, yv)))
+        }
+        (
+            RuntimeValue::Struct {
+                name: n1,
+                fields: f1,
+            },
+            RuntimeValue::Struct {
+                name: n2,
+                fields: f2,
+            },
+        ) => {
+            n1 == n2
+                && f1.len() == f2.len()
+                && f1
+                    .iter()
+                    .all(|(k, v)| f2.get(k).is_some_and(|fv| values_equal(v, fv)))
+        }
+        // Function and ScriptDecorator have no meaningful value equality — two distinct
+        // function objects are never considered the same even if their bodies are
+        // identical.  Any type not listed above (including future variants) defaults
+        // to inequality.
         _ => false,
     }
 }
@@ -1488,6 +1547,68 @@ mod tests {
             "BUG: Int(-7)//Int(-2) = {int_as_f64} but Float(-7.0)//Float(-2.0) = {float_val}. \
              The `//` operator must have consistent semantics regardless of operand type. \
              Fix: use integer floor division (not div_euclid) for the Int//Int path."
+        );
+    }
+
+    #[test]
+    fn test_values_equal_int_max_float_boundary() {
+        // i64::MAX = 2^63-1 cannot be exactly represented as f64; it rounds UP to 2^63.
+        // So Int(i64::MAX) must NOT equal Float(i64::MAX as f64) = 2^63.
+        let int_max = RuntimeValue::Int(i64::MAX);
+        let float_2pow63 = RuntimeValue::Float(i64::MAX as f64); // = 9223372036854775808.0
+        assert!(
+            !values_equal(&int_max, &float_2pow63),
+            "Int(i64::MAX) must not equal Float(i64::MAX as f64) — the cast rounds up to 2^63"
+        );
+        // Symmetric
+        assert!(
+            !values_equal(&float_2pow63, &int_max),
+            "Float(i64::MAX as f64) must not equal Int(i64::MAX)"
+        );
+    }
+
+    #[test]
+    fn test_floordiv_int_min_by_neg_one_errors() {
+        // i64::MIN // -1 = -(i64::MIN) = i64::MAX + 1, which overflows.
+        // Must return Err, not panic.
+        let result = numeric_floordiv(RuntimeValue::Int(i64::MIN), RuntimeValue::Int(-1));
+        assert!(
+            matches!(result, Err(VmError::TypeError(_))),
+            "i64::MIN // -1 should return VmError::TypeError, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_div_int_min_by_neg_one_errors() {
+        let result = numeric_div(RuntimeValue::Int(i64::MIN), RuntimeValue::Int(-1));
+        assert!(
+            matches!(result, Err(VmError::TypeError(_))),
+            "i64::MIN / -1 should return VmError::TypeError, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_values_equal_struct_value_semantics() {
+        use std::collections::HashMap;
+        let make = |name: &str, x: i64| RuntimeValue::Struct {
+            name: name.to_string(),
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("x".to_string(), RuntimeValue::Int(x));
+                m
+            },
+        };
+        assert!(
+            values_equal(&make("Point", 1), &make("Point", 1)),
+            "identical structs must be equal"
+        );
+        assert!(
+            !values_equal(&make("Point", 1), &make("Point", 2)),
+            "different field values must not be equal"
+        );
+        assert!(
+            !values_equal(&make("Point", 1), &make("Vec", 1)),
+            "different type names must not be equal"
         );
     }
 }
