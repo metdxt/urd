@@ -1408,7 +1408,7 @@ label hero_speech {
 (source_file
   (decorated_statement
     (decorator
-      name: (identifier))
+      name: (decorator_name (identifier)))
     (label_statement
       name: (identifier)
       body: (block
@@ -1429,7 +1429,7 @@ label alert {
 (source_file
   (decorated_statement
     (decorator
-      name: (identifier))
+      name: (decorator_name (identifier)))
     (label_statement
       name: (identifier)
       body: (block
@@ -1448,7 +1448,7 @@ aria: "Warning!"
 (source_file
   (decorated_statement
     (decorator
-      name: (identifier)
+      name: (decorator_name (identifier))
       argument: (string (string_literal_fragment)))
     (dialogue_statement
       speaker: (identifier_path (identifier))
@@ -1466,7 +1466,7 @@ narrator: "System message."
 (source_file
   (decorated_statement
     (decorator
-      name: (identifier)
+      name: (decorator_name (identifier))
       argument: (string (string_literal_fragment))
       argument: (string (string_literal_fragment))
       argument: (boolean))
@@ -1489,9 +1489,9 @@ label warning {
 (source_file
   (decorated_statement
     (decorator
-      name: (identifier))
+      name: (decorator_name (identifier)))
     (decorator
-      name: (identifier)
+      name: (decorator_name (identifier))
       argument: (string (string_literal_fragment)))
     (label_statement
       name: (identifier)
@@ -1515,7 +1515,7 @@ menu {
 (source_file
   (decorated_statement
     (decorator
-      name: (identifier))
+      name: (decorator_name (identifier)))
     (menu_statement
       option: (menu_option
         label: (string (string_literal_fragment))
@@ -1537,11 +1537,129 @@ Decorator applied to bare block
 (source_file
   (decorated_statement
     (decorator
-      name: (identifier))
+      name: (decorator_name (identifier)))
     (block
       (declaration
         name: (identifier_path (identifier))
         value: (integer)))))
+
+================================================================================
+Decorator applied to global declaration
+================================================================================
+
+@fluent
+global gold = 50
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (decorator_name (identifier)))
+    (declaration
+      name: (identifier_path (identifier))
+      value: (integer))))
+
+================================================================================
+Decorator with alias applied to let declaration
+================================================================================
+
+@fluent("item")
+let item_name = "Health Potion"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (decorator_name (identifier))
+      argument: (string (string_literal_fragment)))
+    (declaration
+      name: (identifier_path (identifier))
+      value: (string (string_literal_fragment)))))
+
+================================================================================
+Decorator applied to const declaration
+================================================================================
+
+@fluent
+const MAX_HEALTH = 100
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (decorator_name (identifier)))
+    (declaration
+      name: (identifier_path (identifier))
+      value: (integer))))
+
+================================================================================
+Multiple decorators on global declaration
+================================================================================
+
+@fluent
+@deprecated
+global score = 0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (decorator_name (identifier)))
+    (decorator
+      name: (decorator_name (identifier)))
+    (declaration
+      name: (identifier_path (identifier))
+      value: (integer))))
+
+================================================================================
+Decorator applied to if statement
+================================================================================
+
+@id("intro-check")
+if ready {
+  jump start
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (decorator_name (identifier))
+      argument: (string (string_literal_fragment)))
+    (if_statement
+      condition: (identifier_path (identifier))
+      consequence: (block
+        (jump_statement
+          label: (identifier_path (identifier)))))))
+
+================================================================================
+Decorator applied to match statement
+================================================================================
+
+@id("phase-match")
+match phase {
+  _ { jump default }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (decorated_statement
+    (decorator
+      name: (decorator_name (identifier))
+      argument: (string (string_literal_fragment)))
+    (match_statement
+      scrutinee: (identifier_path (identifier))
+      arm: (match_arm
+        pattern: (wildcard)
+        body: (block
+          (jump_statement
+            label: (identifier_path (identifier))))))))
 
 ================================================================================
 Import statement simple path

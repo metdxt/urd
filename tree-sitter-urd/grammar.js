@@ -651,6 +651,15 @@ module.exports = grammar({
         $.dialogue_statement,
         $.menu_statement,
         $.block,
+        // Variable declarations — enables @fluent / @fluent("alias") on
+        // `let`, `global`, and `const` bindings.
+        $.declaration,
+        // Extern declarations — enables @fluent on host-injected values.
+        $.extern_declaration,
+        // Conditional / pattern-match blocks — enables @id("…") on
+        // `if` and `match` nodes (validated by the id_decorator pass).
+        $.if_statement,
+        $.match_statement,
       ),
 
     // -----------------------------------------------------------------------

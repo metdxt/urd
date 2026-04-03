@@ -336,6 +336,10 @@
           "named": true
         },
         {
+          "type": "declaration",
+          "named": true
+        },
+        {
           "type": "decorator",
           "named": true
         },
@@ -344,7 +348,19 @@
           "named": true
         },
         {
+          "type": "extern_declaration",
+          "named": true
+        },
+        {
+          "type": "if_statement",
+          "named": true
+        },
+        {
           "type": "label_statement",
+          "named": true
+        },
+        {
+          "type": "match_statement",
           "named": true
         },
         {
@@ -610,20 +626,6 @@
     "type": "extern_declaration",
     "named": true,
     "fields": {
-      "kind": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "const",
-            "named": false
-          },
-          {
-            "type": "global",
-            "named": false
-          }
-        ]
-      },
       "name": {
         "multiple": false,
         "required": true,
