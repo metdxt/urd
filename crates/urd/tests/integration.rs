@@ -29,3 +29,6 @@ mod sequence;
 
 #[path = "integration/vm_decorator.rs"]
 mod vm_decorator;
+
+#[path = "integration/adversarial.rs"]
+mod adversarial;

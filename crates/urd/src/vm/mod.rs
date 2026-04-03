@@ -2790,4 +2790,62 @@ label start {
             "FTL context must carry current gold=20, not stale gold=50"
         );
     }
+
+    /// Unconditional jump loops between two labeled blocks must NOT accumulate
+    /// [`CallFrame`]s on the call stack.
+    ///
+    /// **Known bug**: [`IrNodeKind::EnterScope`] always pushes a [`CallFrame`]
+    /// regardless of whether the label was entered via [`IrNodeKind::LetCall`]
+    /// (subroutine) or a plain [`IrNodeKind::Jump`] (tail transfer).  Because
+    /// an unconditional `jump` never reaches [`IrNodeKind::ExitScope`] of the
+    /// *previous* label, the pushed frame is never popped.
+    ///
+    /// After 20 dialogue events from the A → B → A loop the call stack has ≈ 20
+    /// leaked frames; this test asserts 0 and therefore **FAILS** against the
+    /// current implementation.
+    #[test]
+    fn test_unconditional_jump_loop_leaks_call_frames() {
+        use crate::compiler::loader::parse_source;
+
+        // A simple two-label ping-pong loop.  Each label emits one Dialogue event
+        // before jumping to the other label so that vm.next() returns control to
+        // the test after each observable step.
+        let src = r#"
+@entry
+label alpha {
+    Narrator: "in alpha"
+    jump beta
+}
+
+label beta {
+    Narrator: "in beta"
+    jump alpha
+}
+"#;
+
+        let ast = parse_source(src).expect("parse must succeed");
+        let graph = Compiler::compile(&ast).expect("compile must succeed");
+        let mut vm = Vm::new(graph, empty_registry()).expect("vm construction must succeed");
+
+        // Drive 20 observable events (10 full alpha→beta cycles).
+        for i in 0..20 {
+            match vm.next(None) {
+                VmStep::Error(e) => panic!("unexpected VM error at step {i}: {e}"),
+                VmStep::Ended => break,
+                VmStep::Event(_) => {}
+            }
+        }
+
+        // A correct implementation uses tail-call semantics for unconditional
+        // jumps: no CallFrame should be pushed when entering a label via `jump`.
+        // The current implementation leaks one frame per EnterScope hit.
+        assert_eq!(
+            vm.state.call_stack.len(),
+            0,
+            "BUG: jump loop leaked {} CallFrame(s) after 20 steps. \
+             Plain `jump` must not accumulate frames on the call stack. \
+             Fix: only push a CallFrame for LetCall (subroutine), not for Jump.",
+            vm.state.call_stack.len()
+        );
+    }
 }

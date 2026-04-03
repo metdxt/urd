@@ -970,7 +970,7 @@ fn exec_fn_stmt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{Ast, DeclKind, Operator};
+    use crate::parser::ast::{Ast, DeclKind, Operator, UnaryOperator};
     use crate::runtime::value::RuntimeValue;
     use crate::vm::env::Environment;
 
@@ -1359,6 +1359,111 @@ mod tests {
         assert!(
             formatted.starts_with("Point("),
             "expected format to start with 'Point(', got '{formatted}'"
+        );
+    }
+
+    #[test]
+    fn test_negate_int_min_overflows_in_release_panics_in_debug() {
+        // -i64::MIN is mathematically i64::MAX + 1, which cannot be represented
+        // as i64.  eval_unary uses plain `-i` with no overflow check.
+        //
+        // Correct behaviour: return Err(VmError::TypeError) — unrepresentable.
+        // Debug build:   panics  ("attempt to negate with overflow").
+        // Release build: silently wraps to i64::MIN (wrong value).
+        //
+        // This test asserts the *correct* behaviour and therefore fails against
+        // the current implementation in BOTH build profiles.
+        let result = std::panic::catch_unwind(|| {
+            eval_unary(&UnaryOperator::Negate, RuntimeValue::Int(i64::MIN))
+        });
+
+        match result {
+            Err(_panic) => {
+                // Debug build: the panic was caught.  The VM should have returned
+                // VmError::TypeError instead of panicking.
+                panic!(
+                    "BUG (debug): eval_unary(-i64::MIN) panicked with arithmetic overflow. \
+                     It should return Err(VmError::TypeError) instead."
+                );
+            }
+            Ok(Ok(RuntimeValue::Int(got))) => {
+                // Release build: returned a value — it must NOT wrap back to i64::MIN.
+                assert_ne!(
+                    got,
+                    i64::MIN,
+                    "BUG (release): eval_unary(-i64::MIN) wrapped to i64::MIN (silent overflow). \
+                     It should return Err(VmError::TypeError) instead."
+                );
+                panic!(
+                    "BUG (release): eval_unary(-i64::MIN) returned Int({got}) — unexpected wrapped \
+                     value; should return Err(VmError::TypeError)."
+                );
+            }
+            Ok(Err(_vm_err)) => {
+                // This is the correct path — a VmError was returned, not a panic.
+                // The test passes only if we reach here.
+            }
+            Ok(Ok(other)) => panic!("unexpected non-Int result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_values_equal_int_float_precision_loss_above_2_pow_53() {
+        // 2^53 = 9_007_199_254_740_992 is the largest integer exactly representable
+        // as f64.  2^53 + 1 = 9_007_199_254_740_993 is NOT exactly representable:
+        // casting it to f64 rounds down to 2^53.
+        //
+        // values_equal(Int(2^53+1), Float(2^53)) should return FALSE — they are
+        // arithmetically different — but the i64→f64 cast loses the +1, making
+        // the bitwise comparison true.
+        //
+        // This test asserts the correct (false) result and therefore FAILS against
+        // the current implementation.
+        const TWO_POW_53: i64 = 9_007_199_254_740_992;
+        const TWO_POW_53_PLUS_1: i64 = 9_007_199_254_740_993;
+        let int_val = RuntimeValue::Int(TWO_POW_53_PLUS_1);
+        let float_val = RuntimeValue::Float(TWO_POW_53 as f64);
+
+        assert!(
+            !values_equal(&int_val, &float_val),
+            "BUG: Int(2^53+1) == Float(2^53) incorrectly returned true. \
+             The i64→f64 cast loses the low bit, making distinct values appear equal. \
+             Fix: use a widening comparison or reject cross-type numeric equality."
+        );
+    }
+
+    #[test]
+    fn test_floordiv_int_int_and_float_float_must_agree_for_same_values() {
+        // floor(-7 / -2) = floor(3.5) = 3.
+        //
+        // Int//Int path uses div_euclid(-7, -2) = 4   ← WRONG (Euclidean, not floor)
+        // Float//Float path uses (-7.0/-2.0).floor() = 3.0  ← correct
+        //
+        // Both paths implement the `//` operator; they MUST produce the same result
+        // for the same mathematical input.  This test asserts equality and therefore
+        // FAILS against the current implementation.
+        let int_result = numeric_floordiv(RuntimeValue::Int(-7), RuntimeValue::Int(-2))
+            .expect("Int(-7) // Int(-2) should not error");
+        let float_result = numeric_floordiv(RuntimeValue::Float(-7.0), RuntimeValue::Float(-2.0))
+            .expect("Float(-7.0) // Float(-2.0) should not error");
+
+        // Normalise both to f64 for comparison (they should both be 3.0).
+        let int_as_f64 = match int_result {
+            RuntimeValue::Int(n) => n as f64,
+            RuntimeValue::Float(f) => f,
+            other => panic!("unexpected Int//Int result type: {other:?}"),
+        };
+        let float_val = match float_result {
+            RuntimeValue::Int(n) => n as f64,
+            RuntimeValue::Float(f) => f,
+            other => panic!("unexpected Float//Float result type: {other:?}"),
+        };
+
+        assert_eq!(
+            int_as_f64, float_val,
+            "BUG: Int(-7)//Int(-2) = {int_as_f64} but Float(-7.0)//Float(-2.0) = {float_val}. \
+             The `//` operator must have consistent semantics regardless of operand type. \
+             Fix: use integer floor division (not div_euclid) for the Int//Int path."
         );
     }
 }
