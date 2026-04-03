@@ -236,6 +236,9 @@ pub struct IrChoiceOption {
     pub label: String,
     /// Decorators attached to the `MenuOption` AST node.
     pub decorators: Vec<Decorator>,
+    /// Localization key for this option, if any.
+    /// `None` when the compiler was invoked without a file stem context.
+    pub loc_id: Option<String>,
 }
 
 /// One arm of a compiled [`IrNodeKind::Switch`] node.
@@ -454,6 +457,9 @@ pub enum IrNodeKind {
         lines: Ast,
         /// Decorators attached to the `Dialogue` AST node.
         decorators: Vec<Decorator>,
+        /// Localization key for this dialogue event, if any.
+        /// `None` when the compiler was invoked without a file stem context.
+        loc_id: Option<String>,
     },
 
     /// Emit a [`Event::Choice`] event and suspend until the player chooses.
@@ -465,6 +471,9 @@ pub enum IrNodeKind {
         options: Vec<IrChoiceOption>,
         /// Decorators attached to the `Menu` AST node.
         decorators: Vec<Decorator>,
+        /// Localization key for this choice event (the menu node itself), if any.
+        /// `None` when the compiler was invoked without a file stem context.
+        loc_id: Option<String>,
     },
 }
 
@@ -484,6 +493,8 @@ pub enum Event {
         lines: Vec<crate::runtime::value::RuntimeValue>,
         /// Evaluated decorator fields (name → value).
         fields: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
+        /// Localization key for this dialogue, or `None` if no file context was provided.
+        loc_id: Option<String>,
     },
     /// The player is presented with a set of options to choose from.
     Choice {
@@ -491,6 +502,8 @@ pub enum Event {
         options: Vec<ChoiceEvent>,
         /// Evaluated decorator fields (name → value).
         fields: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
+        /// Localization key for this choice event (the menu as a whole), or `None`.
+        loc_id: Option<String>,
     },
 }
 
@@ -501,6 +514,8 @@ pub struct ChoiceEvent {
     pub label: String,
     /// Evaluated decorator fields for this option.
     pub fields: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
+    /// Localization key for this option, or `None` if no file context was provided.
+    pub loc_id: Option<String>,
 }
 
 // ─── VmStep ──────────────────────────────────────────────────────────────────

@@ -51,6 +51,7 @@ pub mod compiler;
 pub mod erro;
 pub mod ir;
 pub mod lexer;
+pub mod loc;
 pub mod parser;
 pub mod runtime;
 pub mod vm;

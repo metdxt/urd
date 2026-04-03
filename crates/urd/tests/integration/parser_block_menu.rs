@@ -7,6 +7,211 @@ use urd::{
     runtime::value::RuntimeValue,
 };
 
+// ---- @id decorator on menu options ----
+
+#[test]
+fn test_id_decorator_on_menu_option_parses() {
+    let src = r#"menu {
+        @id("enter")
+        "Enter the cave" { jump cave }
+        "Walk away" { jump road }
+    }"#;
+    let result = parse_test!(menu(), src);
+    assert!(
+        result.is_ok(),
+        "menu option with @id should parse: {result:?}"
+    );
+}
+
+#[test]
+fn test_id_decorator_on_menu_option_attaches_to_option_node() {
+    let src = r#"menu {
+        @id("torch")
+        "Take a torch" {}
+        "Leave" {}
+    }"#;
+    let result = parse_test!(menu(), src);
+    let Ok(ast) = result else {
+        panic!("parse failed");
+    };
+    let AstContent::Menu { options } = ast.content() else {
+        panic!("expected Menu");
+    };
+    // First option must carry the @id decorator.
+    let first = &options[0];
+    let id_dec = first.decorators().iter().find(|d| d.name() == "id");
+    assert!(id_dec.is_some(), "first option should have @id decorator");
+    assert_eq!(id_dec.unwrap().name(), "id");
+    // Second option must have no @id.
+    let second = &options[1];
+    assert!(
+        second.decorators().iter().all(|d| d.name() != "id"),
+        "second option should not have @id"
+    );
+}
+
+#[test]
+fn test_id_decorator_on_all_menu_options() {
+    let src = r#"menu {
+        @id("opt_a")
+        "Option A" {}
+        @id("opt_b")
+        "Option B" {}
+    }"#;
+    let result = parse_test!(menu(), src);
+    let Ok(ast) = result else {
+        panic!("parse failed");
+    };
+    let AstContent::Menu { options } = ast.content() else {
+        panic!("expected Menu");
+    };
+    assert_eq!(options.len(), 2);
+    let has_id = |opt: &Ast, expected: &str| {
+        opt.decorators().iter().any(|d| {
+            d.name() == "id" && {
+                if let AstContent::ExprList(args) = d.args().content() {
+                    args.first().map_or(false, |a| {
+                        if let AstContent::Value(RuntimeValue::Str(s)) = a.content() {
+                            s.to_string() == expected
+                        } else {
+                            false
+                        }
+                    })
+                } else {
+                    false
+                }
+            }
+        })
+    };
+    assert!(
+        has_id(&options[0], "opt_a"),
+        "first option should have @id(\"opt_a\")"
+    );
+    assert!(
+        has_id(&options[1], "opt_b"),
+        "second option should have @id(\"opt_b\")"
+    );
+}
+
+#[test]
+fn test_menu_without_id_decorators_still_parses() {
+    let src = r#"menu {
+        "Option 1" { let x = 1 }
+        "Option 2" { let x = 2 }
+    }"#;
+    let result = parse_test!(menu(), src);
+    let Ok(ast) = result else {
+        panic!("parse failed");
+    };
+    let AstContent::Menu { options } = ast.content() else {
+        panic!("expected Menu");
+    };
+    // No option should have @id.
+    for opt in options {
+        assert!(
+            opt.decorators().iter().all(|d| d.name() != "id"),
+            "options without @id should not carry it"
+        );
+    }
+}
+
+#[test]
+fn test_id_decorator_override_used_in_compile_named() {
+    use urd::{
+        compiler::Compiler, ir::IrNodeKind, lexer::strings::ParsedString, parser::ast::Decorator,
+    };
+
+    // Build: menu { @id("torch") "Take a torch from Zara" {} "Walk away" {} }
+    let id_arg = Ast::value(RuntimeValue::Str(ParsedString::new_plain("torch")));
+    let id_dec = Decorator::new("id".to_string(), Ast::expr_list(vec![id_arg]));
+
+    let opt1 = Ast::new_decorated(
+        AstContent::MenuOption {
+            label: "Take a torch from Zara".to_string(),
+            content: Box::new(Ast::block(vec![])),
+        },
+        vec![id_dec],
+    );
+    let opt2 = Ast::menu_option("Walk away".to_string(), Ast::block(vec![]));
+    let menu_ast = Ast::menu(vec![opt1, opt2]);
+    let labeled = Ast::labeled_block("start".to_string(), Ast::block(vec![menu_ast]));
+    let ast = Ast::block(vec![labeled]);
+
+    let graph = Compiler::compile_named(&ast, "cave").expect("compile_named failed");
+
+    let mut found_opt1 = false;
+    let mut found_opt2 = false;
+    for idx in graph.graph.node_indices() {
+        if let IrNodeKind::Choice { options, .. } = &graph.graph[idx] {
+            // First option: @id override "torch" takes precedence over text slug.
+            assert_eq!(
+                options[0].loc_id.as_deref(),
+                Some("cave-start-menu_1-torch"),
+                "option with @id(\"torch\") should use override slug"
+            );
+            // Second option: no @id, falls back to text slug.
+            assert_eq!(
+                options[1].loc_id.as_deref(),
+                Some("cave-start-menu_1-walk_away"),
+                "option without @id should use text slug"
+            );
+            found_opt1 = true;
+            found_opt2 = true;
+        }
+    }
+    assert!(found_opt1 && found_opt2, "no Choice node found in graph");
+}
+
+#[test]
+fn test_id_decorator_on_menu_option_parse_roundtrip_via_source() {
+    use urd::compiler::loader::parse_source;
+    use urd::{compiler::Compiler, ir::IrNodeKind};
+
+    let src = r#"
+        @id("the_beginning")
+        label start {
+            @id("first_menu")
+            menu {
+                "Enter the cave" {}
+                @id("torch")
+                "Take a torch from Zara" {}
+                "Walk away" {}
+            }
+        }
+    "#;
+
+    let ast = parse_source(src).expect("parse failed");
+    let graph = Compiler::compile_named(&ast, "cave").expect("compile_named failed");
+
+    for idx in graph.graph.node_indices() {
+        if let IrNodeKind::Choice {
+            options, loc_id, ..
+        } = &graph.graph[idx]
+        {
+            assert_eq!(
+                loc_id.as_deref(),
+                Some("cave-the_beginning-first_menu"),
+                "choice loc_id should use @id overrides on label and menu"
+            );
+            assert_eq!(
+                options[0].loc_id.as_deref(),
+                Some("cave-the_beginning-first_menu-enter_the_cave"),
+                "option without @id uses text slug"
+            );
+            assert_eq!(
+                options[1].loc_id.as_deref(),
+                Some("cave-the_beginning-first_menu-torch"),
+                "option with @id uses override"
+            );
+            assert_eq!(
+                options[2].loc_id.as_deref(),
+                Some("cave-the_beginning-first_menu-walk_away"),
+                "third option uses text slug"
+            );
+        }
+    }
+}
+
 // ---- Dialogue tests ----
 
 #[test]

@@ -284,6 +284,7 @@ impl Vm {
                 IrNodeKind::Choice {
                     decorators,
                     options,
+                    loc_id: _,
                 } => {
                     for dec in decorators {
                         check_decorator_known(dec, &registry, &script_defined, node_idx)?;
@@ -668,6 +669,7 @@ impl Vm {
                     speakers,
                     lines,
                     decorators,
+                    loc_id,
                 } => {
                     let speakers_vec = match eval_expr_list(speakers, &state.env) {
                         Ok(v) => v,
@@ -700,6 +702,7 @@ impl Vm {
                         speakers: speakers_vec,
                         lines: lines_vec,
                         fields,
+                        loc_id: loc_id.clone(),
                     });
                 }
 
@@ -707,6 +710,7 @@ impl Vm {
                 IrNodeKind::Choice {
                     options,
                     decorators,
+                    loc_id,
                 } => {
                     match choice {
                         // ── Player provided a choice index ───────────────────
@@ -722,6 +726,7 @@ impl Vm {
                                 return build_choice_event(
                                     options,
                                     decorators,
+                                    loc_id,
                                     &state.env,
                                     &state.registry,
                                 );
@@ -759,6 +764,7 @@ impl Vm {
                             return build_choice_event(
                                 options,
                                 decorators,
+                                loc_id,
                                 &state.env,
                                 &state.registry,
                             );
@@ -1085,6 +1091,7 @@ fn apply_decorator(
 fn build_choice_event(
     options: &[IrChoiceOption],
     decorators: &[Decorator],
+    loc_id: &Option<String>,
     env: &Environment,
     registry: &DecoratorRegistry,
 ) -> VmStep {
@@ -1110,12 +1117,14 @@ fn build_choice_event(
         choice_options.push(ChoiceEvent {
             label: opt.label.clone(),
             fields: opt_fields,
+            loc_id: opt.loc_id.clone(),
         });
     }
 
     VmStep::Event(Event::Choice {
         options: choice_options,
         fields,
+        loc_id: loc_id.clone(),
     })
 }
 
@@ -1159,7 +1168,98 @@ mod tests {
         Vm::new(graph, empty_registry()).expect("vm construction failed")
     }
 
+    fn build_vm_named(ast: Ast, file_stem: &str) -> Vm {
+        let graph = crate::compiler::Compiler::compile_named(&ast, file_stem)
+            .expect("compile_named failed");
+        Vm::new(graph, empty_registry()).expect("vm construction failed")
+    }
+
     // ── Tests ─────────────────────────────────────────────────────────────────
+
+    /// Dialogue compiled with `compile_named` carries the generated `loc_id`.
+    #[test]
+    fn test_dialogue_event_carries_loc_id() {
+        let speakers = Ast::expr_list(vec![str_lit("narrator")]);
+        let lines = Ast::expr_list(vec![str_lit("Hello!")]);
+        let dialogue = Ast::dialogue(speakers, lines);
+        let labeled = Ast::labeled_block("start".to_string(), dialogue);
+        let ast = Ast::block(vec![labeled]);
+
+        let mut vm = build_vm_named(ast, "intro");
+
+        match vm.next(None) {
+            VmStep::Event(Event::Dialogue { loc_id, .. }) => {
+                assert_eq!(
+                    loc_id.as_deref(),
+                    Some("intro-start-line_1"),
+                    "expected intro-start-line_1, got {:?}",
+                    loc_id
+                );
+            }
+            other => panic!("expected Dialogue event, got {:?}", other),
+        }
+    }
+
+    /// `compile` (no stem) produces `loc_id: None` on emitted Dialogue events.
+    #[test]
+    fn test_dialogue_event_no_loc_id_without_file_stem() {
+        let speakers = Ast::expr_list(vec![str_lit("narrator")]);
+        let lines = Ast::expr_list(vec![str_lit("Hello!")]);
+        let dialogue = Ast::dialogue(speakers, lines);
+        let ast = Ast::block(vec![dialogue]);
+
+        let mut vm = build_vm(ast);
+
+        match vm.next(None) {
+            VmStep::Event(Event::Dialogue { loc_id, .. }) => {
+                assert!(
+                    loc_id.is_none(),
+                    "compile() should yield loc_id=None, got {:?}",
+                    loc_id
+                );
+            }
+            other => panic!("expected Dialogue event, got {:?}", other),
+        }
+    }
+
+    /// Choice event and each option carry their generated `loc_id` values.
+    #[test]
+    fn test_choice_event_carries_loc_ids() {
+        let opt1 = Ast::menu_option("yes".to_string(), Ast::block(vec![]));
+        let opt2 = Ast::menu_option("no".to_string(), Ast::block(vec![]));
+        let menu = Ast::menu(vec![opt1, opt2]);
+        let labeled = Ast::labeled_block("start".to_string(), menu);
+        let ast = Ast::block(vec![labeled]);
+
+        let mut vm = build_vm_named(ast, "test");
+
+        match vm.next(None) {
+            VmStep::Event(Event::Choice {
+                loc_id, options, ..
+            }) => {
+                assert_eq!(
+                    loc_id.as_deref(),
+                    Some("test-start-menu_1"),
+                    "Choice event loc_id mismatch: got {:?}",
+                    loc_id
+                );
+                assert_eq!(options.len(), 2);
+                assert_eq!(
+                    options[0].loc_id.as_deref(),
+                    Some("test-start-menu_1-yes"),
+                    "option[0] loc_id mismatch: got {:?}",
+                    options[0].loc_id
+                );
+                assert_eq!(
+                    options[1].loc_id.as_deref(),
+                    Some("test-start-menu_1-no"),
+                    "option[1] loc_id mismatch: got {:?}",
+                    options[1].loc_id
+                );
+            }
+            other => panic!("expected Choice event, got {:?}", other),
+        }
+    }
 
     /// A script `let x = 1` followed by a Dialogue emits exactly one
     /// `Event::Dialogue` and then ends.

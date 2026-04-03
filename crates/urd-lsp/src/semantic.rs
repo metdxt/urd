@@ -5,6 +5,7 @@
 
 use chumsky::span::{SimpleSpan, Span as _};
 
+use urd::loc::{EventKind, IdContext, extract_id_override};
 use urd::parser::ast::{Ast, AstContent, DeclKind, EventConstraint, MatchPattern, TypeAnnotation};
 use urd::runtime::value::RuntimeValue;
 
@@ -850,6 +851,138 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
     // Fall back: try to find an AST node at offset and describe it.
     // Filter out empty strings (meaning "position claimed, nothing to show").
     hover_from_ast(ast, symbols, src, byte_offset, ast).filter(|h| !h.is_empty())
+}
+
+/// Computes the localization ID for the innermost localizable node at `byte_offset`.
+///
+/// A "localizable node" is a [`AstContent::Dialogue`] or [`AstContent::MenuOption`].
+/// This function walks the AST in document order, maintaining an [`IdContext`] exactly
+/// as the compiler does, so the returned ID matches what `Compiler::compile_named`
+/// would assign.
+///
+/// Returns `None` when the cursor is not on a localizable node or the node is
+/// outside any label scope.
+pub fn hover_loc_id(root: &Ast, file_stem: &str, byte_offset: usize) -> Option<String> {
+    let mut ctx = IdContext::new(file_stem);
+    find_loc_id_recursive(root, &mut ctx, byte_offset)
+}
+
+/// Recursive AST walker that advances `ctx` in document order and returns the
+/// loc_id for the localizable node at `byte_offset`, if any.
+fn find_loc_id_recursive(ast: &Ast, ctx: &mut IdContext, byte_offset: usize) -> Option<String> {
+    match ast.content() {
+        // ── Ordered statement sequences ──────────────────────────────────────
+        AstContent::Block(stmts) => {
+            for stmt in stmts {
+                // Always visit (not just when span matches) so that counters
+                // for preceding sibling nodes are advanced before reaching the target.
+                if let Some(found) = find_loc_id_recursive(stmt, ctx, byte_offset) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        // ── Label scope ───────────────────────────────────────────────────────
+        AstContent::LabeledBlock { label, block, .. } => {
+            let id_override = extract_id_override(ast.decorators());
+            ctx.push_label(label, id_override);
+            let result = find_loc_id_recursive(block, ctx, byte_offset);
+            ctx.pop_label();
+            result
+        }
+
+        // ── Conditional (if/else) ─────────────────────────────────────────────
+        AstContent::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            let id_override = extract_id_override(ast.decorators());
+            ctx.push_container(EventKind::If, id_override);
+            let result = find_loc_id_recursive(then_block, ctx, byte_offset).or_else(|| {
+                else_block
+                    .as_ref()
+                    .and_then(|eb| find_loc_id_recursive(eb, ctx, byte_offset))
+            });
+            ctx.pop_container();
+            result
+        }
+
+        // ── Pattern match ─────────────────────────────────────────────────────
+        AstContent::Match { arms, .. } => {
+            let id_override = extract_id_override(ast.decorators());
+            ctx.push_container(EventKind::Match, id_override);
+            let mut result = None;
+            for arm in arms {
+                // Visit each arm in order so that dialogue counters inside earlier
+                // arms are advanced before we reach the target arm.
+                if result.is_none() {
+                    result = find_loc_id_recursive(&arm.body, ctx, byte_offset);
+                }
+            }
+            ctx.pop_container();
+            result
+        }
+
+        // ── Menu (choice) ──────────────────────────────────────────────────────
+        AstContent::Menu { options } => {
+            let id_override = extract_id_override(ast.decorators());
+            ctx.push_container(EventKind::Menu, id_override);
+
+            let mut result = None;
+            for opt_ast in options {
+                if let AstContent::MenuOption { label, content } = opt_ast.content() {
+                    let opt_override = extract_id_override(opt_ast.decorators());
+                    // next_option_id MUST be called for every option in order
+                    // (advances the slug-collision counter) even if not the target.
+                    let opt_loc_id = ctx.next_option_id(label, opt_override);
+
+                    if result.is_none() {
+                        if span_contains(opt_ast.span(), byte_offset) {
+                            // Cursor is inside this option — try the option body first
+                            // for a more specific Dialogue hit.
+                            result =
+                                find_loc_id_recursive(content, ctx, byte_offset).or(opt_loc_id);
+                        } else {
+                            // Not the target option, but still advance dialogue counters
+                            // inside its body so that subsequent options get correct IDs.
+                            find_loc_id_recursive(content, ctx, byte_offset);
+                        }
+                    }
+                    // Once result is Some we stop visiting further options.
+                }
+            }
+
+            ctx.pop_container();
+            result
+        }
+
+        // ── Dialogue (the localizable leaf) ──────────────────────────────────
+        AstContent::Dialogue { .. } => {
+            let id_override = extract_id_override(ast.decorators());
+            // next_dialogue_id must be called for EVERY dialogue to advance the counter,
+            // regardless of whether this is the hover target.
+            let loc_id = ctx.next_dialogue_id(id_override);
+            if span_contains(ast.span(), byte_offset) {
+                loc_id
+            } else {
+                None
+            }
+        }
+
+        // ── Fallthrough: recurse into children ────────────────────────────────
+        // Expression-level nodes (BinOp, Call, Value, …) will not contain
+        // localizable sub-nodes, so this returns None quickly for them.
+        _ => {
+            for child in ast.children() {
+                if let Some(found) = find_loc_id_recursive(child, ctx, byte_offset) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+    }
 }
 
 /// Build hover markdown for a known [`Symbol`].
@@ -3393,5 +3526,74 @@ mod tests {
             result.is_none(),
             "expected None for unknown name, got {result:?}"
         );
+    }
+
+    // ── hover_loc_id tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn hover_loc_id_for_dialogue_returns_correct_id() {
+        // Actual string: label start { narrator: "Hello" }
+        // Byte layout:   0             14      23 25
+        // 'H' at byte 25 sits inside the Dialogue span (narrator: "Hello").
+        let src = "label start { narrator: \"Hello\" }";
+        let ast = parse(src);
+        let result = hover_loc_id(&ast, "intro", 25);
+        assert_eq!(result, Some("intro-start-line_1".to_string()));
+    }
+
+    #[test]
+    fn hover_loc_id_second_dialogue_has_incremented_counter() {
+        // Two dialogue lines separated by newlines (Urd requires newlines between statements).
+        //
+        // Byte layout of the source string:
+        //   "label start {\n    narrator: \"one\"\n    narrator: \"two\"\n}"
+        //    0             13   18        28 32   38        48 52  53 54
+        //
+        // Second Dialogue spans bytes 38–53; 't' in "two" is at byte 49.
+        let src = "label start {\n    narrator: \"one\"\n    narrator: \"two\"\n}";
+        let ast = parse(src);
+        let result = hover_loc_id(&ast, "intro", 49);
+        assert_eq!(result, Some("intro-start-line_2".to_string()));
+    }
+
+    #[test]
+    fn hover_loc_id_menu_option_returns_option_id() {
+        // Actual string: label start { menu { "alcohol" {} } }
+        // '"' at byte 21, 'a' at byte 22 — inside the MenuOption span.
+        let src = "label start { menu { \"alcohol\" {} } }";
+        let ast = parse(src);
+        let result = hover_loc_id(&ast, "intro", 22);
+        assert_eq!(result, Some("intro-start-menu_1-alcohol".to_string()));
+    }
+
+    #[test]
+    fn hover_loc_id_outside_label_returns_none() {
+        // Dialogue not nested in any label → IdContext scope is empty →
+        // next_dialogue_id returns None even if the cursor is on the node.
+        let src = "narrator: \"Hello\"";
+        let ast = parse(src);
+        let result = hover_loc_id(&ast, "intro", 5);
+        assert!(
+            result.is_none(),
+            "dialogue outside label should have no loc_id"
+        );
+    }
+
+    #[test]
+    fn hover_loc_id_with_id_override_uses_custom_slug() {
+        // The @id decorator must be on its own line before the decorated statement.
+        // Urd's decorator parser requires at least one newline between the decorator
+        // and the statement it annotates.
+        //
+        // Byte layout:
+        //   "label start {\n    @id(\"my_line\")\n    narrator: \"hi\"\n}"
+        //    0             13   18             31   37        47 50 51 52
+        //
+        // Dialogue span covers the decorated node (from '@' at 18 through '"' at 50).
+        // 'h' in "hi" is at byte 48 — clearly inside the Dialogue span.
+        let src = "label start {\n    @id(\"my_line\")\n    narrator: \"hi\"\n}";
+        let ast = parse(src);
+        let result = hover_loc_id(&ast, "intro", 48);
+        assert_eq!(result, Some("intro-start-my_line".to_string()));
     }
 }

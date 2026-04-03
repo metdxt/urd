@@ -29,7 +29,7 @@ use urd::analysis::synonyms::SynonymStore;
 use completion::{TypeContext, completion_items};
 use semantic::{
     SemanticTokenType as UrdTokenType, Symbol, SymbolKind as UrdSymbolKind, collect_symbols,
-    find_definition, find_references, find_rename_spans, hover_info,
+    find_definition, find_references, find_rename_spans, hover_info, hover_loc_id,
     semantic_tokens as compute_semantic_tokens,
 };
 #[cfg(feature = "spellcheck")]
@@ -155,6 +155,16 @@ fn symbols_from_doc(doc: &Document) -> Vec<Symbol> {
         Some(ast) => collect_symbols(ast),
         None => Vec::new(),
     }
+}
+
+/// Extracts the file stem (filename without extension) from a `file://` URI.
+///
+/// `file:///path/to/intro.urd` → `Some("intro")`
+fn uri_to_file_stem(uri: &Url) -> Option<String> {
+    let path = uri.to_file_path().ok()?;
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
 }
 
 // ── Backend ──────────────────────────────────────────────────────────────────
@@ -434,33 +444,35 @@ impl LanguageServer for Backend {
         let mut symbols = collect_symbols(ast);
         symbols.extend(self.workspace.imported_symbols(&uri));
 
-        // Try local hover first.
-        if let Some(markdown) = hover_info(ast, &symbols, &src, byte_offset) {
-            return Ok(Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: markdown,
-                }),
-                range: None,
-            }));
-        }
+        // Gather main hover content (variable/label/type info).
+        let mut markdown: Option<String> = hover_info(ast, &symbols, &src, byte_offset);
 
-        // Fall back: if the word under the cursor looks like a qualified
-        // reference (alias.name), try the workspace index.
-        if let Some(word) = word_at_offset(&src, byte_offset)
+        // Fall back to workspace hover for qualified references (alias.name).
+        if markdown.is_none()
+            && let Some(word) = word_at_offset(&src, byte_offset)
             && word.contains('.')
-            && let Some(markdown) = self.workspace.hover_info(&uri, word)
         {
-            return Ok(Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: markdown,
-                }),
-                range: None,
-            }));
+            markdown = self.workspace.hover_info(&uri, word);
         }
 
-        Ok(None)
+        // Append a localization-key badge when the cursor is on a Dialogue or MenuOption.
+        if let Some(file_stem) = uri_to_file_stem(&uri)
+            && let Some(loc_id) = hover_loc_id(ast, &file_stem, byte_offset)
+        {
+            let badge = format!("\n\n---\n🔑 `{loc_id}`");
+            match &mut markdown {
+                Some(m) => m.push_str(&badge),
+                None => markdown = Some(badge),
+            }
+        }
+
+        Ok(markdown.map(|value| Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: None,
+        }))
     }
 
     // ── Completion ───────────────────────────────────────────────────────

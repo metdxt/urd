@@ -708,11 +708,17 @@ fn menu_parser<'tok, I: UrdInput<'tok>>(
         Token::StrLit(s) => s,
     };
 
-    let option = option_label
+    let option = decorators_parser()
+        .or_not()
+        .then(option_label)
         .then(block)
-        .map_with(|(label, code_block), extra| {
+        .map_with(|((maybe_decorators, label), code_block), extra| {
             // Use Display trait to convert ParsedString to String
-            Ast::menu_option(format!("{}", label), code_block).with_span(extra.span())
+            let node = Ast::menu_option(format!("{}", label), code_block);
+            match maybe_decorators {
+                Some(decs) => node.with_decorators(decs).with_span(extra.span()),
+                None => node.with_span(extra.span()),
+            }
         });
 
     let options = option

@@ -5,6 +5,7 @@
 //! ## Passes
 //!
 //! ### Errors
+//! - [`id_decorator`]: Malformed `@id` decorators or duplicate `@id` values in the same scope.
 //! - [`exhaustiveness`]: Non-exhaustive `match` over an enum.
 //! - [`types`]: Type-annotation mismatches on declarations and assignments.
 //! - [`dead_end`]: Execution paths with no recognised terminator.
@@ -38,6 +39,7 @@ pub mod dead_end;
 pub mod duplicate_menu_dest;
 pub mod empty_dialogue;
 pub mod exhaustiveness;
+pub mod id_decorator;
 pub mod labels;
 pub mod loop_detection;
 pub mod menu_structure;
@@ -372,6 +374,39 @@ pub enum AnalysisError {
         /// Source span of that label.
         span: SimpleSpan,
     },
+
+    // ── @id decorator validation ───────────────────────────────────────────
+    /// `@id` was used with wrong arity, wrong type, or an interpolated string.
+    ///
+    /// This is a hard error — the compiler will reject the file.
+    InvalidIdDecorator {
+        /// Human-readable explanation of what is wrong.
+        reason: String,
+        /// Source span of the offending decorator or node.
+        span: SimpleSpan,
+    },
+
+    /// Two nodes in the same parent scope carry the same explicit `@id` value.
+    ///
+    /// This is a hard error — duplicate keys would produce identical loc-IDs.
+    DuplicateId {
+        /// The duplicated value.
+        id: String,
+        /// Span of the first occurrence.
+        first_span: SimpleSpan,
+        /// Span of the second occurrence (this is what the diagnostic points at).
+        second_span: SimpleSpan,
+    },
+
+    /// `@id` was placed on a node type that does not support localisation IDs.
+    ///
+    /// This is a warning — the decorator has no effect but is not harmful.
+    IdOnUnsupportedNode {
+        /// A short description of the node kind (e.g. `"Declaration"`).
+        node_kind: String,
+        /// Source span of the offending node.
+        span: SimpleSpan,
+    },
 }
 
 impl AnalysisError {
@@ -402,6 +437,9 @@ impl AnalysisError {
             AnalysisError::Misspelling { span, .. } => *span,
             AnalysisError::InfiniteDialogueLoop { span, .. } => *span,
             AnalysisError::UndefinedVariable { span, .. } => *span,
+            AnalysisError::InvalidIdDecorator { span, .. } => *span,
+            AnalysisError::DuplicateId { second_span, .. } => *second_span,
+            AnalysisError::IdOnUnsupportedNode { span, .. } => *span,
         }
     }
 
@@ -417,7 +455,8 @@ impl AnalysisError {
             | Self::AlwaysDeadBranch { .. }
             | Self::PossibleTypo { .. }
             | Self::InfiniteDialogueLoop { .. }
-            | Self::UndefinedLabel { .. } => true,
+            | Self::UndefinedLabel { .. }
+            | Self::IdOnUnsupportedNode { .. } => true,
             #[cfg(feature = "spellcheck")]
             Self::Misspelling { .. } => true,
             _ => false,
@@ -609,6 +648,18 @@ impl AnalysisError {
                 ),
                 None => format!("Undefined variable '{name}': not declared in any visible scope"),
             },
+
+            AnalysisError::InvalidIdDecorator { reason, .. } => {
+                format!("invalid @id decorator: {reason}")
+            }
+
+            AnalysisError::DuplicateId { id, .. } => {
+                format!("duplicate @id value `{id}` in the same scope")
+            }
+
+            AnalysisError::IdOnUnsupportedNode { node_kind, .. } => {
+                format!("@id has no effect on `{node_kind}` nodes")
+            }
         }
     }
 
@@ -730,6 +781,18 @@ impl AnalysisError {
                 Some(s) => format!("'{name}' — did you mean '{s}'?"),
                 None => format!("'{name}' is not declared"),
             },
+
+            AnalysisError::InvalidIdDecorator { reason, .. } => {
+                format!("invalid @id: {reason}")
+            }
+
+            AnalysisError::DuplicateId { id, .. } => {
+                format!("`{id}` is already used as an @id in this scope")
+            }
+
+            AnalysisError::IdOnUnsupportedNode { node_kind, .. } => {
+                format!("@id has no effect on `{node_kind}` nodes")
+            }
         }
     }
 }
@@ -851,6 +914,7 @@ fn run_passes_with_semantic(
     let mut errors: Vec<AnalysisError> = Vec::new();
 
     // ── Errors ────────────────────────────────────────────────────────────
+    errors.extend(id_decorator::check(ast));
     errors.extend(top_level::check(ast));
     errors.extend(exhaustiveness::check(ast, ctx));
     errors.extend(types::check(ast, ctx));
@@ -882,7 +946,7 @@ fn run_passes_with_semantic(
 ///
 /// ## Pass order (errors first, then warnings)
 ///
-/// **Errors:** `exhaustiveness` → `types` → `dead_end` →
+/// **Errors:** `id_decorator` → `exhaustiveness` → `types` → `dead_end` →
 /// `menu_structure` (empty menus) → `const_reassign`
 ///
 /// **Warnings:** `top_level` → `labels` → `unreachable_label` → `menu_structure` (single-option) →

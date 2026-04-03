@@ -19,7 +19,8 @@ fn test_enum_single_line() {
         panic!("expected EnumDecl, got {:?}", node.content());
     };
     assert_eq!(name, "Direction");
-    assert_eq!(variants, &["North", "South", "East", "West"]);
+    let names: Vec<&str> = variants.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, &["North", "South", "East", "West"]);
 }
 
 #[test]
@@ -37,7 +38,8 @@ fn test_enum_multiline() {
         panic!("expected EnumDecl, got {:?}", node.content());
     };
     assert_eq!(name, "Direction");
-    assert_eq!(variants, &["North", "South", "East", "West"]);
+    let names: Vec<&str> = variants.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, &["North", "South", "East", "West"]);
 }
 
 #[test]
@@ -55,7 +57,8 @@ fn test_enum_mixed_separators() {
     let AstContent::EnumDecl { variants, .. } = node.content() else {
         panic!("expected EnumDecl, got {:?}", node.content());
     };
-    assert_eq!(variants, &["North", "South", "East", "West"]);
+    let names: Vec<&str> = variants.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, &["North", "South", "East", "West"]);
 }
 
 #[test]
@@ -71,7 +74,8 @@ fn test_enum_single_variant() {
         panic!("expected EnumDecl, got {:?}", node.content());
     };
     assert_eq!(name, "Coin");
-    assert_eq!(variants, &["Heads"]);
+    let names: Vec<&str> = variants.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, &["Heads"]);
 }
 
 #[test]
@@ -86,7 +90,8 @@ fn test_enum_trailing_comma() {
     let AstContent::EnumDecl { variants, .. } = node.content() else {
         panic!("expected EnumDecl, got {:?}", node.content());
     };
-    assert_eq!(variants, &["A", "B"]);
+    let names: Vec<&str> = variants.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, &["A", "B"]);
 }
 
 #[test]

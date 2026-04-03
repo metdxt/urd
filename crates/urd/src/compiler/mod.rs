@@ -23,6 +23,7 @@ use thiserror::Error;
 use crate::{
     ir::{IrChoiceOption, IrEdge, IrGraph, IrNodeKind, SwitchArm},
     lexer::strings::ParsedString,
+    loc::{EventKind, IdContext, extract_id_override},
     parser::ast::{Ast, AstContent, DeclKind, MatchPattern, Operator},
     runtime::value::RuntimeValue,
 };
@@ -111,6 +112,26 @@ impl Compiler {
         let mut completed = HashSet::new();
         loader::compile_recursive(ast, loader, &mut in_progress, &mut completed)
     }
+
+    /// Compile `ast` into an [`IrGraph`] with localization ID generation enabled.
+    ///
+    /// `file_stem` should be the filename without extension (e.g. `"intro"` for `intro.urd`).
+    /// All [`IrNodeKind::Dialogue`], [`IrNodeKind::Choice`], and option nodes will have
+    /// their `loc_id` fields populated.
+    ///
+    /// The existing [`Compiler::compile`] remains unchanged — it produces `loc_id: None`
+    /// everywhere, keeping all existing tests unaffected.
+    pub fn compile_named(ast: &Ast, file_stem: &str) -> Result<IrGraph, CompilerError> {
+        let mut state = CompilerState {
+            graph: IrGraph::new(),
+            label_placeholders: HashMap::new(),
+            id_ctx: Some(IdContext::new(file_stem)),
+        };
+        state.scan_labels(ast)?;
+        let entry = state.compile_top_level(ast)?;
+        state.graph.entry = entry;
+        Ok(state.graph)
+    }
 }
 
 // ─── Speaker normalisation ────────────────────────────────────────────────────
@@ -156,6 +177,8 @@ pub(super) struct CompilerState {
     pub(super) graph: IrGraph,
     /// Maps label names → the [`NodeIndex`] of their pre-allocated Nop placeholder.
     pub(super) label_placeholders: HashMap<String, NodeIndex>,
+    /// ID generation context. `None` when no file stem was provided (inline tests, etc.).
+    pub(super) id_ctx: Option<IdContext>,
 }
 
 impl CompilerState {
@@ -163,6 +186,7 @@ impl CompilerState {
         CompilerState {
             graph: IrGraph::new(),
             label_placeholders: HashMap::new(),
+            id_ctx: None,
         }
     }
 
@@ -446,11 +470,25 @@ impl CompilerState {
                     self.graph.add_edge(merge, n, IrEdge::Next);
                 }
 
+                // Push if_N container for nested dialogue scoping.
+                let if_override = if self.id_ctx.is_some() {
+                    extract_id_override(ast.decorators())
+                } else {
+                    None
+                };
+                if let Some(ctx) = &mut self.id_ctx {
+                    ctx.push_container(EventKind::If, if_override);
+                }
+
                 let then_entry = self.compile_node(then_block, Some(merge))?.unwrap_or(merge);
                 let else_entry = match else_block {
                     Some(eb) => self.compile_node(eb, Some(merge))?.unwrap_or(merge),
                     None => merge,
                 };
+
+                if let Some(ctx) = &mut self.id_ctx {
+                    ctx.pop_container();
+                }
 
                 let id = self.graph.push(IrNodeKind::Branch {
                     condition: *condition.clone(),
@@ -468,6 +506,16 @@ impl CompilerState {
                     .get(label)
                     .copied()
                     .ok_or_else(|| CompilerError::UnknownLabel(label.clone()))?;
+
+                // Push label scope for ID generation.
+                let id_override = if self.id_ctx.is_some() {
+                    extract_id_override(ast.decorators())
+                } else {
+                    None
+                };
+                if let Some(ctx) = &mut self.id_ctx {
+                    ctx.push_label(label, id_override);
+                }
 
                 // Emit the ExitScope node that runs *after* the block body.
                 let exit_id = self.graph.push(IrNodeKind::ExitScope {
@@ -495,6 +543,11 @@ impl CompilerState {
 
                 // Register in the graph's public label map.
                 self.graph.labels.insert(label.clone(), placeholder_id);
+
+                // Pop label scope.
+                if let Some(ctx) = &mut self.id_ctx {
+                    ctx.pop_label();
+                }
 
                 Ok(Some(placeholder_id))
             }
@@ -549,10 +602,21 @@ impl CompilerState {
 
             // ── Dialogue ─────────────────────────────────────────────────────
             AstContent::Dialogue { speakers, content } => {
+                let id_override = if self.id_ctx.is_some() {
+                    extract_id_override(ast.decorators())
+                } else {
+                    None
+                };
+                let loc_id = if let Some(ctx) = &mut self.id_ctx {
+                    ctx.next_dialogue_id(id_override)
+                } else {
+                    None
+                };
                 let id = self.graph.push(IrNodeKind::Dialogue {
                     speakers: normalize_speakers(speakers),
                     lines: *content.clone(),
                     decorators: ast.decorators().to_vec(),
+                    loc_id,
                 });
                 if let Some(n) = next {
                     self.graph.add_edge(id, n, IrEdge::Next);
@@ -562,14 +626,36 @@ impl CompilerState {
 
             // ── Menu ─────────────────────────────────────────────────────────
             AstContent::Menu { options } => {
+                // Push the menu container scope first; get choice_loc_id after push.
+                let menu_override = if self.id_ctx.is_some() {
+                    extract_id_override(ast.decorators())
+                } else {
+                    None
+                };
+                let choice_loc_id = if let Some(ctx) = &mut self.id_ctx {
+                    ctx.push_container(EventKind::Menu, menu_override);
+                    ctx.current_full_path()
+                } else {
+                    None
+                };
+
                 let mut ir_options = Vec::with_capacity(options.len());
                 let mut option_entries: Vec<NodeIndex> = Vec::with_capacity(options.len());
 
                 for opt_ast in options {
                     match opt_ast.content() {
                         AstContent::MenuOption { label, content } => {
-                            // Each option body continues to `next` so options
-                            // can rejoin normal execution after the menu.
+                            let opt_override = if self.id_ctx.is_some() {
+                                extract_id_override(opt_ast.decorators())
+                            } else {
+                                None
+                            };
+                            let opt_loc_id = if let Some(ctx) = &mut self.id_ctx {
+                                ctx.next_option_id(label, opt_override)
+                            } else {
+                                None
+                            };
+
                             let entry = self
                                 .compile_node(content, next)?
                                 .unwrap_or_else(|| self.graph.push(IrNodeKind::Nop));
@@ -577,6 +663,7 @@ impl CompilerState {
                             ir_options.push(IrChoiceOption {
                                 label: label.clone(),
                                 decorators: opt_ast.decorators().to_vec(),
+                                loc_id: opt_loc_id,
                             });
                         }
                         _ => {
@@ -587,9 +674,15 @@ impl CompilerState {
                     }
                 }
 
+                // Pop the menu container.
+                if let Some(ctx) = &mut self.id_ctx {
+                    ctx.pop_container();
+                }
+
                 let id = self.graph.push(IrNodeKind::Choice {
                     options: ir_options,
                     decorators: ast.decorators().to_vec(),
+                    loc_id: choice_loc_id,
                 });
                 for (i, entry) in option_entries.iter().enumerate() {
                     self.graph.add_edge(id, *entry, IrEdge::Option(i));
@@ -603,6 +696,16 @@ impl CompilerState {
                 let merge = self.graph.push(IrNodeKind::Nop);
                 if let Some(n) = next {
                     self.graph.add_edge(merge, n, IrEdge::Next);
+                }
+
+                // Push match_N container.
+                let match_override = if self.id_ctx.is_some() {
+                    extract_id_override(ast.decorators())
+                } else {
+                    None
+                };
+                if let Some(ctx) = &mut self.id_ctx {
+                    ctx.push_container(EventKind::Match, match_override);
                 }
 
                 let mut switch_arms: Vec<SwitchArm> = Vec::with_capacity(arms.len());
@@ -622,6 +725,10 @@ impl CompilerState {
                             arm_entries.push(target);
                         }
                     }
+                }
+
+                if let Some(ctx) = &mut self.id_ctx {
+                    ctx.pop_container();
                 }
 
                 let id = self.graph.push(IrNodeKind::Switch {
@@ -1779,5 +1886,102 @@ mod tests {
             }
             other => panic!("expected Assign, got {:?}", other),
         }
+    }
+
+    // ── Localization ID tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_compile_named_dialogue_gets_loc_id() {
+        let speakers = Ast::expr_list(vec![str_lit("narrator")]);
+        let lines = Ast::expr_list(vec![str_lit("Hello")]);
+        let dialogue = Ast::dialogue(speakers, lines);
+        let labeled = Ast::labeled_block("start".to_string(), Ast::block(vec![dialogue]));
+        let ast = Ast::block(vec![labeled]);
+
+        let graph = Compiler::compile_named(&ast, "intro").expect("compile_named failed");
+
+        let mut found = false;
+        for node_idx in graph.graph.node_indices() {
+            if let IrNodeKind::Dialogue { loc_id, .. } = &graph.graph[node_idx] {
+                assert_eq!(loc_id.as_deref(), Some("intro-start-line_1"));
+                found = true;
+            }
+        }
+        assert!(found, "no Dialogue node found in graph");
+    }
+
+    #[test]
+    fn test_compile_no_file_stem_loc_id_is_none() {
+        let speakers = Ast::expr_list(vec![str_lit("narrator")]);
+        let lines = Ast::expr_list(vec![str_lit("Hello")]);
+        let dialogue = Ast::dialogue(speakers, lines);
+        let labeled = Ast::labeled_block("start".to_string(), Ast::block(vec![dialogue]));
+        let ast = Ast::block(vec![labeled]);
+
+        let graph = Compiler::compile(&ast).expect("compile failed");
+
+        for node_idx in graph.graph.node_indices() {
+            if let IrNodeKind::Dialogue { loc_id, .. } = &graph.graph[node_idx] {
+                assert!(
+                    loc_id.is_none(),
+                    "loc_id should be None when no file stem given"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_compile_named_menu_gets_loc_id() {
+        let opt1 = Ast::menu_option("alcohol".to_string(), Ast::block(vec![]));
+        let opt2 = Ast::menu_option("nicotine".to_string(), Ast::block(vec![]));
+        let menu = Ast::menu(vec![opt1, opt2]);
+        let labeled = Ast::labeled_block("start".to_string(), Ast::block(vec![menu]));
+        let ast = Ast::block(vec![labeled]);
+
+        let graph = Compiler::compile_named(&ast, "intro").expect("compile_named failed");
+
+        let mut found_choice = false;
+        for node_idx in graph.graph.node_indices() {
+            if let IrNodeKind::Choice {
+                loc_id, options, ..
+            } = &graph.graph[node_idx]
+            {
+                assert_eq!(loc_id.as_deref(), Some("intro-start-menu_1"));
+                assert_eq!(
+                    options[0].loc_id.as_deref(),
+                    Some("intro-start-menu_1-alcohol")
+                );
+                assert_eq!(
+                    options[1].loc_id.as_deref(),
+                    Some("intro-start-menu_1-nicotine")
+                );
+                found_choice = true;
+            }
+        }
+        assert!(found_choice, "no Choice node found in graph");
+    }
+
+    #[test]
+    fn test_compile_named_two_menus_independent_counters() {
+        let menu1 = Ast::menu(vec![Ast::menu_option("a".to_string(), Ast::block(vec![]))]);
+        let menu2 = Ast::menu(vec![Ast::menu_option("b".to_string(), Ast::block(vec![]))]);
+        let labeled = Ast::labeled_block("start".to_string(), Ast::block(vec![menu1, menu2]));
+        let ast = Ast::block(vec![labeled]);
+
+        let graph = Compiler::compile_named(&ast, "file").expect("compile_named failed");
+
+        let mut choice_ids: Vec<String> = graph
+            .graph
+            .node_indices()
+            .filter_map(|idx| {
+                if let IrNodeKind::Choice { loc_id, .. } = &graph.graph[idx] {
+                    loc_id.clone()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        choice_ids.sort();
+        assert_eq!(choice_ids, vec!["file-start-menu_1", "file-start-menu_2"]);
     }
 }
