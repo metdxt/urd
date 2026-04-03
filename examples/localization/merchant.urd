@@ -2,9 +2,11 @@
 #
 # Features demonstrated:
 #   @fluent                  injects a global into the Fluent context for every message
-#   @fluent("alias")         renames a variable in the FTL files (urd: item_name → $item)
+#   @fluent("alias")         renames a variable in the FTL files (urd: item → $item)
 #   @fluent let (scoped)     a label-local binding, visible only in its label's messages
 #   string interpolation     {gold} / {price} in urd strings are also auto-injected
+#   item ID pattern          pass slugs ("health_potion"), never raw display strings;
+#                            each FTL locale maps the ID to its grammatically correct form
 #
 # Workflow:
 #   # 1. Generate the FTL stub (source-language scaffold for translators):
@@ -69,14 +71,21 @@ label start {
 }
 
 label browse {
-    # @fluent("item") — the urd variable is item_name, but FTL translators
-    # reference it as $item.  Useful when the urd name is long, clashes with a
-    # Fluent built-in keyword, or you simply prefer a shorter translation key.
+    # ── Item ID — pass a slug, NEVER a raw display string. ───────────────────
+    # The FTL selector in each locale maps this ID to the grammatically correct
+    # form for that language.  Polish needs "mikstura zdrowia" (nominative) in
+    # "Oto: X" but "miksturę zdrowia" (accusative) in "Kup X za…" — the same
+    # slug produces different surface forms depending on sentence position.
+    # Adding a new item only requires updating the .ftl files; urd stays the same.
+    #
+    # @fluent("item") renames the urd variable to $item in the FTL context.
     # This binding is scope-bound: it lives only while browse is on the stack.
     @fluent("item")
-    let item_name = "Health Potion"
+    let item = "health_potion"
 
-    elara: "Behold: the {item_name}! I ask {price} gold — a true bargain."
+    # Fallback text shown when no FTL file is loaded (development / no-l10n mode).
+    # With a localizer attached, the FTL message replaces this entirely.
+    elara: "Behold: the Health Potion! I ask {price} gold — a true bargain."
 
     menu {
         "Buy it for {price} gold" {
