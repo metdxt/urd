@@ -1167,8 +1167,7 @@ fn collect_fluent_vars(
 ) -> HashMap<String, RuntimeValue> {
     let mut vars = env.collect_fluent_bindings();
 
-    // Also pull in variables used in string interpolation.
-    for path in collect_interpolation_paths(lines_ast) {
+    for (path, format) in collect_interpolations(lines_ast) {
         // Use the last path segment as the Fluent key (e.g. "user.name" → "name").
         // If the path has no dot, the key IS the path.
         let key = path
@@ -1184,7 +1183,16 @@ fn collect_fluent_vars(
         // fluent_bindings cache.  The @fluent alias entry (a DIFFERENT key)
         // is left untouched, so `$item` (alias) and `$item_name` (interpolation)
         // can coexist correctly.
-        if let Ok(value) = env.get(&path) {
+        if let Ok(raw_val) = env.get(&path) {
+            let value = if let Some(ref fmt) = format {
+                // Pre-format using the same logic as the inline string evaluator
+                // so Fluent receives the already-formatted string (e.g. "30.00")
+                // rather than a raw number it would format independently.
+                let formatted = eval::format_runtime_value(&raw_val, Some(fmt));
+                RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain(&formatted))
+            } else {
+                raw_val
+            };
             vars.insert(key, value);
         }
     }
@@ -1192,55 +1200,75 @@ fn collect_fluent_vars(
     vars
 }
 
-/// Recursively collect all interpolation variable paths from an AST node.
-fn collect_interpolation_paths(ast: &crate::parser::ast::Ast) -> Vec<String> {
-    let mut paths: HashSet<String> = HashSet::new();
-    collect_interpolation_paths_inner(ast, &mut paths);
-    let mut result: Vec<String> = paths.into_iter().collect();
-    result.sort();
+/// Recursively collect all `(path, format)` interpolation pairs from an AST.
+/// Deduplicates by path; for collisions the first format specifier seen wins.
+fn collect_interpolations(ast: &crate::parser::ast::Ast) -> Vec<(String, Option<String>)> {
+    use crate::lexer::strings::StringPart;
+
+    fn inner(
+        ast: &crate::parser::ast::Ast,
+        out: &mut std::collections::HashMap<String, Option<String>>,
+    ) {
+        if let AstContent::Value(RuntimeValue::Str(ps)) = ast.content() {
+            for part in ps.parts() {
+                if let StringPart::Interpolation(interp) = part {
+                    out.entry(interp.path.clone())
+                        .or_insert_with(|| interp.format.clone());
+                }
+            }
+        }
+        for child in ast.children() {
+            inner(child, out);
+        }
+    }
+
+    let mut map = std::collections::HashMap::new();
+    inner(ast, &mut map);
+    let mut result: Vec<(String, Option<String>)> = map.into_iter().collect();
+    result.sort_by(|a, b| a.0.cmp(&b.0));
     result
 }
 
-fn collect_interpolation_paths_inner(ast: &crate::parser::ast::Ast, paths: &mut HashSet<String>) {
-    use crate::lexer::strings::StringPart;
-
-    if let AstContent::Value(RuntimeValue::Str(ps)) = ast.content() {
-        for part in ps.parts() {
-            if let StringPart::Interpolation(interp) = part {
-                paths.insert(interp.path.clone());
-            }
-        }
-    }
-    for child in ast.children() {
-        collect_interpolation_paths_inner(child, paths);
-    }
-}
-
-/// Extract `{varname}` interpolation placeholders from a plain option-label
-/// string (e.g. `"Buy it for {price} gold"` → `["price"]`).
+/// Extract `{varname}` and `{varname:fmt}` interpolation placeholders from a
+/// plain option-label string (e.g. `"Buy for {price:.2} gold"` →
+/// `[("price", Some(".2"))]`).
 ///
-/// This is a lightweight scan over the raw `String` label stored in
-/// [`IrChoiceOption`].  It mirrors the logic of
-/// [`collect_interpolation_paths_inner`] but operates on an already-evaluated
-/// string instead of an AST, because choice option labels are stored as
-/// `String` after compilation.
-fn extract_label_interp_vars(label: &str) -> Vec<String> {
+/// Splits each brace interior on the first `:` to separate the variable path
+/// from an optional format specifier. The path is validated (alphanumeric,
+/// `_`, `.` only); the format specifier is kept verbatim.
+fn extract_label_interp_vars(label: &str) -> Vec<(String, Option<String>)> {
     let mut vars = Vec::new();
     let bytes = label.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'{' {
             let start = i + 1;
-            if let Some(end) = label[start..].find('}') {
-                let name = label[start..start + end].trim();
-                if !name.is_empty()
-                    && name
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
-                {
-                    vars.push(name.to_string());
+            if let Some(rel_end) = label[start..].find('}') {
+                let inner = label[start..start + rel_end].trim();
+                if !inner.is_empty() {
+                    let (path_str, fmt) = if let Some(colon) = inner.find(':') {
+                        let p = inner[..colon].trim();
+                        let f = inner[colon + 1..].trim();
+                        (
+                            p,
+                            if f.is_empty() {
+                                None
+                            } else {
+                                Some(f.to_string())
+                            },
+                        )
+                    } else {
+                        (inner, None)
+                    };
+                    if !path_str.is_empty()
+                        && path_str
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                    {
+                        vars.push((path_str.to_string(), fmt));
+                    }
                 }
-                i = start + end + 1;
+                i = start + rel_end + 1;
                 continue;
             }
         }
@@ -1286,12 +1314,18 @@ fn build_choice_event(
         // reflected correctly in the Fluent context, matching the same
         // semantics applied to Dialogue events in `collect_fluent_vars`.
         let mut option_fluent_vars = env.collect_fluent_bindings();
-        for path in extract_label_interp_vars(&opt.label) {
+        for (path, format) in extract_label_interp_vars(&opt.label) {
             let key = path
                 .rsplit_once('.')
                 .map(|(_, tail)| tail.to_string())
                 .unwrap_or_else(|| path.clone());
-            if let Ok(value) = env.get(&path) {
+            if let Ok(raw_val) = env.get(&path) {
+                let value = if let Some(ref fmt) = format {
+                    let formatted = eval::format_runtime_value(&raw_val, Some(fmt));
+                    RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain(&formatted))
+                } else {
+                    raw_val
+                };
                 option_fluent_vars.insert(key, value);
             }
         }
@@ -2715,26 +2749,45 @@ label start {
     #[test]
     fn extract_label_interp_vars_single_placeholder() {
         let vars = extract_label_interp_vars("Buy it for {price} gold");
-        assert_eq!(vars, vec!["price".to_string()]);
+        assert_eq!(vars, vec![("price".to_string(), None)]);
     }
 
     #[test]
     fn extract_label_interp_vars_multiple_placeholders() {
         let vars = extract_label_interp_vars("Pay {price} from your {gold} gold");
-        assert!(vars.contains(&"price".to_string()));
-        assert!(vars.contains(&"gold".to_string()));
+        assert!(vars.contains(&("price".to_string(), None)));
+        assert!(vars.contains(&("gold".to_string(), None)));
     }
 
     #[test]
     fn extract_label_interp_vars_dotted_path() {
         let vars = extract_label_interp_vars("Hello {player.name}!");
-        assert_eq!(vars, vec!["player.name".to_string()]);
+        assert_eq!(vars, vec![("player.name".to_string(), None)]);
     }
 
     #[test]
     fn extract_label_interp_vars_ignores_empty_braces() {
         let vars = extract_label_interp_vars("broken {} placeholder");
         assert!(vars.is_empty(), "empty braces must not produce a var");
+    }
+
+    #[test]
+    fn extract_label_interp_vars_with_float_format() {
+        let vars = extract_label_interp_vars("Cost: {price:.2} gold");
+        assert_eq!(vars, vec![("price".to_string(), Some(".2".to_string()))]);
+    }
+
+    #[test]
+    fn extract_label_interp_vars_with_zero_pad_format() {
+        let vars = extract_label_interp_vars("Turn {turns:03} of 100");
+        assert_eq!(vars, vec![("turns".to_string(), Some("03".to_string()))]);
+    }
+
+    #[test]
+    fn extract_label_interp_vars_mixed_format_and_plain() {
+        let vars = extract_label_interp_vars("{count:02} items for {price} gold");
+        assert!(vars.contains(&("count".to_string(), Some("02".to_string()))));
+        assert!(vars.contains(&("price".to_string(), None)));
     }
 
     // ── stale @fluent binding fixes ─────────────────────────────────────────
@@ -2806,6 +2859,72 @@ label start {
             localized.as_deref(),
             Some("gold=Int(20)"),
             "FTL context must carry current gold=20, not stale gold=50"
+        );
+    }
+
+    /// Verify that when a string interpolation carries a format specifier
+    /// (e.g. `{price:.2}`), `collect_fluent_vars` passes the **pre-formatted**
+    /// string (`"30.00"`) to the Fluent localizer rather than the raw
+    /// `Float(30.0)`.
+    #[test]
+    fn fluent_var_pre_formatted_with_specifier() {
+        use crate::compiler::Compiler;
+        use crate::compiler::loader::parse_source;
+        use crate::vm::Vm;
+        use crate::vm::registry::DecoratorRegistry;
+        use std::sync::Arc;
+
+        let src = r#"
+const n = :{ name: "N", name_color: "white" }
+@fluent
+global price = 30.0
+@entry
+label start {
+    n: "Total: {price:.2} gold."
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile_named(&ast, "test").expect("compile");
+        let vm = Vm::new(graph, DecoratorRegistry::default()).expect("vm");
+
+        struct CapturingLocalizer;
+        impl crate::Localizer for CapturingLocalizer {
+            fn localize(
+                &self,
+                _id: &str,
+                vars: &std::collections::HashMap<String, RuntimeValue>,
+            ) -> Option<String> {
+                // Return a tagged string so the test can distinguish a
+                // pre-formatted Str from a raw Float.
+                match vars.get("price")? {
+                    RuntimeValue::Str(ps) => Some(format!("str:{}", ps)),
+                    other => Some(format!("other:{other:?}")),
+                }
+            }
+        }
+
+        let mut vm = vm.with_localizer(Arc::new(CapturingLocalizer));
+
+        let mut localized: Option<String> = None;
+        for _ in 0..20 {
+            match vm.next(None) {
+                VmStep::Event(crate::ir::Event::Dialogue { localized_text, .. }) => {
+                    localized = localized_text;
+                    break;
+                }
+                VmStep::Ended => break,
+                VmStep::Error(e) => panic!("VM error: {:?}", e),
+                _ => {}
+            }
+        }
+
+        // The Fluent context must contain the pre-formatted "30.00" string, not
+        // the raw Float(30.0) that would be formatted independently by Fluent.
+        assert_eq!(
+            localized.as_deref(),
+            Some("str:30.00"),
+            "FTL context must carry pre-formatted price=\"30.00\", not raw Float(30.0)"
         );
     }
 

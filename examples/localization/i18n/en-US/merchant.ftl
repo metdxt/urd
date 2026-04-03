@@ -23,7 +23,7 @@ merchant-start-line_1 = You step into the Wandering Bazaar.
 # @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold), $item (urd: item)
 
 # menu: merchant-browse-menu_1
-merchant-browse-menu_1-buy_it_for_price_gold = Buy it for {price} gold
+merchant-browse-menu_1-buy_it_for_price_gold = Buy it for { $price } gold
 merchant-browse-menu_1-try_to_haggle = Try to haggle
 merchant-browse-menu_1-never_mind = Never mind
 
@@ -36,7 +36,7 @@ merchant-browse-line_1 = Behold: the Health Potion! I ask { $price } gold — a 
 merchant-haggle-menu_1-line_1 = Another time, friend. Safe roads to you.
 
 # menu: merchant-haggle-menu_1
-merchant-haggle-menu_1-deal_price_gold = Deal! {price} gold
+merchant-haggle-menu_1-deal_price_gold = Deal! { $price } gold
 merchant-haggle-menu_1-too_rich_for_my_blood = Too rich for my blood
 
 merchant-haggle-line_1 = You drive a hard bargain.

@@ -90,6 +90,49 @@ fn collect_paths_inner(ast: &Ast, paths: &mut Vec<String>) {
 /// ]);
 /// assert_eq!(render_parsed_string_as_ftl(&ps), "hello { $user_name }");
 /// ```
+/// Converts a menu option label string (already rendered via [`ParsedString`]'s
+/// `Display` impl, so interpolations appear as `{var}`) into a Fluent message
+/// value where those interpolations become `{ $var }`.
+///
+/// Dots in variable paths are replaced with underscores to match Fluent
+/// identifier rules (mirrors what [`render_parsed_string_as_ftl`] does).
+///
+/// Format specifiers (`{var:fmt}`) are stripped — Fluent handles formatting
+/// through its own selector syntax.
+fn label_to_ftl_value(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            let mut inner = String::new();
+            let mut closed = false;
+            for ic in chars.by_ref() {
+                if ic == '}' {
+                    closed = true;
+                    break;
+                }
+                inner.push(ic);
+            }
+            if closed && !inner.is_empty() {
+                // Strip any `:format` specifier before converting.
+                let var_path = inner.split(':').next().unwrap_or(&inner);
+                let ftl_var = var_path.replace('.', "_");
+                out.push_str(&format!("{{ ${ftl_var} }}"));
+            } else {
+                // Malformed brace expression — pass through unchanged.
+                out.push('{');
+                out.push_str(&inner);
+                if closed {
+                    out.push('}');
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn render_parsed_string_as_ftl(ps: &ParsedString) -> String {
     let mut out = String::new();
     for part in ps.parts() {
@@ -274,7 +317,10 @@ pub fn generate_ftl(graph: &IrGraph, file_slug: &str) -> String {
                     block.push_str(&format!("# menu: {id}\n"));
                     for option in options {
                         if let Some(opt_id) = &option.loc_id {
-                            block.push_str(&format!("{opt_id} = {}\n", option.label));
+                            block.push_str(&format!(
+                                "{opt_id} = {}\n",
+                                label_to_ftl_value(&option.label)
+                            ));
                         }
                     }
                     block.push('\n');
@@ -643,6 +689,35 @@ mod tests {
         assert!(
             output.contains("story-scene_b-line_1 = Scene B."),
             "scene_b dialogue entry must be present"
+        );
+    }
+
+    #[test]
+    fn menu_option_interpolation_converted_to_fluent_syntax() {
+        // "Buy it for {price} gold" must become "Buy it for { $price } gold"
+        // in the FTL output — the raw urd {var} brace form is not valid Fluent.
+        let opt_buy = Ast::menu_option("Buy it for {price} gold".to_string(), Ast::block(vec![]));
+        let opt_haggle = Ast::menu_option("Try to haggle".to_string(), Ast::block(vec![]));
+        let menu = Ast::menu(vec![opt_buy, opt_haggle]);
+        let ast = Ast::block(vec![Ast::labeled_block(
+            "browse".to_string(),
+            Ast::block(vec![menu]),
+        )]);
+
+        let graph = Compiler::compile_named(&ast, "shop").expect("compile failed");
+        let output = generate_ftl(&graph, "shop");
+
+        assert!(
+            output.contains("{ $price }"),
+            "interpolation in option label must be converted to Fluent {{ $var }} syntax; got:\n{output}"
+        );
+        assert!(
+            !output.contains("{price}"),
+            "raw urd-style {{price}} must not appear in FTL output; got:\n{output}"
+        );
+        assert!(
+            output.contains("shop-browse-menu_1-try_to_haggle = Try to haggle"),
+            "plain option label must be passed through unchanged"
         );
     }
 }
