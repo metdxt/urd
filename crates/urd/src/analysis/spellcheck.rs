@@ -244,17 +244,18 @@ static CHECKERS: [OnceLock<SymSpell<UnicodeStringStrategy>>; 8] = [const { OnceL
 
 /// Process-wide [`ureq::Agent`] used for all dictionary downloads.
 ///
-/// A 5-minute wall-clock timeout and a 60-second per-read stall timeout
-/// guard against hung connections while still allowing large dictionaries
+/// A 5-minute global timeout and a 60-second body-receive timeout guard
+/// against hung connections while still allowing large dictionaries
 /// (30+ MB) to transfer on slow connections.
 #[cfg(not(test))]
 fn http_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
-        ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(300))
-            .timeout_read(std::time::Duration::from_secs(60))
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .timeout_recv_body(Some(std::time::Duration::from_secs(60)))
             .build()
+            .into()
     })
 }
 
@@ -326,8 +327,9 @@ fn ensure_dict_cached(language: SpellcheckLanguage) -> Option<std::path::PathBuf
         }
     };
 
-    // into_reader() has no size limit in ureq 2.x — safe for 30+ MB files.
-    let mut reader = response.into_reader();
+    // into_reader() has no size limit — safe for 30+ MB files.
+    let (_, body) = response.into_parts();
+    let mut reader = body.into_reader();
     if let Err(e) = std::io::copy(&mut reader, &mut file) {
         log::warn!(
             "spellcheck: I/O error while writing {:?} dictionary: {e}",

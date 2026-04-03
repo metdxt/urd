@@ -1059,7 +1059,6 @@ mod tests {
     use crate::lexer::strings::ParsedString;
     use crate::parser::ast::{Ast, DeclKind, TokSpan};
     use crate::runtime::value::RuntimeValue;
-    use chumsky::span::Span as _;
 
     fn compile(ast: Ast) -> IrGraph {
         Compiler::compile(&ast).expect("compile failed in test")

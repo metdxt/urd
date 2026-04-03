@@ -19,11 +19,11 @@ use crate::erro::LexerError;
 #[derive(Logos, Display, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
 #[logos(skip r"[ \t\r]+")] // Skip whitespace
-#[logos(skip r"#[^\n]*")] // Skip # line comments (## doc comments are matched first as tokens)
+#[logos(skip(r"#[^\n]*", allow_greedy = true))] // Skip # line comments (## doc comments are matched first as tokens)
 pub enum Token {
     /// Documentation comment token (`## some doc text`).
     /// The captured string contains the trimmed comment text after the `##`.
-    #[regex(r"##[^\n]*", |lex| lex.slice()[2..].trim().to_string())]
+    #[regex(r"##[^\n]*", |lex| lex.slice()[2..].trim().to_string(), allow_greedy = true)]
     DocComment(String),
 
     /// When error occurs on lexer level it is packed into Error kind token.

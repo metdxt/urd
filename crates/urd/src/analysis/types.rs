@@ -693,7 +693,6 @@ mod tests {
     use super::*;
     use crate::parser::ast::{DeclKind, TokSpan, TypeAnnotation};
     use crate::runtime::value::RuntimeValue;
-    use chumsky::span::Span as _;
 
     // ── helpers ───────────────────────────────────────────────────────────────
 

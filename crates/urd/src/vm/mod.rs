@@ -188,16 +188,16 @@ pub trait DiceRoller: Send + Sync {
     fn roll(&self, count: u32, sides: u32) -> i64;
 }
 
-/// Default [`DiceRoller`] implementation backed by [`rand::thread_rng`].
+/// Default [`DiceRoller`] implementation backed by [`rand::rng`].
 ///
 /// Used by the VM unless the host replaces it via dependency injection.
 pub struct DefaultDiceRoller;
 
 impl DiceRoller for DefaultDiceRoller {
     fn roll(&self, count: u32, sides: u32) -> i64 {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        (0..count).map(|_| rng.gen_range(1..=sides) as i64).sum()
+        use rand::RngExt;
+        let mut rng = rand::rng();
+        (0..count).map(|_| rng.random_range(1..=sides) as i64).sum()
     }
 }
 
@@ -1139,7 +1139,6 @@ mod tests {
         parser::ast::{Ast, AstContent, DeclKind, Decorator, MatchArm, MatchPattern, TokSpan},
         runtime::value::RuntimeValue,
     };
-    use chumsky::span::Span as _;
 
     // ── Shared helpers ────────────────────────────────────────────────────────
 

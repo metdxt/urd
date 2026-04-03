@@ -27,6 +27,7 @@ fn split_token_span(pair: &(Token, SimpleSpan)) -> (&Token, &SimpleSpan) {
 /// old macro produced) means the compiler monomorphises the parser's `.parse()`
 /// call exactly once for this input shape.
 pub type TokenSliceInput<'tokens> = MappedInput<
+    'tokens,
     Token,
     SimpleSpan,
     &'tokens [(Token, SimpleSpan)],

@@ -138,6 +138,8 @@ fn format_pattern(pattern: &RichPattern<'_, Token>) -> String {
         RichPattern::EndOfInput => "end of input".to_owned(),
         RichPattern::SomethingElse => "something else".to_owned(),
         RichPattern::Any => "any token".to_owned(),
+        // RichPattern is #[non_exhaustive] in chumsky 0.12+; handle future variants gracefully.
+        &_ => String::new(),
     }
 }
 

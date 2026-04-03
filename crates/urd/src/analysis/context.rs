@@ -278,7 +278,6 @@ mod tests {
     use super::*;
     use crate::parser::ast::{AstContent, DeclKind, StructField, TokSpan, TypeAnnotation};
     use crate::runtime::value::RuntimeValue;
-    use chumsky::span::Span as _;
 
     // -----------------------------------------------------------------------
     // Test helpers
