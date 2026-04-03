@@ -8,6 +8,8 @@
 
 mod localizer;
 
+use unic_langid::LanguageIdentifier;
+
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -51,6 +53,14 @@ enum Command {
         /// Path to the `.urd` script file.
         #[arg(default_value = "examples/quest/cave.urd")]
         script: PathBuf,
+
+        /// Force a specific locale tag (e.g. `en-US`, `pl-PL`).
+        ///
+        /// When omitted and an `i18n/` directory exists next to the script,
+        /// quest will offer an interactive picker if multiple locales are
+        /// available, or silently load the single available locale.
+        #[arg(short, long, value_name = "TAG")]
+        locale: Option<String>,
     },
 
     /// Export the compiled IR graph in a visual format.
@@ -192,6 +202,171 @@ fn display_value(val: &RuntimeValue) -> String {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Print a separator line.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Locale discovery & interactive picker
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Scan `i18n_dir` for valid locale subdirectories.
+///
+/// Returns a sorted list of BCP-47 locale tags found as immediate
+/// subdirectories whose names parse as valid [`LanguageIdentifier`]s.
+/// Returns an empty vec if the directory does not exist or cannot be read.
+fn discover_locales(i18n_dir: &Path) -> Vec<String> {
+    if !i18n_dir.exists() {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(i18n_dir) else {
+        return Vec::new();
+    };
+    let mut locales: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // Accept only names that parse as valid BCP-47 identifiers.
+            name.parse::<LanguageIdentifier>().ok().map(|_| name)
+        })
+        .collect();
+    locales.sort();
+    locales
+}
+
+/// Returns a human-readable display name for common BCP-47 locale tags.
+///
+/// Falls back to the raw tag string for any tag not in the static table.
+fn locale_display_name(tag: &str) -> &str {
+    match tag {
+        "de-DE" => "Deutsch (Deutschland)",
+        "en-GB" => "English (United Kingdom)",
+        "en-US" => "English (United States)",
+        "es-ES" => "Español (España)",
+        "fr-FR" => "Français (France)",
+        "it-IT" => "Italiano (Italia)",
+        "ja-JP" => "日本語 (日本)",
+        "ko-KR" => "한국어 (대한민국)",
+        "pl-PL" => "Polski (Polska)",
+        "pt-BR" => "Português (Brasil)",
+        "ru-RU" => "Русский (Россия)",
+        "uk-UA" => "Українська (Україна)",
+        "zh-CN" => "中文 (中国)",
+        "zh-TW" => "中文 (台灣)",
+        other => other,
+    }
+}
+
+/// Render the locale picker menu with `selected` highlighted.
+fn render_locale_menu(locales: &[String], selected: usize) {
+    let mut out = std::io::stdout();
+    for (i, tag) in locales.iter().enumerate() {
+        execute!(
+            out,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::CurrentLine)
+        )
+        .ok();
+        let name = locale_display_name(tag);
+        let has_name = name != tag;
+        if i == selected {
+            if has_name {
+                println!("  \x1b[1;93m▶  {tag}\x1b[0m  \x1b[93m{name}\x1b[0m");
+            } else {
+                println!("  \x1b[1;93m▶  {tag}\x1b[0m");
+            }
+        } else if has_name {
+            println!("     \x1b[2m{tag}  {name}\x1b[0m");
+        } else {
+            println!("     \x1b[2m{tag}\x1b[0m");
+        }
+    }
+}
+
+/// Interactive arrow-key locale picker. Returns the index of the chosen locale.
+///
+/// Follows the same raw-mode pattern as [`handle_choice_tty`]. Only call this
+/// when stdin is a real TTY.
+fn pick_locale_tty(locales: &[String]) -> usize {
+    let n = locales.len();
+    let mut selected = 0usize;
+
+    println!();
+    println!("  \x1b[93m🌐 Select language\x1b[0m  \x1b[2m(↑↓ navigate, Enter confirm)\x1b[0m");
+    println!();
+    render_locale_menu(locales, selected);
+
+    terminal::enable_raw_mode().ok();
+
+    loop {
+        match event::read() {
+            Ok(CtEvent::Key(KeyEvent {
+                code, modifiers, ..
+            })) => {
+                if matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL) {
+                    terminal::disable_raw_mode().ok();
+                    std::process::exit(0);
+                }
+                if matches!(code, KeyCode::Char('d')) && modifiers.contains(KeyModifiers::CONTROL) {
+                    terminal::disable_raw_mode().ok();
+                    std::process::exit(0);
+                }
+                match code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        selected = if selected == 0 { n - 1 } else { selected - 1 };
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        selected = (selected + 1) % n;
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => break,
+                    _ => {}
+                }
+            }
+            Err(_) => break,
+            _ => {}
+        }
+
+        execute!(
+            std::io::stdout(),
+            cursor::MoveUp(n as u16),
+            terminal::Clear(ClearType::FromCursorDown)
+        )
+        .ok();
+        render_locale_menu(locales, selected);
+    }
+
+    terminal::disable_raw_mode().ok();
+
+    // Redraw in confirmed style.
+    execute!(
+        std::io::stdout(),
+        cursor::MoveUp(n as u16),
+        terminal::Clear(ClearType::FromCursorDown)
+    )
+    .ok();
+    let mut out = std::io::stdout();
+    for (i, tag) in locales.iter().enumerate() {
+        execute!(
+            out,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::CurrentLine)
+        )
+        .ok();
+        let name = locale_display_name(tag);
+        let has_name = name != tag;
+        if i == selected {
+            if has_name {
+                println!("  \x1b[92m✓  {tag}\x1b[0m  \x1b[2m{name}\x1b[0m");
+            } else {
+                println!("  \x1b[92m✓  {tag}\x1b[0m");
+            }
+        } else if has_name {
+            println!("     \x1b[2m{tag}  {name}\x1b[0m");
+        } else {
+            println!("     \x1b[2m{tag}\x1b[0m");
+        }
+    }
+
+    selected
+}
+
 fn print_separator() {
     println!("{DIM}{}{RESET}", "─".repeat(60));
 }
@@ -246,8 +421,10 @@ fn handle_dialogue(
     }
 
     if let Some(text) = localized_text {
-        // Show localized text as a single block.
-        println!("    {}", text);
+        // Show localized text, indenting every line uniformly.
+        for line in text.lines() {
+            println!("    {}", line);
+        }
     } else {
         // Fall back to raw lines.
         for line_val in lines {
@@ -641,7 +818,7 @@ fn build_vm(graph: IrGraph) -> Result<Vm, String> {
 //  Subcommand: run
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn cmd_run(script_path: &Path) {
+fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
     let is_tty = io::stdin().is_terminal();
 
     print_separator();
@@ -665,24 +842,62 @@ fn cmd_run(script_path: &Path) {
         }
     };
 
-    // Optionally load a localizer if an i18n directory exists next to the script.
-    let mut vm = {
-        let locale = "en-US";
-        let i18n_dir = script_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("i18n");
+    // ── Locale discovery & selection ─────────────────────────────────────────
+    //
+    // 1. If --locale was passed on the CLI, use it (hard error if not found).
+    // 2. Otherwise scan i18n/ for available locale directories.
+    //    • 0 locales → run without translation.
+    //    • 1 locale  → load it silently, show a status line.
+    //    • 2+ locales → show an interactive picker (TTY) or pick the first
+    //                   one with a stderr notice (pipe / non-TTY).
+    let i18n_dir = script_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("i18n");
 
-        match FsLocalizer::load(&i18n_dir, locale) {
+    let chosen_locale: Option<String> = if let Some(tag) = forced_locale {
+        Some(tag.to_string())
+    } else {
+        let locales = discover_locales(&i18n_dir);
+        match locales.len() {
+            0 => None,
+            1 => Some(locales.into_iter().next().expect("len == 1")),
+            _ => {
+                let idx = if is_tty {
+                    pick_locale_tty(&locales)
+                } else {
+                    eprintln!(
+                        "[l10n] multiple locales available; using '{}' (pass --locale to override)",
+                        locales[0]
+                    );
+                    0
+                };
+                Some(locales.into_iter().nth(idx).expect("valid index"))
+            }
+        }
+    };
+
+    let mut vm = match chosen_locale {
+        Some(ref tag) => match FsLocalizer::load(&i18n_dir, tag) {
             Ok(localizer) => {
-                log::info!("Loaded locale '{}' from '{}'", locale, i18n_dir.display());
+                let name = locale_display_name(tag);
+                if name != tag {
+                    println!("  \x1b[2m🌐 {tag}  {name}\x1b[0m");
+                } else {
+                    println!("  \x1b[2m🌐 {tag}\x1b[0m");
+                }
+                print_separator();
                 vm.with_localizer(Arc::new(localizer))
             }
             Err(e) => {
-                log::debug!("No localizer loaded: {}", e);
-                vm
+                eprintln!(
+                    "\x1b[91mError:\x1b[0m could not load locale '{}': {}",
+                    tag, e
+                );
+                std::process::exit(1);
             }
-        }
+        },
+        None => vm,
     };
 
     let stdin = io::stdin();
@@ -846,10 +1061,10 @@ fn main() {
     match cli.command {
         None => {
             // No subcommand — default to running the demo script.
-            cmd_run(Path::new("examples/quest/cave.urd"));
+            cmd_run(Path::new("examples/quest/cave.urd"), None);
         }
-        Some(Command::Run { script }) => {
-            cmd_run(&script);
+        Some(Command::Run { script, locale }) => {
+            cmd_run(&script, locale.as_deref());
         }
         Some(Command::Export {
             script,

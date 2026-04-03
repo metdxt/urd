@@ -1,0 +1,139 @@
+# merchant.urd — Localization showcase for urd
+#
+# Features demonstrated:
+#   @fluent                  injects a global into the Fluent context for every message
+#   @fluent("alias")         renames a variable in the FTL files (urd: item_name → $item)
+#   @fluent let (scoped)     a label-local binding, visible only in its label's messages
+#   string interpolation     {gold} / {price} in urd strings are also auto-injected
+#
+# Workflow:
+#   # 1. Generate the FTL stub (source-language scaffold for translators):
+#   quest gen-l10n examples/localization/merchant.urd \
+#         --output examples/localization/i18n/en-US/
+#
+#   # 2. Translate: copy i18n/en-US/merchant.ftl → i18n/pl-PL/merchant.ftl, edit.
+#
+#   # 3. Run with localization (auto-loads i18n/en-US/merchant.ftl if present):
+#   quest run examples/localization/merchant.urd
+
+# ── Characters ────────────────────────────────────────────────────────────────
+
+const narrator = :{ name: "Narrator",  name_color: "white"  }
+const elara    = :{ name: "Elara",     name_color: "yellow" }
+
+# ── Global state ──────────────────────────────────────────────────────────────
+
+# @fluent injects these into the Fluent context for every message in this script.
+# Translators can use $gold for pluralization ("1 gold coin" vs "50 gold coins"),
+# use $has_potion for conditional endings, and $price for dynamic item costs —
+# all without changing a single line of urd code.
+@fluent
+global gold       = 50
+@fluent
+global price      = 30
+@fluent
+global has_potion = false
+
+# Internal bookkeeping — deliberately NOT @fluent; translators do not need it.
+global haggled = false
+
+# ── Story ─────────────────────────────────────────────────────────────────────
+
+@entry
+label start {
+    narrator: {
+        "You step into the Wandering Bazaar."
+        "Canvas stalls stretch in every direction, lit by swaying lanterns."
+    }
+
+    elara: {
+        "Welcome! I am Elara, purveyor of fine curiosities."
+        "Might I interest you in a Health Potion today?"
+    }
+
+    menu {
+        "Browse the wares" {
+            jump browse
+        }
+        "Ask about the bazaar" {
+            elara: {
+                "The Wandering Bazaar follows the ancient trade routes."
+                "We appear where weary travelers need us most."
+            }
+            jump browse
+        }
+        "Walk away" {
+            jump farewell
+        }
+    }
+}
+
+label browse {
+    # @fluent("item") — the urd variable is item_name, but FTL translators
+    # reference it as $item.  Useful when the urd name is long, clashes with a
+    # Fluent built-in keyword, or you simply prefer a shorter translation key.
+    # This binding is scope-bound: it lives only while browse is on the stack.
+    @fluent("item")
+    let item_name = "Health Potion"
+
+    elara: "Behold: the {item_name}! I ask {price} gold — a true bargain."
+
+    menu {
+        "Buy it for {price} gold" {
+            jump buy
+        }
+        "Try to haggle" {
+            jump haggle
+        }
+        "Never mind" {
+            jump farewell
+        }
+    }
+}
+
+label haggle {
+    haggled = true
+    price   = 25
+
+    elara: {
+        "You drive a hard bargain."
+        "Twenty-five gold — that is my absolute lowest. Take it or leave it."
+    }
+
+    menu {
+        "Deal! {price} gold" {
+            jump buy
+        }
+        "Too rich for my blood" {
+            elara: "Another time, friend. Safe roads to you."
+            jump farewell
+        }
+    }
+}
+
+label buy {
+    if gold >= price {
+        gold      = gold - price
+        has_potion = true
+        elara: "Splendid! The potion is yours. You now have {gold} gold."
+        jump farewell
+    } else {
+        elara: "You only have {gold} gold — not quite {price}. Come back when fortune smiles."
+        jump farewell
+    }
+}
+
+label farewell {
+    if has_potion {
+        narrator: "You leave with a potion in your pack and {gold} gold."
+        elara: "That potion has saved many a life. May it save yours too."
+    } else {
+        narrator: "You leave the Wandering Bazaar with {gold} gold and your curiosity intact."
+        elara: "Return whenever you need something. I will be here."
+    }
+    jump _end
+}
+
+label _end {
+    end!()
+}

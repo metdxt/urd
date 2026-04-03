@@ -1158,11 +1158,16 @@ fn collect_fluent_vars(
             .map(|(_, tail)| tail.to_string())
             .unwrap_or_else(|| path.clone());
 
-        // Only insert if not already set by a @fluent binding.
-        if let std::collections::hash_map::Entry::Vacant(e) = vars.entry(key)
-            && let Ok(value) = env.get(&path)
-        {
-            e.insert(value);
+        // Interpolation paths always reflect the current runtime value.
+        // This ensures that a mutable variable mutated after its @fluent
+        // declaration (e.g. `@fluent global gold = 50` followed by
+        // `gold = gold - price`) is seen with its CURRENT value in the
+        // Fluent context, not the stale initial value stored in the
+        // fluent_bindings cache.  The @fluent alias entry (a DIFFERENT key)
+        // is left untouched, so `$item` (alias) and `$item_name` (interpolation)
+        // can coexist correctly.
+        if let Ok(value) = env.get(&path) {
+            vars.insert(key, value);
         }
     }
 
@@ -1191,6 +1196,39 @@ fn collect_interpolation_paths_inner(ast: &crate::parser::ast::Ast, paths: &mut 
     for child in ast.children() {
         collect_interpolation_paths_inner(child, paths);
     }
+}
+
+/// Extract `{varname}` interpolation placeholders from a plain option-label
+/// string (e.g. `"Buy it for {price} gold"` → `["price"]`).
+///
+/// This is a lightweight scan over the raw `String` label stored in
+/// [`IrChoiceOption`].  It mirrors the logic of
+/// [`collect_interpolation_paths_inner`] but operates on an already-evaluated
+/// string instead of an AST, because choice option labels are stored as
+/// `String` after compilation.
+fn extract_label_interp_vars(label: &str) -> Vec<String> {
+    let mut vars = Vec::new();
+    let bytes = label.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            let start = i + 1;
+            if let Some(end) = label[start..].find('}') {
+                let name = label[start..start + end].trim();
+                if !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                {
+                    vars.push(name.to_string());
+                }
+                i = start + end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    vars
 }
 
 // ─── Choice event builder ─────────────────────────────────────────────────────
@@ -1223,7 +1261,23 @@ fn build_choice_event(
                 Err(e) => return VmStep::Error(e),
             }
         }
-        let option_fluent_vars = env.collect_fluent_bindings();
+
+        // Start with @fluent-tagged bindings, then overwrite with current env
+        // values for any {varname} placeholders found in the raw option label.
+        // This ensures mutable variables (e.g. price after haggling) are
+        // reflected correctly in the Fluent context, matching the same
+        // semantics applied to Dialogue events in `collect_fluent_vars`.
+        let mut option_fluent_vars = env.collect_fluent_bindings();
+        for path in extract_label_interp_vars(&opt.label) {
+            let key = path
+                .rsplit_once('.')
+                .map(|(_, tail)| tail.to_string())
+                .unwrap_or_else(|| path.clone());
+            if let Ok(value) = env.get(&path) {
+                option_fluent_vars.insert(key, value);
+            }
+        }
+
         let localized_label = localizer.and_then(|loc| {
             opt.loc_id
                 .as_deref()
@@ -2624,5 +2678,116 @@ label start {
             }
         }
         assert!(found_error, "expected ExternNotProvided error");
+    }
+
+    // ── extract_label_interp_vars ────────────────────────────────────────────
+
+    #[test]
+    fn extract_label_interp_vars_empty_string() {
+        let vars = extract_label_interp_vars("");
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn extract_label_interp_vars_no_placeholders() {
+        let vars = extract_label_interp_vars("Buy the potion");
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn extract_label_interp_vars_single_placeholder() {
+        let vars = extract_label_interp_vars("Buy it for {price} gold");
+        assert_eq!(vars, vec!["price".to_string()]);
+    }
+
+    #[test]
+    fn extract_label_interp_vars_multiple_placeholders() {
+        let vars = extract_label_interp_vars("Pay {price} from your {gold} gold");
+        assert!(vars.contains(&"price".to_string()));
+        assert!(vars.contains(&"gold".to_string()));
+    }
+
+    #[test]
+    fn extract_label_interp_vars_dotted_path() {
+        let vars = extract_label_interp_vars("Hello {player.name}!");
+        assert_eq!(vars, vec!["player.name".to_string()]);
+    }
+
+    #[test]
+    fn extract_label_interp_vars_ignores_empty_braces() {
+        let vars = extract_label_interp_vars("broken {} placeholder");
+        assert!(vars.is_empty(), "empty braces must not produce a var");
+    }
+
+    // ── stale @fluent binding fixes ─────────────────────────────────────────
+
+    /// Verify that after `@fluent global gold = 50` followed by `gold = 20`,
+    /// the Fluent context passed to the localizer contains the CURRENT value
+    /// (20), not the stale initial value (50) cached from the declaration.
+    #[test]
+    fn fluent_var_uses_current_value_after_global_mutation() {
+        use crate::compiler::Compiler;
+        use crate::compiler::loader::parse_source;
+        use crate::vm::Vm;
+        use crate::vm::registry::DecoratorRegistry;
+        use std::sync::Arc;
+
+        let src = r#"
+const n = :{ name: "N", name_color: "white" }
+@fluent
+global gold = 50
+@entry
+label start {
+    gold = 20
+    n: "You have {gold} gold."
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile_named(&ast, "test").expect("compile");
+        let vm = Vm::new(graph, DecoratorRegistry::default()).expect("vm");
+
+        // Mock localizer: captures the fluent vars map passed for the known
+        // message ID and returns them serialised as "key=value" pairs so the
+        // test can assert on the exact value without needing fluent_bundle.
+        struct CapturingLocalizer;
+        impl crate::Localizer for CapturingLocalizer {
+            fn localize(
+                &self,
+                id: &str,
+                vars: &std::collections::HashMap<String, RuntimeValue>,
+            ) -> Option<String> {
+                if id == "test-start-line_1" {
+                    let gold = vars.get("gold")?;
+                    Some(format!("gold={gold:?}"))
+                } else {
+                    None
+                }
+            }
+        }
+
+        let mut vm = vm.with_localizer(Arc::new(CapturingLocalizer));
+
+        // Advance until the Dialogue event.
+        let mut localized: Option<String> = None;
+        for _ in 0..20 {
+            match vm.next(None) {
+                VmStep::Event(crate::ir::Event::Dialogue { localized_text, .. }) => {
+                    localized = localized_text;
+                    break;
+                }
+                VmStep::Ended => break,
+                VmStep::Error(e) => panic!("VM error: {:?}", e),
+                _ => {}
+            }
+        }
+
+        // The localizer must receive gold=20 (current), not gold=50 (stale
+        // @fluent initial binding).
+        assert_eq!(
+            localized.as_deref(),
+            Some("gold=Int(20)"),
+            "FTL context must carry current gold=20, not stale gold=50"
+        );
     }
 }

@@ -306,6 +306,21 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
                 node.with_decorators(decorators).with_span(extra.span())
             });
 
+    // decorated_declaration handles `@decorator\ndeclaration` where the
+    // decorated thing is a `global`, `let`, or `const` declaration.
+    // This is the mechanism that allows `@fluent global gold = 50` and
+    // `@fluent("alias") let item_name = "value"` in urd source files.
+    // It must be tried BEFORE `decorated` (which only covers labeled blocks,
+    // menus, dialogues, and bare blocks) so that `@fluent\nlet x = …` is
+    // recognised as a decorated declaration and not rejected because `let` is
+    // not a `decoratable` construct.
+    let decorated_declaration =
+        decorators_parser()
+            .then(declaration())
+            .map_with(|(decorators, node), extra| {
+                node.with_decorators(decorators).with_span(extra.span())
+            });
+
     // let_call_statement must come FIRST (before declaration) because it also
     // starts with `let` but is a statement form that must not yield mid-expression.
     // terminator_statement comes early to claim EndBang/TodoBang before the
@@ -327,6 +342,7 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
         .or(match_parser(block.clone()))
         .or(fn_def_parser(block.clone()))
         .or(decorator_def_parser(block))
+        .or(decorated_declaration)
         .or(decorated)
         .or(decoratable)
 }
@@ -1504,5 +1520,81 @@ label start {
             s1 >= e0,
             "second item span start ({s1}) must be >= first item span end ({e0})"
         );
+    }
+
+    #[test]
+    fn fluent_decorator_on_global_declaration_parses() {
+        let result = parse_test!(statement(), "@fluent\nglobal gold = 50");
+        assert!(
+            result.is_ok(),
+            "@fluent on global declaration should parse: {result:?}"
+        );
+        let ast = result.unwrap();
+        assert!(
+            ast.decorators().iter().any(|d| d.name() == "fluent"),
+            "parsed node must carry the @fluent decorator"
+        );
+        match ast.content() {
+            AstContent::Declaration { kind, .. } => {
+                assert_eq!(*kind, DeclKind::Global, "must be a Global declaration");
+            }
+            other => panic!("expected Declaration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fluent_alias_decorator_on_let_declaration_parses() {
+        let result = parse_test!(
+            statement(),
+            "@fluent(\"item\")\nlet item_name = \"Health Potion\""
+        );
+        assert!(
+            result.is_ok(),
+            "@fluent(\"alias\") on let declaration should parse: {result:?}"
+        );
+        let ast = result.unwrap();
+        let fluent_dec = ast
+            .decorators()
+            .iter()
+            .find(|d| d.name() == "fluent")
+            .expect("must have @fluent decorator");
+        match fluent_dec.args().content() {
+            AstContent::ExprList(items) => {
+                assert_eq!(items.len(), 1, "must have one argument");
+                match items[0].content() {
+                    AstContent::Value(RuntimeValue::Str(ps)) => {
+                        assert_eq!(ps.to_string(), "item", "alias must be \"item\"");
+                    }
+                    other => panic!("argument must be a string literal, got {other:?}"),
+                }
+            }
+            other => panic!("decorator args must be ExprList, got {other:?}"),
+        }
+        match ast.content() {
+            AstContent::Declaration { kind, .. } => {
+                assert_eq!(*kind, DeclKind::Variable, "must be a Variable declaration");
+            }
+            other => panic!("expected Declaration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fluent_decorator_on_const_declaration_parses() {
+        let result = parse_test!(statement(), "@fluent\nconst max_gold = 999");
+        assert!(
+            result.is_ok(),
+            "@fluent on const declaration should parse: {result:?}"
+        );
+        let ast = result.unwrap();
+        assert!(
+            ast.decorators().iter().any(|d| d.name() == "fluent"),
+            "parsed node must carry the @fluent decorator"
+        );
+        match ast.content() {
+            AstContent::Declaration { kind, .. } => {
+                assert_eq!(*kind, DeclKind::Constant, "must be a Constant declaration");
+            }
+            other => panic!("expected Declaration, got {other:?}"),
+        }
     }
 }
