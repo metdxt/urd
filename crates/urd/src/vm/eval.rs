@@ -374,9 +374,10 @@ pub(super) fn eval_runtime_value(
                 {
                     return Ok(val.clone());
                 }
-                // Fallback: plain first-segment lookup (legacy behaviour).
-                env.get(&path[0])
-                    .map_err(|_| VmError::UndefinedVariable(format!("{}.{}", path[0], path[1])))
+                Err(VmError::UndefinedVariable(format!(
+                    "{}.{}",
+                    path[0], path[1]
+                )))
             }
             _ => {
                 // Three-segment path: `alias.EnumName.Variant`
@@ -420,18 +421,11 @@ pub(super) fn interpolate_string(ps: &ParsedString, env: &Environment) -> Parsed
                         .or_else(|_| {
                             let ns = crate::ir::namespace(segments[0], segments[1]);
                             env.get(&ns)
-                        })
-                        // Fall back to the bare second segment: merged globals
-                        // from imported modules live in the flat env under their
-                        // original name (e.g. `gold`, not `inv::gold`).
-                        .or_else(|_| env.get(segments[1])),
+                        }),
                     _ => {
-                        // 3+ segments: try `alias::name` for the first two, then
-                        // bare last segment, then first segment.
+                        // 3+ segments: try `alias::name` for the first two.
                         let ns = crate::ir::namespace(segments[0], segments[1]);
                         env.get(&ns)
-                            .or_else(|_| env.get(segments[segments.len() - 1]))
-                            .or_else(|_| env.get(segments[0]))
                     }
                 };
 
