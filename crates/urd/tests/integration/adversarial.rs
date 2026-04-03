@@ -22,6 +22,7 @@
 
 use urd::{
     Event, RuntimeValue, VmError, VmStep,
+    analysis::AnalysisError,
     compiler::{Compiler, loader::parse_source},
     vm::{Vm, registry::DecoratorRegistry},
 };
@@ -277,31 +278,24 @@ label start {
     );
 }
 
-/// ## BUG: `fn` bodies execute in a completely isolated environment and cannot
-/// read `global` variables declared in the enclosing script.
+/// ## FIX-5: `fn` bodies are intentionally pure — globals must not be visible
+/// inside a `fn` body, and the `undefined_var` analysis pass must catch this
+/// statically rather than letting the VM crash at runtime.
 ///
-/// `exec_fn_body` unconditionally creates `Environment::new()` — a pristine
-/// environment containing **only the function's bound parameters**.  Globals
-/// declared with `global` in the outer script are stored in a separate flat
-/// map inside the VM's main `Environment`, but that map is never passed to (or
-/// reconstructed in) the function's isolated environment.
+/// Before the fix, `undefined_var` included all top-level names (globals,
+/// consts, externs) as "in scope everywhere" and never modelled `fn` body
+/// isolation.  A `fn` that read a global produced no analysis error; the
+/// compiler emitted IR; the VM crashed with `VmError::UndefinedVariable`.
 ///
-/// For a game-scripting language, `global` variables represent persistent
-/// mutable game state (reputation, flags, inventory counts) that every piece
-/// of dialogue logic needs to read.  A function that silently cannot see them
-/// is a footgun: the author gets a runtime error with no static-analysis
-/// warning, and there is no way to work around the restriction short of
-/// passing every global as an argument.
+/// After the fix, `check_node` handles `AstContent::FnDef` by building an
+/// isolated scope containing only the declared parameters, fn-body locals,
+/// builtins, and type/variant names.  Globals, consts, and externs are
+/// deliberately excluded.  The analysis pass therefore flags `score` as
+/// undefined inside the fn body before any IR is generated.
 ///
-/// ### Correct expected result
-/// A function body should be able to read variables declared `global` in the
-/// same script.  The script should emit `"score retrieved"` without error.
-///
-/// ### Why this test FAILS
-/// `exec_fn_body` creates `Environment::new()`.  When the body evaluates
-/// `return score`, `env.get("score")` returns
-/// `Err(VmError::UndefinedVariable("score"))`, which propagates to the caller
-/// as `VmStep::Error`.  The dialogue line is never reached.
+/// ### Verified behaviour
+/// `urd::analysis::analyze` returns an `AnalysisError::UndefinedVariable`
+/// whose `name` field is `"score"`.
 #[test]
 fn test_fn_body_cannot_read_global_variable() {
     let src = r#"
@@ -318,23 +312,19 @@ label start {
     end!()
 }
 "#;
-    let steps = run_script(src);
+    let ast = parse_source(src).expect("script should parse");
 
-    // The function should be able to see the global `score`.  This assertion
-    // FAILS: exec_fn_body runs in a fresh Environment::new() that has no
-    // globals, so `score` is undefined and the VM emits VmStep::Error.
+    // The undefined_var analysis pass must flag `score` as undefined inside
+    // the fn body (fn bodies are isolated — they cannot see globals).
+    let errors = urd::analysis::analyze(&ast);
+    let has_score_error = errors
+        .iter()
+        .any(|e| matches!(e, AnalysisError::UndefinedVariable { name, .. } if name == "score"));
     assert!(
-        first_error(&steps).is_none(),
-        "get_score() should see the global `score` variable without error; \
-         got error: {:?} — exec_fn_body creates Environment::new(), discarding all globals",
-        first_error(&steps)
-    );
-
-    let texts = dialogue_texts(&steps);
-    assert_eq!(
-        texts,
-        vec!["score retrieved"],
-        "dialogue should be emitted after a successful fn call; got {texts:?}"
+        has_score_error,
+        "analysis should flag `score` as undefined inside the fn body \
+         (fn bodies are pure and cannot access outer globals); \
+         got errors: {errors:?}"
     );
 }
 

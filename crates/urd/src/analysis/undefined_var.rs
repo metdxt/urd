@@ -121,6 +121,22 @@ fn check_node(
             check_refs(body, &scope, errors, semantic);
         }
 
+        // Function definition: body is in a completely isolated scope — only the
+        // declared parameters are visible.  Global, const, and outer-scope names
+        // are intentionally excluded (fn purity).
+        AstContent::FnDef { params, body, .. } => {
+            let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            // Include local declarations within the fn body (e.g. `let x = …`).
+            let fn_locals = collect_block_local_names(body);
+            // Build an isolated scope: params + fn-body locals + builtins + type names.
+            // Globals, consts, and externs are intentionally excluded.
+            let mut fn_scope: HashSet<String> = excluded.clone();
+            fn_scope.extend(BUILTINS.iter().map(|s| s.to_string()));
+            fn_scope.extend(param_names);
+            fn_scope.extend(fn_locals);
+            check_refs(body, &fn_scope, errors, semantic);
+        }
+
         // Everything else at the top level is either a definition node
         // (handled by top_level.rs as an error) or a no-op for this pass.
         _ => {}
@@ -784,5 +800,75 @@ label start {
 }
 "#,
         ));
+    }
+
+    #[test]
+    fn fn_body_cannot_see_global_variable() {
+        // A global declared at top-level must NOT be visible inside a fn body.
+        let errs = errors(
+            r#"
+global score: int = 100
+fn get_score() -> int {
+    return score
+}
+label start {
+    end!()
+}
+"#,
+        );
+        assert_undefined(&errs, "score");
+    }
+
+    #[test]
+    fn fn_params_are_in_scope_inside_body() {
+        // Parameters must be visible inside the fn body.
+        assert_no_errors(&errors(
+            r#"
+fn add(a: int, b: int) -> int {
+    return a + b
+}
+label start {
+    end!()
+}
+"#,
+        ));
+    }
+
+    #[test]
+    fn fn_body_let_inside_if_is_in_scope() {
+        // `let` declarations inside `if` branches within a fn body must not
+        // produce false-positive UndefinedVariable errors — walk_decls recurses
+        // into all children including if/else blocks.
+        assert_no_errors(&errors(
+            r#"
+fn example() -> int {
+    if true {
+        let x: int = 42
+        return x
+    }
+    return 0
+}
+label start {
+    end!()
+}
+"#,
+        ));
+    }
+
+    #[test]
+    fn fn_body_cannot_see_const() {
+        // `const` declarations at the top level are also invisible inside fn bodies.
+        let errs = errors(
+            r#"
+const MAX: int = 100
+fn is_maxed(val: int) -> bool {
+    return val == MAX
+}
+label start {
+    end!()
+}
+"#,
+        );
+        assert_undefined(&errs, "MAX");
     }
 }
