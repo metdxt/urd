@@ -148,5 +148,6 @@ pub(super) fn arm_pattern_label(pattern: &MatchPattern) -> String {
     match pattern {
         MatchPattern::Wildcard => "_".into(),
         MatchPattern::Value(inner) => truncate(&ast_summary(inner), 20),
+        MatchPattern::Range { .. } | MatchPattern::Array(_) => truncate(&pattern.to_string(), 20),
     }
 }

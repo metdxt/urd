@@ -777,7 +777,9 @@ impl CompilerState {
                         MatchPattern::Wildcard => {
                             default_entry = Some(target);
                         }
-                        MatchPattern::Value(_) => {
+                        MatchPattern::Value(_)
+                        | MatchPattern::Range { .. }
+                        | MatchPattern::Array(_) => {
                             switch_arms.push(SwitchArm {
                                 pattern: arm.pattern.clone(),
                             });

@@ -835,7 +835,38 @@ fn struct_decl_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
 fn match_parser<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
+    let range_pattern = select! { Token::IntLit(i) => i }
+        .then(
+            just(Token::DotDotEq)
+                .to(true)
+                .or(just(Token::DotDot).to(false)),
+        )
+        .then(select! { Token::IntLit(i) => i })
+        .then(
+            just(Token::As)
+                .ignore_then(select! {
+                    Token::IdentPath(p) if p.len() == 1 => p[0].clone()
+                })
+                .or_not(),
+        )
+        .map(|(((start, inclusive), end), binding)| MatchPattern::Range {
+            start: Ast::value(RuntimeValue::Int(start)),
+            end: Ast::value(RuntimeValue::Int(end)),
+            inclusive,
+            binding,
+        });
+
+    let array_pattern = select! { Token::IntLit(i) => Ast::value(RuntimeValue::Int(i)) }
+        .separated_by(just(Token::Comma))
+        .at_least(1)
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LeftBracket), just(Token::RightBracket))
+        .map(MatchPattern::Array);
+
     let pattern = select! { Token::Wildcard => MatchPattern::Wildcard }
+        .or(range_pattern)
+        .or(array_pattern)
         .or(select! {
             Token::Null => MatchPattern::Value(Ast::value(RuntimeValue::Null)),
             Token::BoolLit(b) => MatchPattern::Value(Ast::value(RuntimeValue::Bool(b))),
@@ -1596,5 +1627,245 @@ label start {
             }
             other => panic!("expected Declaration, got {other:?}"),
         }
+    }
+
+    // ── Match Range / Array pattern parser tests ──────────────────────────────
+
+    /// `2..18` parses to `MatchPattern::Range { inclusive: false, binding: None, .. }`.
+    #[test]
+    fn test_match_range_exclusive_parses() {
+        use crate::parser::ast::MatchPattern;
+        let result = parse_test!(code_block(), "{\n  match x {\n    2..18 { end! }\n  }\n}");
+        assert!(result.is_ok(), "should parse: {:?}", result);
+        let ast = result.unwrap();
+        if let AstContent::Block(stmts) = ast.content() {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::Match { arms, .. } = stmts[0].content() {
+                assert_eq!(arms.len(), 1);
+                assert!(
+                    matches!(
+                        &arms[0].pattern,
+                        MatchPattern::Range {
+                            inclusive: false,
+                            binding: None,
+                            ..
+                        }
+                    ),
+                    "expected Range {{ inclusive: false, binding: None }}, got {:?}",
+                    arms[0].pattern
+                );
+            } else {
+                panic!("expected Match, got {:?}", stmts[0].content());
+            }
+        } else {
+            panic!("expected Block, got {:?}", ast.content());
+        }
+    }
+
+    /// `1..=20` parses to `MatchPattern::Range { inclusive: true, .. }`.
+    #[test]
+    fn test_match_range_inclusive_parses() {
+        use crate::parser::ast::MatchPattern;
+        let result = parse_test!(code_block(), "{\n  match x {\n    1..=20 { end! }\n  }\n}");
+        assert!(result.is_ok(), "should parse: {:?}", result);
+        let ast = result.unwrap();
+        if let AstContent::Block(stmts) = ast.content() {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::Match { arms, .. } = stmts[0].content() {
+                assert_eq!(arms.len(), 1);
+                assert!(
+                    matches!(
+                        &arms[0].pattern,
+                        MatchPattern::Range {
+                            inclusive: true,
+                            ..
+                        }
+                    ),
+                    "expected inclusive Range, got {:?}",
+                    arms[0].pattern
+                );
+            } else {
+                panic!("expected Match, got {:?}", stmts[0].content());
+            }
+        } else {
+            panic!("expected Block, got {:?}", ast.content());
+        }
+    }
+
+    /// `2..18 as n` captures binding `Some("n")`.
+    #[test]
+    fn test_match_range_with_binding_parses() {
+        use crate::parser::ast::MatchPattern;
+        let result = parse_test!(
+            code_block(),
+            "{\n  match x {\n    2..18 as n { end! }\n  }\n}"
+        );
+        assert!(result.is_ok(), "should parse: {:?}", result);
+        let ast = result.unwrap();
+        if let AstContent::Block(stmts) = ast.content() {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::Match { arms, .. } = stmts[0].content() {
+                assert_eq!(arms.len(), 1);
+                assert!(
+                    matches!(
+                        &arms[0].pattern,
+                        MatchPattern::Range { binding: Some(b), .. } if b == "n"
+                    ),
+                    "expected Range with binding Some(\"n\"), got {:?}",
+                    arms[0].pattern
+                );
+            } else {
+                panic!("expected Match, got {:?}", stmts[0].content());
+            }
+        } else {
+            panic!("expected Block, got {:?}", ast.content());
+        }
+    }
+
+    /// `[ 6 ]` parses to `MatchPattern::Array` with one `Int(6)` element.
+    #[test]
+    fn test_match_array_single_parses() {
+        use crate::{parser::ast::MatchPattern, runtime::value::RuntimeValue};
+        let result = parse_test!(
+            code_block(),
+            "{\n  match dice {\n    [ 6 ] { end! }\n  }\n}"
+        );
+        assert!(result.is_ok(), "should parse: {:?}", result);
+        let ast = result.unwrap();
+        if let AstContent::Block(stmts) = ast.content() {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::Match { arms, .. } = stmts[0].content() {
+                assert_eq!(arms.len(), 1);
+                if let MatchPattern::Array(elems) = &arms[0].pattern {
+                    assert_eq!(elems.len(), 1, "expected 1 array element");
+                    assert!(
+                        matches!(elems[0].content(), AstContent::Value(RuntimeValue::Int(6))),
+                        "expected Int(6), got {:?}",
+                        elems[0].content()
+                    );
+                } else {
+                    panic!("expected Array pattern, got {:?}", arms[0].pattern);
+                }
+            } else {
+                panic!("expected Match, got {:?}", stmts[0].content());
+            }
+        } else {
+            panic!("expected Block, got {:?}", ast.content());
+        }
+    }
+
+    /// `[ 1, 20 ]` parses to `MatchPattern::Array` with elements `Int(1)` and `Int(20)`.
+    #[test]
+    fn test_match_array_multi_parses() {
+        use crate::{parser::ast::MatchPattern, runtime::value::RuntimeValue};
+        let result = parse_test!(
+            code_block(),
+            "{\n  match dice {\n    [ 1, 20 ] { end! }\n  }\n}"
+        );
+        assert!(result.is_ok(), "should parse: {:?}", result);
+        let ast = result.unwrap();
+        if let AstContent::Block(stmts) = ast.content() {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::Match { arms, .. } = stmts[0].content() {
+                assert_eq!(arms.len(), 1);
+                if let MatchPattern::Array(elems) = &arms[0].pattern {
+                    assert_eq!(elems.len(), 2, "expected 2 array elements");
+                    assert!(
+                        matches!(elems[0].content(), AstContent::Value(RuntimeValue::Int(1))),
+                        "expected Int(1), got {:?}",
+                        elems[0].content()
+                    );
+                    assert!(
+                        matches!(elems[1].content(), AstContent::Value(RuntimeValue::Int(20))),
+                        "expected Int(20), got {:?}",
+                        elems[1].content()
+                    );
+                } else {
+                    panic!("expected Array pattern, got {:?}", arms[0].pattern);
+                }
+            } else {
+                panic!("expected Match, got {:?}", stmts[0].content());
+            }
+        } else {
+            panic!("expected Block, got {:?}", ast.content());
+        }
+    }
+
+    /// A match block containing `Value`, `Range`, and `Value` arms all parse correctly.
+    #[test]
+    fn test_match_value_still_works_alongside_range() {
+        use crate::parser::ast::MatchPattern;
+        let src = "{\n  match x {\n    1 { end! }\n    2..19 { end! }\n    20 { end! }\n  }\n}";
+        let result = parse_test!(code_block(), src);
+        assert!(result.is_ok(), "should parse: {:?}", result);
+        let ast = result.unwrap();
+        if let AstContent::Block(stmts) = ast.content() {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::Match { arms, .. } = stmts[0].content() {
+                assert_eq!(arms.len(), 3, "expected 3 arms, got {}", arms.len());
+                assert!(
+                    matches!(&arms[0].pattern, MatchPattern::Value(_)),
+                    "arm[0] should be Value, got {:?}",
+                    arms[0].pattern
+                );
+                assert!(
+                    matches!(&arms[1].pattern, MatchPattern::Range { .. }),
+                    "arm[1] should be Range, got {:?}",
+                    arms[1].pattern
+                );
+                assert!(
+                    matches!(&arms[2].pattern, MatchPattern::Value(_)),
+                    "arm[2] should be Value, got {:?}",
+                    arms[2].pattern
+                );
+            } else {
+                panic!("expected Match, got {:?}", stmts[0].content());
+            }
+        } else {
+            panic!("expected Block, got {:?}", ast.content());
+        }
+    }
+
+    /// An exclusive `Range` without a binding displays as `"3..7"`.
+    #[test]
+    fn test_match_range_display() {
+        use crate::{
+            parser::ast::{Ast, MatchPattern},
+            runtime::value::RuntimeValue,
+        };
+        let pattern = MatchPattern::Range {
+            start: Ast::value(RuntimeValue::Int(3)),
+            end: Ast::value(RuntimeValue::Int(7)),
+            inclusive: false,
+            binding: None,
+        };
+        assert_eq!(pattern.to_string(), "3..7");
+    }
+
+    /// An exclusive `Range` with binding `"x"` displays as `"3..7 as x"`.
+    #[test]
+    fn test_match_range_display_with_binding() {
+        use crate::{
+            parser::ast::{Ast, MatchPattern},
+            runtime::value::RuntimeValue,
+        };
+        let pattern = MatchPattern::Range {
+            start: Ast::value(RuntimeValue::Int(3)),
+            end: Ast::value(RuntimeValue::Int(7)),
+            inclusive: false,
+            binding: Some("x".to_string()),
+        };
+        assert_eq!(pattern.to_string(), "3..7 as x");
+    }
+
+    /// `MatchPattern::Array([Int(5)])` displays as `"[5]"`.
+    #[test]
+    fn test_match_array_display() {
+        use crate::{
+            parser::ast::{Ast, MatchPattern},
+            runtime::value::RuntimeValue,
+        };
+        let pattern = MatchPattern::Array(vec![Ast::value(RuntimeValue::Int(5))]);
+        assert_eq!(pattern.to_string(), "[5]");
     }
 }

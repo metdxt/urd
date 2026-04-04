@@ -494,16 +494,97 @@ impl Vm {
                         Err(e) => return VmStep::Error(e),
                     };
 
+                    // For Roll scrutinees precompute: scalar sum (used by Value
+                    // and Range arms) and the individual die vector (used by Array arms).
+                    let (scalar_val, roll_individuals): (RuntimeValue, Option<Vec<i64>>) =
+                        match &scrutinee_val {
+                            RuntimeValue::Roll(dice) => {
+                                let sum: i64 = dice.iter().sum();
+                                (RuntimeValue::Int(sum), Some(dice.clone()))
+                            }
+                            other => (other.clone(), None),
+                        };
+
                     let mut matched = false;
                     for (i, arm) in arms.iter().enumerate() {
-                        let is_match = match &arm.pattern {
-                            MatchPattern::Wildcard => true,
-                            MatchPattern::Value(pat_ast) => match eval_expr(pat_ast, &state.env) {
-                                Ok(pat_val) => values_equal(&scrutinee_val, &pat_val),
-                                Err(_) => false,
-                            },
+                        // Returns (matched, optional_binding_value).
+                        let (is_match, binding_val) = match &arm.pattern {
+                            MatchPattern::Wildcard => (true, None),
+                            MatchPattern::Value(pat_ast) => {
+                                let ok = match eval_expr(pat_ast, &state.env) {
+                                    // Compare against the scalar (sum for Roll, value otherwise).
+                                    Ok(pat_val) => values_equal(&scalar_val, &pat_val),
+                                    Err(_) => false,
+                                };
+                                (ok, None)
+                            }
+                            MatchPattern::Range {
+                                start,
+                                end,
+                                inclusive,
+                                binding,
+                            } => {
+                                let start_i =
+                                    eval_expr(start, &state.env).ok().and_then(|v| match v {
+                                        RuntimeValue::Int(i) => Some(i),
+                                        _ => None,
+                                    });
+                                let end_i = eval_expr(end, &state.env).ok().and_then(|v| match v {
+                                    RuntimeValue::Int(i) => Some(i),
+                                    _ => None,
+                                });
+                                let scalar = match &scalar_val {
+                                    RuntimeValue::Int(n) => Some(*n),
+                                    RuntimeValue::Float(f) => Some(*f as i64),
+                                    _ => None,
+                                };
+                                match (start_i, end_i, scalar) {
+                                    (Some(s), Some(e), Some(n)) => {
+                                        let in_range = if *inclusive {
+                                            s <= n && n <= e
+                                        } else {
+                                            s <= n && n < e
+                                        };
+                                        // Capture the matched scalar for `as name` bindings.
+                                        let bnd = if in_range {
+                                            binding
+                                                .as_ref()
+                                                .map(|name| (name.clone(), RuntimeValue::Int(n)))
+                                        } else {
+                                            None
+                                        };
+                                        (in_range, bnd)
+                                    }
+                                    _ => (false, None),
+                                }
+                            }
+                            MatchPattern::Array(elems) => {
+                                let ok = match &roll_individuals {
+                                    Some(dice) if dice.len() == elems.len() => {
+                                        elems.iter().zip(dice.iter()).all(|(pat_ast, &die_val)| {
+                                            matches!(
+                                                eval_expr(pat_ast, &state.env),
+                                                Ok(RuntimeValue::Int(v)) if v == die_val
+                                            )
+                                        })
+                                    }
+                                    _ => false,
+                                };
+                                (ok, None)
+                            }
                         };
                         if is_match {
+                            // Inject any `as name` binding directly into the current scope so it
+                            // is immediately visible inside the arm body.  Match arm bodies are
+                            // plain blocks (no EnterScope wrapper), so deferring to `pending_binding`
+                            // would leave the variable inaccessible.  The variable lives in the
+                            // enclosing scope, which is consistent with how all variables in plain
+                            // blocks behave in Urd (they are not automatically dropped on arm exit).
+                            if let Some((name, val)) = binding_val {
+                                if let Err(e) = state.env.set(&name, val, &DeclKind::Variable) {
+                                    return VmStep::Error(e);
+                                }
+                            }
                             let target = graph
                                 .graph
                                 .edges_directed(node_idx, Direction::Outgoing)
@@ -3057,5 +3138,279 @@ label beta {
              Plain `jump` must not accumulate scopes (base 1 + current label = 2 max).",
             vm.state.env.depth()
         );
+    }
+
+    // ── Dice-match helpers ────────────────────────────────────────────────────
+
+    /// A deterministic dice roller that returns a fixed sequence of values,
+    /// truncated to the requested `count`.  Used to make dice-evaluation
+    /// tests reproducible.
+    struct StubRoller(Vec<i64>);
+
+    impl DiceRoller for StubRoller {
+        fn roll_individual(&self, count: u32, _sides: u32) -> Vec<i64> {
+            self.0[..count as usize].to_vec()
+        }
+    }
+
+    /// Build a VM with a deterministic [`StubRoller`] injected into the
+    /// environment before the first step.
+    fn build_vm_with_roller(ast: Ast, roller: impl DiceRoller + 'static) -> Vm {
+        let graph = Compiler::compile(&ast).expect("compile failed");
+        let mut vm = Vm::new(graph, empty_registry()).expect("vm init failed");
+        vm.state.env.set_dice_roller(Box::new(roller));
+        vm
+    }
+
+    /// Construct a minimal two-part `Dialogue` AST node for use in match arm bodies.
+    fn dialogue_node(speaker: &str, line: &str) -> Ast {
+        Ast::dialogue(
+            Ast::expr_list(vec![str_lit(speaker)]),
+            Ast::expr_list(vec![str_lit(line)]),
+        )
+    }
+
+    /// Advance the VM one step and assert it emits a `Dialogue` event whose
+    /// first line matches `expected`.
+    fn expect_dialogue_line(vm: &mut Vm, expected: &str) {
+        match vm.next(None) {
+            VmStep::Event(Event::Dialogue { lines, .. }) => match &lines[0] {
+                RuntimeValue::Str(ps) => {
+                    assert_eq!(ps.to_string(), expected, "dialogue line text mismatch")
+                }
+                other => panic!("expected Str line, got {:?}", other),
+            },
+            other => panic!("expected Dialogue event, got {:?}", other),
+        }
+    }
+
+    // ── VM dice-match integration tests ──────────────────────────────────────
+
+    /// A `Value` arm is compared against the **sum** of the roll.
+    ///
+    /// `1d6` rolls `[5]` → sum=5 → arm `5` matches → `"hit 5"` dialogue fires.
+    #[test]
+    fn test_match_value_coerces_roll_to_sum() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 6));
+        let hit_arm = MatchArm::new(
+            MatchPattern::Value(Ast::value(RuntimeValue::Int(5))),
+            Ast::block(vec![dialogue_node("narrator", "hit 5")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "no match")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![hit_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![5]));
+
+        expect_dialogue_line(&mut vm, "hit 5");
+    }
+
+    /// An exclusive `Range` arm matches when the sum falls strictly inside the bounds.
+    ///
+    /// `1d20` rolls `[15]`, arm `2..18` → 2 ≤ 15 < 18 → matches → `"mid"` fires.
+    #[test]
+    fn test_match_range_exclusive_matches() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 20));
+        let range_arm = MatchArm::new(
+            MatchPattern::Range {
+                start: Ast::value(RuntimeValue::Int(2)),
+                end: Ast::value(RuntimeValue::Int(18)),
+                inclusive: false,
+                binding: None,
+            },
+            Ast::block(vec![dialogue_node("narrator", "mid")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "out")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![range_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![15]));
+
+        expect_dialogue_line(&mut vm, "mid");
+    }
+
+    /// The exclusive upper bound is itself excluded from the range.
+    ///
+    /// `1d20` rolls `[18]`, arm `2..18` → 18 is NOT < 18 → no match →
+    /// wildcard fires → `"out of range"`.
+    #[test]
+    fn test_match_range_exclusive_boundary_excluded() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 20));
+        let range_arm = MatchArm::new(
+            MatchPattern::Range {
+                start: Ast::value(RuntimeValue::Int(2)),
+                end: Ast::value(RuntimeValue::Int(18)),
+                inclusive: false,
+                binding: None,
+            },
+            Ast::block(vec![dialogue_node("narrator", "in range")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "out of range")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![range_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![18]));
+
+        expect_dialogue_line(&mut vm, "out of range");
+    }
+
+    /// The inclusive upper bound is itself included in the range.
+    ///
+    /// `1d20` rolls `[18]`, arm `2..=18` → 18 ≤ 18 → matches → `"in range"` fires.
+    #[test]
+    fn test_match_range_inclusive_boundary_included() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 20));
+        let range_arm = MatchArm::new(
+            MatchPattern::Range {
+                start: Ast::value(RuntimeValue::Int(2)),
+                end: Ast::value(RuntimeValue::Int(18)),
+                inclusive: true,
+                binding: None,
+            },
+            Ast::block(vec![dialogue_node("narrator", "in range")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "out of range")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![range_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![18]));
+
+        expect_dialogue_line(&mut vm, "in range");
+    }
+
+    /// An `as name` binding injects the matched scalar into the arm body scope.
+    ///
+    /// `1d20` rolls `[7]`, arm `1..=20 as roll_val` → `roll_val` is bound to
+    /// `Int(7)` inside the arm body.  The dialogue emits `roll_val` as a line,
+    /// which must evaluate to `RuntimeValue::Int(7)`.
+    #[test]
+    fn test_match_range_binding_injects_variable() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 20));
+        let arm = MatchArm::new(
+            MatchPattern::Range {
+                start: Ast::value(RuntimeValue::Int(1)),
+                end: Ast::value(RuntimeValue::Int(20)),
+                inclusive: true,
+                binding: Some("roll_val".to_string()),
+            },
+            // Emit the bound variable as the dialogue line to verify its value.
+            Ast::block(vec![Ast::dialogue(
+                Ast::expr_list(vec![str_lit("narrator")]),
+                Ast::expr_list(vec![ident("roll_val")]),
+            )]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![7]));
+
+        match vm.next(None) {
+            VmStep::Event(Event::Dialogue { lines, .. }) => {
+                assert_eq!(
+                    lines[0],
+                    RuntimeValue::Int(7),
+                    "binding `roll_val` must resolve to Int(7) inside the arm body"
+                );
+            }
+            other => panic!("expected Dialogue event, got {:?}", other),
+        }
+    }
+
+    /// An `Array` pattern matches element-by-element against individual die results.
+    ///
+    /// `1d6` rolls `[6]`, arm `[6]` → exact element match → `"max"` fires.
+    #[test]
+    fn test_match_array_single_die_matches() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 6));
+        let array_arm = MatchArm::new(
+            MatchPattern::Array(vec![Ast::value(RuntimeValue::Int(6))]),
+            Ast::block(vec![dialogue_node("narrator", "max")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "other")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![array_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![6]));
+
+        expect_dialogue_line(&mut vm, "max");
+    }
+
+    /// An `Array` pattern fails when the die value differs from the pattern element.
+    ///
+    /// `1d6` rolls `[5]`, arm `[6]` → 5 ≠ 6 → no match → wildcard → `"not max"`.
+    #[test]
+    fn test_match_array_single_die_no_match() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 6));
+        let array_arm = MatchArm::new(
+            MatchPattern::Array(vec![Ast::value(RuntimeValue::Int(6))]),
+            Ast::block(vec![dialogue_node("narrator", "max")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "not max")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![array_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![5]));
+
+        expect_dialogue_line(&mut vm, "not max");
+    }
+
+    /// A multi-element `Array` pattern matches each die result in order.
+    ///
+    /// `2d6` rolls `[1, 6]`, arm `[1, 6]` → both elements match → `"snake+six"` fires.
+    #[test]
+    fn test_match_array_multi_die_matches() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let array_arm = MatchArm::new(
+            MatchPattern::Array(vec![
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(6)),
+            ]),
+            Ast::block(vec![dialogue_node("narrator", "snake+six")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "other")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![array_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![1, 6]));
+
+        expect_dialogue_line(&mut vm, "snake+six");
+    }
+
+    /// `Array` pattern comparison is strictly order-sensitive.
+    ///
+    /// `2d6` rolls `[6, 1]`, arm `[1, 6]` → die[0]=6 ≠ pat[0]=1 → no match →
+    /// wildcard fires → `"wrong order"`.
+    #[test]
+    fn test_match_array_multi_die_wrong_order() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let array_arm = MatchArm::new(
+            MatchPattern::Array(vec![
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(6)),
+            ]),
+            Ast::block(vec![dialogue_node("narrator", "one then six")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "wrong order")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![array_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![6, 1]));
+
+        expect_dialogue_line(&mut vm, "wrong order");
     }
 }

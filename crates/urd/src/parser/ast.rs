@@ -219,11 +219,47 @@ pub enum EventConstraint {
 /// A pattern in a match arm.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MatchPattern {
-    /// The `_` wildcard — matches anything
+    /// The `_` wildcard — matches anything.
     Wildcard,
     /// A literal or identifier path — matches by value equality.
-    /// Covers: IntLit, FloatLit, BoolLit, StrLit, Null, IdentPath (enum variant or variable)
+    ///
+    /// Covers: `IntLit`, `FloatLit`, `BoolLit`, `StrLit`, `Null`,
+    /// `IdentPath` (enum variant or variable).
+    ///
+    /// When the scrutinee evaluates to a [`RuntimeValue::Roll`] (i.e. the
+    /// result of a dice expression), the comparison is made against the
+    /// **sum** of all individual die values.
     Value(Ast),
+    /// A numeric range pattern — matches when the scrutinee falls within the
+    /// given bounds.
+    ///
+    /// Syntax: `start..end` (exclusive upper bound) or `start..=end`
+    /// (inclusive upper bound), with an optional `as name` binding that
+    /// captures the matched scalar value inside the arm body.
+    ///
+    /// When the scrutinee evaluates to a [`RuntimeValue::Roll`] the **sum**
+    /// of all dice is compared against the range.  For `Int` or `Float`
+    /// scrutinees the value is compared directly.
+    Range {
+        /// Lower bound of the range (inclusive).
+        start: Ast,
+        /// Upper bound of the range.
+        end: Ast,
+        /// `true` when the upper bound is inclusive (`..=`), `false` for
+        /// exclusive (`..`).
+        inclusive: bool,
+        /// Optional variable name to bind the matched scalar value to inside
+        /// the arm body.
+        binding: Option<String>,
+    },
+    /// An array pattern — matches individual die values element-by-element.
+    ///
+    /// Syntax: `[ val1, val2, ... ]`
+    ///
+    /// Requires the scrutinee to evaluate to a [`RuntimeValue::Roll`] with
+    /// the **same number of elements** as the pattern array.  Each element
+    /// is compared in order against the corresponding die result.
+    Array(Vec<Ast>),
 }
 
 impl std::fmt::Display for MatchPattern {
@@ -239,6 +275,40 @@ impl std::fmt::Display for MatchPattern {
                 AstContent::Value(RuntimeValue::Null) => write!(f, "null"),
                 _ => write!(f, "_"),
             },
+            MatchPattern::Range {
+                start,
+                end,
+                inclusive,
+                binding,
+            } => {
+                let sep = if *inclusive { "..=" } else { ".." };
+                match start.content() {
+                    AstContent::Value(RuntimeValue::Int(i)) => write!(f, "{i}")?,
+                    _ => write!(f, "_")?,
+                }
+                write!(f, "{sep}")?;
+                match end.content() {
+                    AstContent::Value(RuntimeValue::Int(i)) => write!(f, "{i}")?,
+                    _ => write!(f, "_")?,
+                }
+                if let Some(name) = binding {
+                    write!(f, " as {name}")?;
+                }
+                Ok(())
+            }
+            MatchPattern::Array(elems) => {
+                write!(f, "[")?;
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    match elem.content() {
+                        AstContent::Value(RuntimeValue::Int(v)) => write!(f, "{v}")?,
+                        _ => write!(f, "_")?,
+                    }
+                }
+                write!(f, "]")
+            }
         }
     }
 }
