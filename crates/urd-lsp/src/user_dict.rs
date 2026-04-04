@@ -119,6 +119,16 @@ impl UserDictionary {
     ///
     /// Returns an [`io::Error`] if the file cannot be opened or the write fails.
     pub fn add(&mut self, word: &str) -> io::Result<()> {
+        // Validate word: only alphabetic chars, hyphens, and apostrophes; max 100 chars.
+        if word.is_empty()
+            || word.len() > 100
+            || !word
+                .chars()
+                .all(|c| c.is_alphabetic() || c == '\'' || c == '-')
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid word"));
+        }
+
         let lower = word.to_lowercase();
 
         if self.words.contains(&lower) {
@@ -365,5 +375,101 @@ mod tests {
         let path = temp_path("path_accessor");
         let dict = UserDictionary::new(&path);
         assert_eq!(dict.path(), path.as_path());
+    }
+
+    // ── Validation tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn add_rejects_empty_word() {
+        let path = temp_path("add_rejects_empty_word");
+        let mut dict = UserDictionary::new(&path);
+        let err = dict.add("").expect_err("empty word must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            !path.exists(),
+            "no file must be created for a rejected word"
+        );
+    }
+
+    #[test]
+    fn add_rejects_word_over_100_chars() {
+        let path = temp_path("add_rejects_word_over_100_chars");
+        let long_word = "a".repeat(101);
+        let mut dict = UserDictionary::new(&path);
+        let err = dict
+            .add(&long_word)
+            .expect_err("word over 100 chars must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn add_accepts_word_exactly_100_chars() {
+        let path = temp_path("add_accepts_word_exactly_100_chars");
+        let word = "a".repeat(100);
+        let mut dict = UserDictionary::new(&path);
+        dict.add(&word).expect("100-char word must be accepted");
+        assert!(dict.contains(&word));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn add_rejects_word_with_digit() {
+        let path = temp_path("add_rejects_word_with_digit");
+        let mut dict = UserDictionary::new(&path);
+        let err = dict
+            .add("word1")
+            .expect_err("word containing a digit must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn add_rejects_word_with_special_char() {
+        let path = temp_path("add_rejects_word_with_special_char");
+        let mut dict = UserDictionary::new(&path);
+        let err = dict
+            .add("bad@word")
+            .expect_err("word with '@' must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn add_accepts_hyphenated_word() {
+        let path = temp_path("add_accepts_hyphenated_word");
+        let mut dict = UserDictionary::new(&path);
+        dict.add("low-ceilinged")
+            .expect("hyphenated word must be accepted");
+        assert!(
+            dict.contains("low-ceilinged"),
+            "hyphenated word must be retrievable"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn add_accepts_word_with_apostrophe() {
+        let path = temp_path("add_accepts_word_with_apostrophe");
+        let mut dict = UserDictionary::new(&path);
+        dict.add("don't")
+            .expect("word with apostrophe must be accepted");
+        assert!(
+            dict.contains("don't"),
+            "word with apostrophe must be retrievable"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn add_rejected_word_not_inserted_into_memory() {
+        let path = temp_path("add_rejected_word_not_inserted_into_memory");
+        let mut dict = UserDictionary::new(&path);
+        let _ = dict.add("bad@word");
+        assert!(
+            !dict.contains("bad@word"),
+            "rejected word must not appear in the in-memory set"
+        );
+        assert!(
+            dict.words().is_empty(),
+            "in-memory set must remain empty after a rejected add"
+        );
     }
 }

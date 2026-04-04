@@ -133,6 +133,12 @@ fn label_to_ftl_value(label: &str) -> String {
     out
 }
 
+/// Renders a [`ParsedString`] as a Fluent (FTL) string value.
+///
+/// Literal and escaped-character parts are emitted verbatim; interpolation
+/// parts are converted to Fluent variable references (`{ $var_name }`, with
+/// any `.` separators replaced by `-` to satisfy FTL identifier rules).
+/// [`StringPart::ExitString`] sentinels are silently skipped.
 pub fn render_parsed_string_as_ftl(ps: &ParsedString) -> String {
     let mut out = String::new();
     for part in ps.parts() {

@@ -155,6 +155,27 @@ pub enum VmError {
         /// The actual event kind it was applied to (e.g. `"dialogue"`).
         actual_event: String,
     },
+
+    /// A `match` expression had no arm that matched the scrutinee and no
+    /// wildcard / default arm was present.
+    #[error("non-exhaustive match: {0}")]
+    NonExhaustiveMatch(String),
+
+    /// The script exceeded its step budget (infinite loop guard).
+    ///
+    /// The default budget is 1 000 000 steps. Call [`Vm::set_step_budget`] to
+    /// raise, lower, or disable the limit.
+    #[error(
+        "execution budget exceeded: script executed too many steps without ending (possible infinite loop)"
+    )]
+    BudgetExceeded,
+
+    /// The call stack depth limit was reached.
+    ///
+    /// The default limit is 256 frames. Indicates unbounded mutual recursion or
+    /// a pathological `LetCall` cycle in the script.
+    #[error("call stack overflow: maximum call depth ({0}) exceeded")]
+    StackOverflow(usize),
 }
 
 // ─── Decorator validation helper ─────────────────────────────────────────────
@@ -234,6 +255,11 @@ struct VmState {
     pending_choice: Option<NodeIndex>,
     /// Registry of named decorator handlers.
     registry: DecoratorRegistry,
+    /// Steps remaining before [`VmError::BudgetExceeded`] fires.
+    /// `None` means unlimited (use only in tests or trusted contexts).
+    steps_remaining: Option<u64>,
+    /// Maximum allowed call stack depth before [`VmError::StackOverflow`] fires.
+    max_call_depth: usize,
 }
 
 // ─── Vm ──────────────────────────────────────────────────────────────────────
@@ -363,6 +389,8 @@ impl Vm {
                 call_stack: Vec::new(),
                 pending_choice: None,
                 registry,
+                steps_remaining: Some(1_000_000),
+                max_call_depth: 256,
             },
             localizer: None,
         })
@@ -400,6 +428,14 @@ impl Vm {
         let localizer = &self.localizer;
 
         loop {
+            // ── Execution budget guard ────────────────────────────────────────
+            if let Some(ref mut remaining) = state.steps_remaining {
+                if *remaining == 0 {
+                    return VmStep::Error(VmError::BudgetExceeded);
+                }
+                *remaining -= 1;
+            }
+
             let node_idx = match state.cursor {
                 Some(idx) => idx,
                 None => return VmStep::Ended,
@@ -535,7 +571,13 @@ impl Vm {
                                 });
                                 let scalar = match &scalar_val {
                                     RuntimeValue::Int(n) => Some(*n),
-                                    RuntimeValue::Float(f) => Some(*f as i64),
+                                    RuntimeValue::Float(f) => {
+                                        if f.is_nan() {
+                                            None
+                                        } else {
+                                            Some(*f as i64)
+                                        }
+                                    }
                                     _ => None,
                                 };
                                 match (start_i, end_i, scalar) {
@@ -608,7 +650,14 @@ impl Vm {
                             .edges_directed(node_idx, Direction::Outgoing)
                             .find(|e| matches!(e.weight(), IrEdge::Default))
                             .map(|e| e.target());
-                        state.cursor = default_target;
+                        match default_target {
+                            Some(target) => state.cursor = Some(target),
+                            None => {
+                                return VmStep::Error(VmError::NonExhaustiveMatch(
+                                    "no arm matched and no wildcard/default present".into(),
+                                ));
+                            }
+                        }
                     }
                 }
 
@@ -710,6 +759,11 @@ impl Vm {
                     } else {
                         Some(var.clone())
                     };
+
+                    // Guard call stack depth before pushing a new frame.
+                    if state.call_stack.len() >= state.max_call_depth {
+                        return VmStep::Error(VmError::StackOverflow(state.max_call_depth));
+                    }
 
                     // Push a scope to match the eventual ExitScope's pop.
                     state.env.push_scope();
@@ -952,6 +1006,17 @@ impl Vm {
     /// See [`Environment::provide_extern`] for storage semantics.
     pub fn provide_extern(&mut self, name: &str, value: RuntimeValue) {
         self.state.env.provide_extern(name, value);
+    }
+
+    /// Sets the maximum number of VM steps before
+    /// [`VmStep::Error(VmError::BudgetExceeded)`] is returned.
+    ///
+    /// Pass `None` for unlimited execution. Only use `None` in tests or
+    /// other trusted contexts where an infinite loop cannot occur.
+    ///
+    /// The default budget is `Some(1_000_000)`.
+    pub fn set_step_budget(&mut self, budget: Option<u64>) {
+        self.state.steps_remaining = budget;
     }
 }
 

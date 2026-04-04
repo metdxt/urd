@@ -90,7 +90,7 @@
 //! built at most once per process lifetime.
 
 #[cfg(not(test))]
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::sync::OnceLock;
 
 use chumsky::span::{SimpleSpan, Span};
@@ -242,18 +242,28 @@ const MIN_DICT_ENTRY_COUNT: i64 = 5;
 /// One [`OnceLock`] per language — initialised lazily on first use.
 static CHECKERS: [OnceLock<SymSpell<UnicodeStringStrategy>>; 8] = [const { OnceLock::new() }; 8];
 
+/// Maximum number of bytes accepted from a single dictionary download.
+///
+/// Responses larger than this limit are discarded and the `.part` temp file is
+/// removed so the next run can retry.  50 MB is well above any real dictionary
+/// in the hermitdave corpus (the largest is ~30 MB) while still bounding
+/// worst-case memory and disk usage from a malicious or misconfigured server.
+#[cfg(not(test))]
+const MAX_DICT_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+
 /// Process-wide [`ureq::Agent`] used for all dictionary downloads.
 ///
-/// A 5-minute global timeout and a 60-second body-receive timeout guard
-/// against hung connections while still allowing large dictionaries
-/// (30+ MB) to transfer on slow connections.
+/// A 30-second global timeout and a 30-second body-receive timeout guard
+/// against hung connections.  These limits are intentionally short so that a
+/// slow or unresponsive server does not stall LSP startup; 30 MB transfers
+/// comfortably within 30 s on any connection fast enough to be useful.
 #[cfg(not(test))]
 fn http_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
         ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(300)))
-            .timeout_recv_body(Some(std::time::Duration::from_secs(60)))
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .timeout_recv_body(Some(std::time::Duration::from_secs(30)))
             .build()
             .into()
     })
@@ -327,12 +337,25 @@ fn ensure_dict_cached(language: SpellcheckLanguage) -> Option<std::path::PathBuf
         }
     };
 
-    // into_reader() has no size limit — safe for 30+ MB files.
+    // Wrap the body reader with a hard byte cap so a runaway server cannot
+    // exhaust memory or disk.  We request MAX_DICT_BYTES + 1 bytes: if the
+    // copy returns more than MAX_DICT_BYTES the response exceeded the limit.
     let (_, body) = response.into_parts();
-    let mut reader = body.into_reader();
-    if let Err(e) = std::io::copy(&mut reader, &mut file) {
+    let mut limited = body.into_reader().take(MAX_DICT_BYTES + 1);
+    let written = match std::io::copy(&mut limited, &mut file) {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!(
+                "spellcheck: I/O error while writing {:?} dictionary: {e}",
+                language
+            );
+            let _ = std::fs::remove_file(&tmp);
+            return None;
+        }
+    };
+    if written > MAX_DICT_BYTES {
         log::warn!(
-            "spellcheck: I/O error while writing {:?} dictionary: {e}",
+            "spellcheck: {:?} dictionary exceeds 50 MB limit, discarding",
             language
         );
         let _ = std::fs::remove_file(&tmp);

@@ -391,8 +391,12 @@ impl CompilerState {
                 // Run forward pre-pass only at the outermost block entry (not for
                 // nested blocks already inside a pre-assigned subtree).
                 let was_outermost = self.id_ctx.is_some() && self.preassign_ids.is_none();
-                if was_outermost {
-                    let mut id_ctx_pre = self.id_ctx.as_ref().unwrap().clone();
+                // `was_outermost` is only true when `id_ctx.is_some()`, so the
+                // `if let` branch is always taken.  NLL ends the immutable borrow
+                // of `self.id_ctx` (via `ctx`) at the `clone()` call, allowing the
+                // reassignment below without a conflicting borrow.
+                if was_outermost && let Some(ctx) = self.id_ctx.as_ref() {
+                    let mut id_ctx_pre = ctx.clone();
                     let pre_ids = preassign_subtree(ast, &mut id_ctx_pre);
                     // Advance actual IdContext to post-block state so counters
                     // are not re-incremented during the compilation pass.
@@ -409,7 +413,7 @@ impl CompilerState {
                 if was_outermost {
                     // Exit replay mode; queue must be exhausted at this point.
                     debug_assert!(
-                        self.preassign_ids.as_ref().map_or(true, |q| q.is_empty()),
+                        self.preassign_ids.as_ref().is_none_or(|q| q.is_empty()),
                         "preassign_ids should be exhausted after block compilation"
                     );
                     self.preassign_ids = None;
@@ -514,10 +518,10 @@ impl CompilerState {
                 };
                 // Skip push/pop in replay mode — counters were already advanced
                 // by the forward pre-pass.
-                if self.preassign_ids.is_none() {
-                    if let Some(ctx) = &mut self.id_ctx {
-                        ctx.push_container(EventKind::If, if_override);
-                    }
+                if self.preassign_ids.is_none()
+                    && let Some(ctx) = &mut self.id_ctx
+                {
+                    ctx.push_container(EventKind::If, if_override);
                 }
 
                 let then_entry = self.compile_node(then_block, Some(merge))?.unwrap_or(merge);
@@ -526,10 +530,10 @@ impl CompilerState {
                     None => merge,
                 };
 
-                if self.preassign_ids.is_none() {
-                    if let Some(ctx) = &mut self.id_ctx {
-                        ctx.pop_container();
-                    }
+                if self.preassign_ids.is_none()
+                    && let Some(ctx) = &mut self.id_ctx
+                {
+                    ctx.pop_container();
                 }
 
                 let id = self.graph.push(IrNodeKind::Branch {
@@ -555,10 +559,10 @@ impl CompilerState {
                 } else {
                     None
                 };
-                if self.preassign_ids.is_none() {
-                    if let Some(ctx) = &mut self.id_ctx {
-                        ctx.push_label(label, id_override);
-                    }
+                if self.preassign_ids.is_none()
+                    && let Some(ctx) = &mut self.id_ctx
+                {
+                    ctx.push_label(label, id_override);
                 }
 
                 // Emit the ExitScope node that runs *after* the block body.
@@ -589,10 +593,10 @@ impl CompilerState {
                 self.graph.labels.insert(label.clone(), placeholder_id);
 
                 // Pop label scope (skip in replay mode).
-                if self.preassign_ids.is_none() {
-                    if let Some(ctx) = &mut self.id_ctx {
-                        ctx.pop_label();
-                    }
+                if self.preassign_ids.is_none()
+                    && let Some(ctx) = &mut self.id_ctx
+                {
+                    ctx.pop_label();
                 }
 
                 Ok(Some(placeholder_id))
@@ -730,10 +734,10 @@ impl CompilerState {
                 }
 
                 // Pop the menu container (skip in replay mode — already advanced).
-                if self.preassign_ids.is_none() {
-                    if let Some(ctx) = &mut self.id_ctx {
-                        ctx.pop_container();
-                    }
+                if self.preassign_ids.is_none()
+                    && let Some(ctx) = &mut self.id_ctx
+                {
+                    ctx.pop_container();
                 }
 
                 let id = self.graph.push(IrNodeKind::Choice {
@@ -761,10 +765,10 @@ impl CompilerState {
                 } else {
                     None
                 };
-                if self.preassign_ids.is_none() {
-                    if let Some(ctx) = &mut self.id_ctx {
-                        ctx.push_container(EventKind::Match, match_override);
-                    }
+                if self.preassign_ids.is_none()
+                    && let Some(ctx) = &mut self.id_ctx
+                {
+                    ctx.push_container(EventKind::Match, match_override);
                 }
 
                 let mut switch_arms: Vec<SwitchArm> = Vec::with_capacity(arms.len());
@@ -788,10 +792,10 @@ impl CompilerState {
                     }
                 }
 
-                if self.preassign_ids.is_none() {
-                    if let Some(ctx) = &mut self.id_ctx {
-                        ctx.pop_container();
-                    }
+                if self.preassign_ids.is_none()
+                    && let Some(ctx) = &mut self.id_ctx
+                {
+                    ctx.pop_container();
                 }
 
                 let id = self.graph.push(IrNodeKind::Switch {

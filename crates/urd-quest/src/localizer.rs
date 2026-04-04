@@ -51,6 +51,16 @@ impl FsLocalizer {
     /// Returns an error string if the directory does not exist or any `.ftl`
     /// file cannot be read.
     pub fn load(locale_dir: &Path, locale: &str) -> Result<Self, String> {
+        // Guard against path injection via the locale name.  Only the
+        // characters that legitimately appear in BCP 47 locale tags are
+        // permitted; anything else (slashes, dots, null bytes, …) is rejected
+        // before the value is ever joined onto a filesystem path.
+        if !locale
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(format!("invalid locale name: '{locale}'"));
+        }
         let dir = locale_dir.join(locale);
         if !dir.exists() {
             return Err(format!(
@@ -199,5 +209,57 @@ mod tests {
     fn locale_getter_returns_tag() {
         let loc = make_localizer_from_ftl("pl-PL", "test = Cześć!\n");
         assert_eq!(loc.locale(), "pl-PL");
+    }
+
+    // ── locale name validation ────────────────────────────────────────────
+
+    #[test]
+    fn load_rejects_dotdot_traversal_in_locale() {
+        let result = FsLocalizer::load(std::path::Path::new("/tmp"), "../etc");
+        assert!(result.is_err());
+        let err = result.err().expect("expected an error");
+        assert!(
+            err.contains("invalid locale name"),
+            "expected 'invalid locale name' in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_slash_in_locale() {
+        let result = FsLocalizer::load(std::path::Path::new("/tmp"), "en-US/../../etc");
+        assert!(result.is_err());
+        let err = result.err().expect("expected an error");
+        assert!(
+            err.contains("invalid locale name"),
+            "expected 'invalid locale name' in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_absolute_path_as_locale() {
+        let result = FsLocalizer::load(std::path::Path::new("/tmp"), "/etc/passwd");
+        assert!(result.is_err());
+        let err = result.err().expect("expected an error");
+        assert!(
+            err.contains("invalid locale name"),
+            "expected 'invalid locale name' in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_accepts_valid_bcp47_locale_tag() {
+        // The validation gate must not block legitimate locale strings.
+        // Use a non-existent directory so the function returns a "directory
+        // does not exist" error rather than a locale-validation error.
+        let result = FsLocalizer::load(
+            std::path::Path::new("/nonexistent_urd_locale_dir_xyzzy"),
+            "en-US",
+        );
+        assert!(result.is_err());
+        let err = result.err().expect("expected an error");
+        assert!(
+            !err.contains("invalid locale name"),
+            "a valid locale tag should pass validation, got: {err}"
+        );
     }
 }

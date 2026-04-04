@@ -54,7 +54,9 @@ pub(super) fn dispatch(
         // ── Arithmetic ────────────────────────────────────────────────────────
         "abs" => {
             require_args("abs", args, 0)?;
-            Ok(RuntimeValue::Int(n.abs()))
+            n.checked_abs()
+                .map(RuntimeValue::Int)
+                .ok_or_else(|| super::VmError::TypeError("int.abs(): overflow on i64::MIN".into()))
         }
 
         "min" => {
@@ -96,7 +98,16 @@ pub(super) fn dispatch(
                     u32::MAX
                 )));
             }
-            Ok(RuntimeValue::Int(n.pow(exp as u32)))
+            let exp_u32 = exp as u32;
+            let mut result: i64 = 1;
+            for _ in 0..exp_u32 {
+                result = result.checked_mul(n).ok_or_else(|| {
+                    super::VmError::TypeError(format!(
+                        "int.pow(): result overflows i64 (base={n}, exp={exp})"
+                    ))
+                })?;
+            }
+            Ok(RuntimeValue::Int(result))
         }
 
         "signum" => {
@@ -234,6 +245,15 @@ mod tests {
     fn test_abs_wrong_arg_count() {
         assert!(matches!(
             call(1, "abs", &[int(0)]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_abs_min_overflows() {
+        // i64::MIN has no positive counterpart; must return a TypeError, not panic.
+        assert!(matches!(
+            call(i64::MIN, "abs", &[]).unwrap_err(),
             super::super::VmError::TypeError(_)
         ));
     }
@@ -380,6 +400,34 @@ mod tests {
     fn test_pow_no_args() {
         assert!(matches!(
             call(2, "pow", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_pow_overflow_errors() {
+        // 2^63 overflows i64; must return a TypeError, not panic or wrap.
+        assert!(matches!(
+            call(2, "pow", &[int(63)]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_pow_large_base_overflow_errors() {
+        // i64::MAX ^ 2 obviously overflows.
+        assert!(matches!(
+            call(i64::MAX, "pow", &[int(2)]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_pow_negative_base_overflow_errors() {
+        // (-2)^63 = i64::MIN, which is exactly representable.
+        // (-2)^64 = 2^64, which overflows i64 — the loop must catch it.
+        assert!(matches!(
+            call(-2, "pow", &[int(64)]).unwrap_err(),
             super::super::VmError::TypeError(_)
         ));
     }

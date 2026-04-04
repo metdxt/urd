@@ -90,6 +90,24 @@ impl ImportedModule {
     }
 }
 
+// ── Module file cache ─────────────────────────────────────────────────────────
+
+/// The parsed content of a module file, stored independently of the import alias
+/// and symbol filter.  Cached by canonical path so the same file shared across
+/// multiple importers (or imported under different aliases) is only read and
+/// parsed once per mtime change.
+#[derive(Debug, Clone)]
+struct CachedFileContent {
+    uri: Option<Url>,
+    source: String,
+    symbols: Vec<Symbol>,
+    ast: Option<Ast>,
+}
+
+/// Maps a canonical file path to the last-observed mtime and parsed content.
+/// Invalidated automatically when `mtime` changes on the next access.
+type ModuleCache = DashMap<PathBuf, (std::time::SystemTime, CachedFileContent)>;
+
 // ── WorkspaceIndex ────────────────────────────────────────────────────────────
 
 /// A concurrent, per-file cache of imported modules.
@@ -104,6 +122,10 @@ impl ImportedModule {
 pub struct WorkspaceIndex {
     /// `importer_uri` → list of modules it directly imports.
     imports: DashMap<Url, Vec<ImportedModule>>,
+    /// `canonical_path` → `(mtime, parsed content)` for every module loaded
+    /// from disk.  Shared across all importers so the same file is never parsed
+    /// twice unless it changes on disk.
+    module_cache: ModuleCache,
 }
 
 impl WorkspaceIndex {
@@ -121,7 +143,7 @@ impl WorkspaceIndex {
     pub fn update(&self, uri: &Url, ast: &Ast) {
         let base_dir = uri_to_dir(uri);
         let mut modules = Vec::new();
-        collect_imports_from_ast(ast, &base_dir, &mut modules);
+        collect_imports_from_ast(ast, &base_dir, &self.module_cache, &mut modules);
         self.imports.insert(uri.clone(), modules);
     }
 
@@ -386,12 +408,20 @@ fn collect_type_defs_from_ast(
 
 /// Recursively walk `ast` collecting every `Import` node and loading the
 /// referenced file.  Results are appended to `out`.
-fn collect_imports_from_ast(ast: &Ast, base_dir: &Option<PathBuf>, out: &mut Vec<ImportedModule>) {
+///
+/// `cache` is the workspace-level module file cache; hits avoid re-reading and
+/// re-parsing files whose mtime has not changed since the last load.
+fn collect_imports_from_ast(
+    ast: &Ast,
+    base_dir: &Option<PathBuf>,
+    cache: &ModuleCache,
+    out: &mut Vec<ImportedModule>,
+) {
     match ast.content() {
         // Top-level block — walk every statement.
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                collect_imports_from_ast(stmt, base_dir, out);
+                collect_imports_from_ast(stmt, base_dir, cache, out);
             }
         }
 
@@ -400,11 +430,12 @@ fn collect_imports_from_ast(ast: &Ast, base_dir: &Option<PathBuf>, out: &mut Vec
             for entry in symbols {
                 // `entry.original == None`  →  whole-module import
                 // `entry.original == Some(name)` →  single-symbol import
-                out.push(load_module(
+                out.push(load_module_cached(
                     path,
                     &entry.alias,
                     entry.original.as_deref(),
                     base_dir,
+                    cache,
                 ));
             }
         }
@@ -416,29 +447,29 @@ fn collect_imports_from_ast(ast: &Ast, base_dir: &Option<PathBuf>, out: &mut Vec
             else_block,
             ..
         } => {
-            collect_imports_from_ast(then_block, base_dir, out);
+            collect_imports_from_ast(then_block, base_dir, cache, out);
             if let Some(eb) = else_block {
-                collect_imports_from_ast(eb, base_dir, out);
+                collect_imports_from_ast(eb, base_dir, cache, out);
             }
         }
         AstContent::LabeledBlock { block, .. } => {
-            collect_imports_from_ast(block, base_dir, out);
+            collect_imports_from_ast(block, base_dir, cache, out);
         }
         AstContent::Menu { options } => {
             for opt in options {
-                collect_imports_from_ast(opt, base_dir, out);
+                collect_imports_from_ast(opt, base_dir, cache, out);
             }
         }
         AstContent::MenuOption { content, .. } => {
-            collect_imports_from_ast(content, base_dir, out);
+            collect_imports_from_ast(content, base_dir, cache, out);
         }
         AstContent::Match { arms, .. } => {
             for arm in arms {
-                collect_imports_from_ast(&arm.body, base_dir, out);
+                collect_imports_from_ast(&arm.body, base_dir, cache, out);
             }
         }
         AstContent::DecoratorDef { body, .. } => {
-            collect_imports_from_ast(body, base_dir, out);
+            collect_imports_from_ast(body, base_dir, cache, out);
         }
 
         // All other node types cannot contain import statements.
@@ -448,16 +479,55 @@ fn collect_imports_from_ast(ast: &Ast, base_dir: &Option<PathBuf>, out: &mut Vec
 
 /// Load and parse a single module at `path` relative to `base_dir`.
 ///
-/// Never panics — a load or parse failure produces an `ImportedModule` with
-/// empty `symbols` and `ast: None`.
+/// Never panics — a load or parse failure produces an [`ImportedModule`] with
+/// empty `symbols` and `ast: None`.  Paths that start with `/` or contain
+/// `..` components are silently rejected (empty module returned) to prevent
+/// path-traversal attacks that could be triggered zero-click by a malicious
+/// `import` statement processed on `did_open`.
 fn load_module(
     path: &str,
     alias: &str,
     symbol_filter: Option<&str>,
     base_dir: &Option<PathBuf>,
 ) -> ImportedModule {
+    // Build an empty shell for all early-return (security / load / parse) failures.
+    // Both captured values are `Copy` so the closure can be called repeatedly.
+    let make_empty = move || ImportedModule {
+        alias: alias.to_owned(),
+        uri: None,
+        source: String::new(),
+        symbols: Vec::new(),
+        ast: None,
+        symbol_filter: symbol_filter.map(str::to_owned),
+    };
+
+    // Reject dangerous path components before any filesystem I/O.
+    // `PathBuf::join` with an absolute path silently replaces `base_dir`;
+    // `..` components can walk outside the workspace root.
+    if path.starts_with('/') || path.contains("..") {
+        return make_empty();
+    }
+
     let full_path = match base_dir {
-        Some(dir) => dir.join(path),
+        Some(dir) => {
+            let candidate = dir.join(path);
+            // Canonicalize both ends and verify the resolved file stays inside
+            // the workspace directory.  Catches symlink-based escape attempts.
+            let canonical_base = match dir.canonicalize() {
+                Ok(p) => p,
+                Err(_) => return make_empty(),
+            };
+            let canonical_full = match candidate.canonicalize() {
+                Ok(p) => p,
+                // File does not exist yet or is unreadable — treat the same
+                // as a failed read below: return an empty module consistently.
+                Err(_) => return make_empty(),
+            };
+            if !canonical_full.starts_with(&canonical_base) {
+                return make_empty();
+            }
+            canonical_full
+        }
         None => PathBuf::from(path),
     };
 
@@ -490,6 +560,65 @@ fn load_module(
         ast,
         symbol_filter: symbol_filter.map(str::to_owned),
     }
+}
+
+/// Like [`load_module`], but skips `fs::read_to_string` + `parse_source` when
+/// the file's mtime matches the cached entry.
+///
+/// The cache stores only the file-content parts (URI, source, symbols, AST),
+/// **not** the import alias or symbol filter.  Those are supplied by the caller
+/// and vary per import statement, so the same cached content can be reused even
+/// when the same file is imported under different aliases.
+///
+/// Security: applies the same path-traversal pre-checks as [`load_module`].
+/// If those checks reject the path (or if no `base_dir` is available) the call
+/// falls through to the uncached [`load_module`] which returns an empty module.
+fn load_module_cached(
+    path: &str,
+    alias: &str,
+    symbol_filter: Option<&str>,
+    base_dir: &Option<PathBuf>,
+    cache: &ModuleCache,
+) -> ImportedModule {
+    if let Some(base) = base_dir {
+        // Mirror load_module's security pre-checks so we never attempt I/O on
+        // dangerous paths and so the cache is never populated with bad keys.
+        if !path.starts_with('/') && !path.contains("..") {
+            let candidate = base.join(path);
+            if let Ok(canonical) = candidate.canonicalize()
+                && let Ok(meta) = std::fs::metadata(&canonical)
+                && let Ok(mtime) = meta.modified()
+            {
+                // ── Cache hit ────────────────────────────────────
+                if let Some(entry) = cache.get(&canonical)
+                    && entry.0 == mtime
+                {
+                    let content = &entry.1;
+                    return ImportedModule {
+                        alias: alias.to_owned(),
+                        uri: content.uri.clone(),
+                        source: content.source.clone(),
+                        symbols: content.symbols.clone(),
+                        ast: content.ast.clone(),
+                        symbol_filter: symbol_filter.map(str::to_owned),
+                    };
+                }
+                // ── Cache miss: load, store, return ──────────────
+                let module = load_module(path, alias, symbol_filter, base_dir);
+                let content = CachedFileContent {
+                    uri: module.uri.clone(),
+                    source: module.source.clone(),
+                    symbols: module.symbols.clone(),
+                    ast: module.ast.clone(),
+                };
+                cache.insert(canonical, (mtime, content));
+                return module;
+            }
+        }
+    }
+    // Fall back to the uncached path: security rejection, no base_dir, or any
+    // I/O error that prevented us from reading the mtime.
+    load_module(path, alias, symbol_filter, base_dir)
 }
 
 // ── URI / path helpers ────────────────────────────────────────────────────────
@@ -802,6 +931,36 @@ mod tests {
             "no symbols expected from a failed import"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── path-traversal security tests ────────────────────────────────────
+
+    #[test]
+    fn load_module_rejects_absolute_path() {
+        // `PathBuf::join("/abs/path")` silently replaces the base directory.
+        // The guard must catch this before any I/O occurs.
+        let dir = tmp_dir();
+        let module = load_module("/etc/passwd", "evil", None, &Some(dir.clone()));
+        assert!(
+            module.symbols.is_empty(),
+            "absolute path must not yield symbols"
+        );
+        assert!(module.uri.is_none(), "absolute path must not yield a URI");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_module_rejects_dotdot_traversal() {
+        // `..` components can escape the workspace root even without an
+        // absolute prefix.
+        let dir = tmp_dir();
+        let module = load_module("../../etc/passwd", "evil", None, &Some(dir.clone()));
+        assert!(
+            module.symbols.is_empty(),
+            "dotdot path must not yield symbols"
+        );
+        assert!(module.uri.is_none(), "dotdot path must not yield a URI");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

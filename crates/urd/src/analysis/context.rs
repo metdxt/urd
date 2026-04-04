@@ -78,18 +78,31 @@ pub struct AnalysisContext {
 }
 
 impl AnalysisContext {
-    /// Build the context by walking `root` once.
+    /// Build the context in a single pass over `root`.
     ///
-    /// - **Enums** are collected recursively from the whole tree.
+    /// - **Enums**, **structs**, and **labels** are collected recursively in one
+    ///   `walk_ast` traversal.
     /// - **Top-level typed variables** are collected only from the direct
     ///   statements of the outermost [`AstContent::Block`] (or the block inside
     ///   a top-level [`AstContent::LabeledBlock`]).
     pub fn build(root: &Ast) -> Self {
         let mut ctx = AnalysisContext::default();
-        collect_enums(root, &mut ctx.enums);
-        collect_structs(root, &mut ctx.structs);
+        walk_ast(root, &mut |node| match node.content() {
+            AstContent::EnumDecl { name, variants } => {
+                ctx.enums.insert(
+                    name.clone(),
+                    variants.iter().map(|(n, _)| n.clone()).collect(),
+                );
+            }
+            AstContent::StructDecl { name, fields } => {
+                ctx.structs.insert(name.clone(), fields.clone());
+            }
+            AstContent::LabeledBlock { label, .. } => {
+                ctx.labels.insert(label.clone());
+            }
+            _ => {}
+        });
         collect_top_level_vars(root, &mut ctx.top_level_vars);
-        collect_labels(root, &mut ctx.labels);
         ctx
     }
 
@@ -127,39 +140,6 @@ impl AnalysisContext {
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
-
-/// Recursively walks the entire subtree rooted at `node` and collects every
-/// label name into `labels`.
-fn collect_labels(root: &Ast, labels: &mut HashSet<String>) {
-    walk_ast(root, &mut |node| {
-        if let AstContent::LabeledBlock { label, .. } = node.content() {
-            labels.insert(label.clone());
-        }
-    });
-}
-
-/// Recursively walks the entire subtree rooted at `root` and inserts every
-/// [`AstContent::EnumDecl`] it finds into `enums`.
-fn collect_enums(root: &Ast, enums: &mut HashMap<String, Vec<String>>) {
-    walk_ast(root, &mut |node| {
-        if let AstContent::EnumDecl { name, variants } = node.content() {
-            enums.insert(
-                name.clone(),
-                variants.iter().map(|(n, _)| n.clone()).collect(),
-            );
-        }
-    });
-}
-
-/// Recursively walks the entire subtree rooted at `root` and inserts every
-/// [`AstContent::StructDecl`] it finds into `structs`.
-fn collect_structs(root: &Ast, structs: &mut HashMap<String, Vec<StructField>>) {
-    walk_ast(root, &mut |node| {
-        if let AstContent::StructDecl { name, fields } = node.content() {
-            structs.insert(name.clone(), fields.clone());
-        }
-    });
-}
 
 /// Examines the *direct* children of the outermost block in `root` and records
 /// every [`AstContent::Declaration`] or [`AstContent::ExternDeclaration`] that

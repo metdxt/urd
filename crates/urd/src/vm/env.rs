@@ -42,8 +42,12 @@ pub struct Environment {
     /// These represent persistent game state (e.g. reputation, flags) and are
     /// the values a save-file system would serialise and restore.
     globals: HashMap<String, RuntimeValue>,
-    /// Names that were declared with `const` (immutable after first assignment).
-    constants: HashSet<String>,
+    /// Per-scope sets of names declared with `const`.
+    ///
+    /// One `HashSet` per entry in `scopes`; pushed and popped in lock-step with
+    /// `scopes` so that a `const x` inside a label block does not permanently
+    /// mark `x` as constant — once the scope is popped the name guard is gone.
+    constant_frames: Vec<HashSet<String>>,
     /// Read-only structural values injected by the VM — never writable from
     /// script code and never part of a save file.
     ///
@@ -71,7 +75,7 @@ impl fmt::Debug for Environment {
             .field("enums", &self.enums)
             .field("structs", &self.structs)
             .field("globals", &self.globals)
-            .field("constants", &self.constants)
+            .field("constant_frames", &self.constant_frames)
             .field("builtins", &self.builtins)
             .field("externs", &self.externs)
             .field("roller", &self.roller.as_ref().map(|_| "<DiceRoller>"))
@@ -85,6 +89,7 @@ impl Environment {
         Environment {
             scopes: vec![HashMap::new()],
             fluent_bindings: vec![std::collections::HashMap::new()],
+            constant_frames: vec![HashSet::new()],
             externs: HashMap::new(),
             roller: Some(Arc::new(DefaultDiceRoller)),
             ..Default::default()
@@ -100,6 +105,7 @@ impl Environment {
     pub fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
         self.fluent_bindings.push(std::collections::HashMap::new());
+        self.constant_frames.push(HashSet::new());
     }
 
     /// Pops the innermost local scope, discarding all variables in it.
@@ -110,15 +116,20 @@ impl Environment {
     /// imbalance in the compiler output.
     pub fn pop_scope(&mut self) {
         debug_assert!(
-            self.scopes.len() > 1 && self.scopes.len() == self.fluent_bindings.len(),
-            "pop_scope invariant violated: scopes.len()={} fluent_bindings.len()={} — \
-             EnterScope/ExitScope are unbalanced or scope/fluent vecs have drifted",
+            self.scopes.len() > 1
+                && self.scopes.len() == self.fluent_bindings.len()
+                && self.scopes.len() == self.constant_frames.len(),
+            "pop_scope invariant violated: scopes.len()={} fluent_bindings.len()={} \
+             constant_frames.len()={} — EnterScope/ExitScope are unbalanced or scope vecs \
+             have drifted",
             self.scopes.len(),
-            self.fluent_bindings.len()
+            self.fluent_bindings.len(),
+            self.constant_frames.len()
         );
         if self.scopes.len() > 1 {
             self.scopes.pop();
             self.fluent_bindings.pop();
+            self.constant_frames.pop();
         }
     }
 
@@ -171,7 +182,9 @@ impl Environment {
                 "cannot assign to extern '{name}' — extern values are controlled by the runtime"
             )));
         }
-        if !matches!(kind, DeclKind::Constant) && self.constants.contains(name) {
+        if !matches!(kind, DeclKind::Constant)
+            && self.constant_frames.iter().any(|f| f.contains(name))
+        {
             return Err(VmError::TypeError(format!(
                 "cannot assign to constant '{name}'"
             )));
@@ -182,12 +195,17 @@ impl Environment {
                 self.globals.insert(name.to_string(), value);
             }
             DeclKind::Constant => {
-                if self.constants.contains(name) {
+                if self.constant_frames.iter().any(|f| f.contains(name)) {
                     return Err(VmError::TypeError(format!(
                         "cannot reassign constant '{name}'"
                     )));
                 }
-                self.constants.insert(name.to_string());
+                self.constant_frames
+                    .last_mut()
+                    .ok_or_else(|| {
+                        VmError::TypeError("no active scope for constant declaration".to_string())
+                    })?
+                    .insert(name.to_string());
                 let scope = self.scopes.last_mut().ok_or_else(|| {
                     VmError::TypeError("no active scope for constant declaration".to_string())
                 })?;

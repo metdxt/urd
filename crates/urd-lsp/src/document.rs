@@ -33,6 +33,9 @@ pub struct Document {
     /// Populated by [`Document::run_spellcheck`]; empty if spellcheck is disabled.
     #[cfg(feature = "spellcheck")]
     pub spellcheck_errors: Vec<AnalysisError>,
+    /// Symbol list computed eagerly after every successful (re)parse.
+    /// Avoids re-walking the AST on every hover / completion / symbol request.
+    pub cached_symbols: Option<Vec<crate::semantic::Symbol>>,
 }
 
 impl Document {
@@ -46,6 +49,7 @@ impl Document {
             analysis_errors: Vec::new(),
             #[cfg(feature = "spellcheck")]
             spellcheck_errors: Vec::new(),
+            cached_symbols: None,
         };
         doc.reparse();
         doc
@@ -176,6 +180,18 @@ impl Document {
             // If recovered_ast is None, self.ast keeps its previous value
             // (the last fully-valid parse).
         }
+
+        // Eagerly refresh the symbol cache so every subsequent request
+        // (hover, completion, document_symbol) can skip re-walking the AST.
+        self.cached_symbols = self.ast.as_ref().map(crate::semantic::collect_symbols);
+    }
+
+    /// Returns the cached symbol list for this document.
+    ///
+    /// The cache is populated eagerly after every parse, so this call is
+    /// always O(1) — it never re-walks the AST.
+    pub fn symbols(&self) -> &[crate::semantic::Symbol] {
+        self.cached_symbols.as_deref().unwrap_or(&[])
     }
 
     /// Convert all current errors to LSP diagnostics.

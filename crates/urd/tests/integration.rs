@@ -32,3 +32,6 @@ mod vm_decorator;
 
 #[path = "integration/adversarial.rs"]
 mod adversarial;
+
+#[path = "integration/adversarial_new.rs"]
+mod adversarial_new;

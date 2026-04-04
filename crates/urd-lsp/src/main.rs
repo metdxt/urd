@@ -150,11 +150,8 @@ fn word_at_offset(src: &str, byte_offset: usize) -> Option<&str> {
 
 /// Gather symbols from a [`Document`], returning an empty vec when no AST is
 /// available.
-fn symbols_from_doc(doc: &Document) -> Vec<Symbol> {
-    match &doc.ast {
-        Some(ast) => collect_symbols(ast),
-        None => Vec::new(),
-    }
+fn symbols_from_doc(doc: &Document) -> &[Symbol] {
+    doc.symbols()
 }
 
 /// Extracts the file stem (filename without extension) from a `file://` URI.
@@ -243,22 +240,6 @@ impl Backend {
                 imported_labels,
                 Some(Arc::clone(&self.semantic) as Arc<dyn SemanticSuggest>),
             );
-        }
-
-        // Run the spellcheck pass with the currently configured language.
-        #[cfg(feature = "spellcheck")]
-        {
-            // SpellcheckLanguage is Copy, so we deref the guard to get the value
-            // and drop the lock immediately before calling into the document map.
-            let language = *self
-                .spellcheck_language
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            // Hold the dict read-lock while calling run_spellcheck, then drop it.
-            let dict = self.user_dict.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(mut doc) = self.documents.get_mut(&uri) {
-                doc.run_spellcheck(language, dict.words());
-            }
         }
 
         self.publish_diagnostics(uri).await;
@@ -417,7 +398,23 @@ impl LanguageServer for Backend {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
         debug!("did_save: {uri}");
-        // Re-publish to make sure the client sees the latest state.
+        // Run the spellcheck pass with the currently configured language.
+        // Gated on save (not on every keystroke) to avoid the latency of
+        // dictionary lookups during interactive editing.
+        #[cfg(feature = "spellcheck")]
+        {
+            // SpellcheckLanguage is Copy, so we deref the guard to get the value
+            // and drop the lock immediately before calling into the document map.
+            let language = *self
+                .spellcheck_language
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            // Hold the dict read-lock while calling run_spellcheck, then drop it.
+            let dict = self.user_dict.read().unwrap_or_else(|e| e.into_inner());
+            if let Some(mut doc) = self.documents.get_mut(&uri) {
+                doc.run_spellcheck(language, dict.words());
+            }
+        }
         self.publish_diagnostics(uri).await;
     }
 

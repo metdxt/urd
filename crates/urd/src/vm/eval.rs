@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::lexer::strings::{Interpolation, ParsedString, StringPart};
-use crate::parser::ast::{AstContent, DeclKind, Operator, UnaryOperator};
+use crate::parser::ast::{AstContent, DeclKind, MatchPattern, Operator, UnaryOperator};
 use crate::runtime::value::RuntimeValue;
 
 use super::VmError;
@@ -455,9 +455,13 @@ pub(super) fn eval_runtime_value(
             // Resolve any interpolation placeholders.
             Ok(RuntimeValue::Str(interpolate_string(ps, env)))
         }
-        RuntimeValue::Dice(count, sides) => env
-            .roll_dice_individual(*count as u32, *sides as u32)
-            .map(RuntimeValue::Roll),
+        RuntimeValue::Dice(count, sides) => {
+            if *sides == 0 {
+                return Err(VmError::TypeError("dice: sides must be >= 1".into()));
+            }
+            env.roll_dice_individual(*count as u32, *sides as u32)
+                .map(RuntimeValue::Roll)
+        }
         other => Ok(other.clone()),
     }
 }
@@ -531,6 +535,7 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
         (RuntimeValue::Int(i), Some(fmt)) => {
             if let Some(width_str) = fmt.strip_prefix('0') {
                 if let Ok(width) = width_str.parse::<usize>() {
+                    let width = width.min(64);
                     return format!("{:0>width$}", i, width = width);
                 }
             }
@@ -539,6 +544,7 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
         (RuntimeValue::Float(f), Some(fmt)) => {
             if let Some(prec_str) = fmt.strip_prefix('.') {
                 if let Ok(prec) = prec_str.parse::<usize>() {
+                    let prec = prec.min(64);
                     return format!("{:.prec$}", f, prec = prec);
                 }
             }
@@ -628,12 +634,36 @@ pub(super) fn eval_binop(
     let rv_val = eval_expr(right, env)?;
 
     match op {
-        Operator::Plus => numeric_binop(lv, rv_val, |a, b| a + b, |a, b| a + b),
-        Operator::Minus => numeric_binop(lv, rv_val, |a, b| a - b, |a, b| a - b),
-        Operator::Multiply => numeric_binop(lv, rv_val, |a, b| a * b, |a, b| a * b),
+        Operator::Plus => numeric_binop(
+            lv,
+            rv_val,
+            |a, b| {
+                a.checked_add(b)
+                    .ok_or_else(|| VmError::TypeError("integer overflow in addition".into()))
+            },
+            |a, b| a + b,
+        ),
+        Operator::Minus => numeric_binop(
+            lv,
+            rv_val,
+            |a, b| {
+                a.checked_sub(b)
+                    .ok_or_else(|| VmError::TypeError("integer overflow in subtraction".into()))
+            },
+            |a, b| a - b,
+        ),
+        Operator::Multiply => numeric_binop(
+            lv,
+            rv_val,
+            |a, b| {
+                a.checked_mul(b)
+                    .ok_or_else(|| VmError::TypeError("integer overflow in multiplication".into()))
+            },
+            |a, b| a * b,
+        ),
         Operator::Divide => numeric_div(lv, rv_val),
         Operator::DoubleSlash => numeric_floordiv(lv, rv_val),
-        Operator::Percent => numeric_int_binop(lv, rv_val, |a, b| a % b),
+        Operator::Percent => numeric_mod(lv, rv_val),
         Operator::Equals => Ok(RuntimeValue::Bool(values_equal(&lv, &rv_val))),
         Operator::NotEquals => Ok(RuntimeValue::Bool(!values_equal(&lv, &rv_val))),
         Operator::GreaterThan => numeric_cmp(lv, rv_val, |a, b| a > b, |a, b| a > b),
@@ -736,11 +766,11 @@ pub(super) fn to_float(v: &RuntimeValue) -> Option<f64> {
 pub(super) fn numeric_binop(
     lv: RuntimeValue,
     rv: RuntimeValue,
-    int_op: impl Fn(i64, i64) -> i64,
+    int_op: impl Fn(i64, i64) -> Result<i64, VmError>,
     float_op: impl Fn(f64, f64) -> f64,
 ) -> Result<RuntimeValue, VmError> {
     match (&lv, &rv) {
-        (RuntimeValue::Int(a), RuntimeValue::Int(b)) => Ok(RuntimeValue::Int(int_op(*a, *b))),
+        (RuntimeValue::Int(a), RuntimeValue::Int(b)) => Ok(RuntimeValue::Int(int_op(*a, *b)?)),
         (RuntimeValue::Float(a), RuntimeValue::Float(b)) => {
             Ok(RuntimeValue::Float(float_op(*a, *b)))
         }
@@ -754,6 +784,7 @@ pub(super) fn numeric_binop(
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn numeric_int_binop(
     lv: RuntimeValue,
     rv: RuntimeValue,
@@ -761,6 +792,26 @@ pub(super) fn numeric_int_binop(
 ) -> Result<RuntimeValue, VmError> {
     match (&lv, &rv) {
         (RuntimeValue::Int(a), RuntimeValue::Int(b)) => Ok(RuntimeValue::Int(op(*a, *b))),
+        _ => Err(VmError::TypeError(format!(
+            "integer-only operation requires two Int values, got {:?} and {:?}",
+            lv, rv
+        ))),
+    }
+}
+
+pub(super) fn numeric_mod(lv: RuntimeValue, rv: RuntimeValue) -> Result<RuntimeValue, VmError> {
+    match (&lv, &rv) {
+        (RuntimeValue::Int(a), RuntimeValue::Int(b)) => {
+            if *b == 0 {
+                return Err(VmError::TypeError("integer modulo by zero".into()));
+            }
+            if *a == i64::MIN && *b == -1 {
+                return Err(VmError::TypeError(
+                    "integer modulo overflow (i64::MIN % -1)".into(),
+                ));
+            }
+            Ok(RuntimeValue::Int(a % b))
+        }
         _ => Err(VmError::TypeError(format!(
             "integer-only operation requires two Int values, got {:?} and {:?}",
             lv, rv
@@ -781,12 +832,18 @@ pub(super) fn numeric_div(lv: RuntimeValue, rv: RuntimeValue) -> Result<RuntimeV
             }
             Ok(RuntimeValue::Int(a / b))
         }
+        (RuntimeValue::Float(_), RuntimeValue::Float(b)) if *b == 0.0 => {
+            Err(VmError::TypeError("float division by zero".into()))
+        }
         (RuntimeValue::Float(a), RuntimeValue::Float(b)) => Ok(RuntimeValue::Float(a / b)),
         _ => {
             let a = to_float(&lv)
                 .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", lv)))?;
             let b = to_float(&rv)
                 .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", rv)))?;
+            if b == 0.0 {
+                return Err(VmError::TypeError("float division by zero".into()));
+            }
             Ok(RuntimeValue::Float(a / b))
         }
     }
@@ -818,11 +875,20 @@ pub(super) fn numeric_floordiv(
             }
             Ok(RuntimeValue::Int(int_floor_div(*a, *b)))
         }
+        (RuntimeValue::Float(_), RuntimeValue::Float(b)) if *b == 0.0 => {
+            Err(VmError::TypeError("float floor division by zero".into()))
+        }
+        (RuntimeValue::Float(a), RuntimeValue::Float(b)) => {
+            Ok(RuntimeValue::Float((a / b).floor()))
+        }
         _ => {
             let a = to_float(&lv)
                 .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", lv)))?;
             let b = to_float(&rv)
                 .ok_or_else(|| VmError::TypeError(format!("expected number, got {:?}", rv)))?;
+            if b == 0.0 {
+                return Err(VmError::TypeError("float floor division by zero".into()));
+            }
             Ok(RuntimeValue::Float((a / b).floor()))
         }
     }
@@ -1193,6 +1259,95 @@ fn exec_fn_stmt(
                 body: body.clone(),
             };
             env.set(n, func, &DeclKind::Variable)?;
+            Ok(FnExecResult::Normal(RuntimeValue::Null))
+        }
+
+        // ── Multi-way pattern match ───────────────────────────────────────
+        AstContent::Match { scrutinee, arms } => {
+            let scrutinee_val = eval_expr(scrutinee, env)?;
+
+            // For Roll scrutinees precompute: scalar sum (used by Value and
+            // Range arms) and the individual die vector (used by Array arms).
+            let (scalar_val, roll_individuals): (RuntimeValue, Option<Vec<i64>>) =
+                match &scrutinee_val {
+                    RuntimeValue::Roll(dice) => {
+                        let sum: i64 = dice.iter().sum();
+                        (RuntimeValue::Int(sum), Some(dice.clone()))
+                    }
+                    other => (other.clone(), None),
+                };
+
+            for arm in arms {
+                let is_match = match &arm.pattern {
+                    MatchPattern::Wildcard => true,
+
+                    MatchPattern::Value(pat_ast) => match eval_expr(pat_ast, env) {
+                        Ok(pat_val) => values_equal(&scalar_val, &pat_val),
+                        Err(_) => false,
+                    },
+
+                    MatchPattern::Range {
+                        start,
+                        end,
+                        inclusive,
+                        binding,
+                    } => {
+                        let start_i = eval_expr(start, env).ok().and_then(|v| match v {
+                            RuntimeValue::Int(i) => Some(i),
+                            _ => None,
+                        });
+                        let end_i = eval_expr(end, env).ok().and_then(|v| match v {
+                            RuntimeValue::Int(i) => Some(i),
+                            _ => None,
+                        });
+                        let scalar = match &scalar_val {
+                            RuntimeValue::Int(n) => Some(*n),
+                            RuntimeValue::Float(f) => {
+                                if f.is_nan() {
+                                    None
+                                } else {
+                                    Some(*f as i64)
+                                }
+                            }
+                            _ => None,
+                        };
+                        match (start_i, end_i, scalar) {
+                            (Some(s), Some(e), Some(n)) => {
+                                let in_range = if *inclusive {
+                                    s <= n && n <= e
+                                } else {
+                                    s <= n && n < e
+                                };
+                                if in_range && let Some(name) = binding {
+                                    env.set(name, RuntimeValue::Int(n), &DeclKind::Variable)?;
+                                }
+                                in_range
+                            }
+                            _ => false,
+                        }
+                    }
+
+                    MatchPattern::Array(elems) => match &roll_individuals {
+                        Some(dice) if dice.len() == elems.len() => {
+                            elems.iter().zip(dice.iter()).all(|(pat_ast, &die_val)| {
+                                matches!(
+                                    eval_expr(pat_ast, env),
+                                    Ok(RuntimeValue::Int(v)) if v == die_val
+                                )
+                            })
+                        }
+                        _ => false,
+                    },
+                };
+
+                if is_match {
+                    return exec_fn_block(&arm.body, env);
+                }
+            }
+
+            // No arm matched — return Null (non-exhaustive match in fn body
+            // is a silent no-op rather than an error, matching the fn-body
+            // semantics for `if` without `else`).
             Ok(FnExecResult::Normal(RuntimeValue::Null))
         }
 

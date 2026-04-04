@@ -15,22 +15,26 @@
 ///
 /// # Example
 ///
+/// A minimal in-memory implementation (no filesystem, no security concerns):
+///
 /// ```rust
 /// use urd::vm::loader::FileLoader;
 ///
 /// #[derive(Debug)]
-/// struct FsLoader {
-///     base_dir: std::path::PathBuf,
-/// }
+/// struct InMemory(std::collections::HashMap<String, String>);
 ///
-/// impl FileLoader for FsLoader {
+/// impl FileLoader for InMemory {
 ///     fn load(&self, path: &str) -> Result<String, String> {
-///         let full = self.base_dir.join(path);
-///         std::fs::read_to_string(&full)
-///             .map_err(|e| format!("cannot load '{}': {}", path, e))
+///         self.0
+///             .get(path)
+///             .cloned()
+///             .ok_or_else(|| format!("module '{}' not found", path))
 ///     }
 /// }
 /// ```
+///
+/// For a filesystem-backed loader with path traversal protection see
+/// [`FsLoader`], or use [`MemLoader`] for the built-in in-memory variant.
 pub trait FileLoader: std::fmt::Debug {
     /// Load the source text at `path`.
     ///
@@ -63,8 +67,26 @@ impl FsLoader {
 
 impl FileLoader for FsLoader {
     fn load(&self, path: &str) -> Result<String, String> {
+        // Reject obviously dangerous paths before any filesystem I/O.
+        // `PathBuf::join` with an absolute path silently replaces `base_dir`
+        // entirely; `..` components can walk outside the sandbox.
+        if path.starts_with('/') || path.contains("..") {
+            return Err(format!("invalid import path: '{path}'"));
+        }
         let full = self.base_dir.join(path);
-        std::fs::read_to_string(&full).map_err(|e| format!("cannot load '{}': {}", path, e))
+        // Canonicalize both ends and verify the resolved path is still
+        // contained within `base_dir`.  This catches symlink-based escapes.
+        let canonical_base = self
+            .base_dir
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve base dir: {e}"))?;
+        let canonical_full = full
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve '{path}': {e}"))?;
+        if !canonical_full.starts_with(&canonical_base) {
+            return Err(format!("import path '{path}' escapes the script root"));
+        }
+        std::fs::read_to_string(&canonical_full).map_err(|e| format!("cannot load '{path}': {e}"))
     }
 }
 
@@ -149,14 +171,38 @@ mod tests {
 
     #[test]
     fn fs_loader_missing_file_returns_error() {
+        // The base dir does not exist, so canonicalize() fails before we even
+        // attempt to open the file.  The important invariant is that an error
+        // is returned — not what its exact wording is.
         let loader = FsLoader::new("/nonexistent_dir_that_cannot_exist_xyzzy");
         let result = loader.load("module.urd");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn fs_loader_rejects_absolute_path() {
+        let loader = FsLoader::new("/tmp");
+        let result = loader.load("/etc/passwd");
+        assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("module.urd"),
-            "error message should contain the path, got: {err}"
+            err.contains("invalid import path"),
+            "expected rejection message, got: {err}"
         );
+    }
+
+    #[test]
+    fn fs_loader_rejects_dotdot_traversal() {
+        let loader = FsLoader::new("/tmp");
+        for path in &["../etc/passwd", "foo/../../etc/passwd", ".."] {
+            let result = loader.load(path);
+            assert!(result.is_err(), "expected error for path '{path}'");
+            let err = result.unwrap_err();
+            assert!(
+                err.contains("invalid import path"),
+                "expected rejection message for '{path}', got: {err}"
+            );
+        }
     }
 
     #[test]
