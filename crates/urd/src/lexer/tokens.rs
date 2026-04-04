@@ -131,6 +131,14 @@ pub enum Token {
     #[token(":{")]
     DictStart,
 
+    /// `..=` — inclusive range operator
+    #[token("..=")]
+    DotDotEq,
+
+    /// `..` — exclusive range operator
+    #[token("..")]
+    DotDot,
+
     // ---- Comparison operators ----
     #[token("==")]
     Equals,
@@ -234,6 +242,10 @@ pub enum Token {
 
     #[token("as")]
     As,
+
+    /// The `in` keyword — used for range membership checks (`x in 0..5`)
+    #[token("in")]
+    In,
 
     #[token("_")]
     Wildcard,
@@ -528,5 +540,47 @@ mod tests {
         // A # inside a string literal is still NOT treated as a comment or doc comment
         let tok = lex(r#""hello ## world""#);
         assert!(matches!(tok, Token::StrLit(_)));
+    }
+
+    #[test]
+    fn dot_dot_token() {
+        assert!(matches!(lex(".."), Token::DotDot));
+    }
+
+    #[test]
+    fn dot_dot_eq_token() {
+        assert!(matches!(lex("..="), Token::DotDotEq));
+    }
+
+    #[test]
+    fn in_keyword() {
+        assert!(matches!(lex("in"), Token::In));
+        // longer identifiers starting with "in" must still be IdentPath
+        assert!(matches!(lex("initial"), Token::IdentPath(_)));
+        assert!(matches!(lex("inner"), Token::IdentPath(_)));
+    }
+
+    #[test]
+    fn range_tokens_sequence() {
+        // `0..5` should lex as IntLit, DotDot, IntLit
+        let tokens: Vec<_> = Token::lexer("0..5")
+            .filter(|t| !matches!(t, Ok(Token::Newline)))
+            .collect();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(&tokens[0], Ok(Token::IntLit(0))));
+        assert!(matches!(&tokens[1], Ok(Token::DotDot)));
+        assert!(matches!(&tokens[2], Ok(Token::IntLit(5))));
+    }
+
+    #[test]
+    fn range_inclusive_tokens_sequence() {
+        // `0..=5` should lex as IntLit, DotDotEq, IntLit
+        let tokens: Vec<_> = Token::lexer("0..=5")
+            .filter(|t| !matches!(t, Ok(Token::Newline)))
+            .collect();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(&tokens[0], Ok(Token::IntLit(0))));
+        assert!(matches!(&tokens[1], Ok(Token::DotDotEq)));
+        assert!(matches!(&tokens[2], Ok(Token::IntLit(5))));
     }
 }

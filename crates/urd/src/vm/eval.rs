@@ -12,6 +12,7 @@ use super::float_methods;
 use super::int_methods;
 use super::list_methods;
 use super::map_methods;
+use super::range_methods;
 use super::str_methods;
 
 // ─── Expression evaluator ─────────────────────────────────────────────────────
@@ -81,6 +82,11 @@ pub fn eval_expr(
                         RuntimeValue::Int(n) => int_methods::dispatch(n, method, &args),
                         RuntimeValue::Float(f) => float_methods::dispatch(f, method, &args),
                         RuntimeValue::Map(m) => map_methods::dispatch(m, method, &args),
+                        RuntimeValue::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } => range_methods::dispatch(start, end, inclusive, method, &args),
                         _ => Err(VmError::UnknownMethod(format!(
                             "method '{}' is not defined on this value type",
                             method
@@ -499,6 +505,17 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
                     .collect();
                 format!("[{}]", parts.join(", "))
             }
+            RuntimeValue::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                if *inclusive {
+                    format!("{start}..={end}")
+                } else {
+                    format!("{start}..{end}")
+                }
+            }
             RuntimeValue::ScriptDecorator { .. } => "<decorator>".to_string(),
             RuntimeValue::Function { params, .. } => {
                 format!("fn({})", params.join(", "))
@@ -564,6 +581,52 @@ pub(super) fn eval_binop(
         Operator::BitwiseXor => int_bitop(lv, rv_val, |a, b| a ^ b),
         Operator::LeftShift => safe_int_shiftop(lv, rv_val, ShiftDirection::Left),
         Operator::RightShift => safe_int_shiftop(lv, rv_val, ShiftDirection::Right),
+        Operator::RangeExclusive => match (lv, rv_val) {
+            (RuntimeValue::Int(start), RuntimeValue::Int(end)) => Ok(RuntimeValue::Range {
+                start,
+                end,
+                inclusive: false,
+            }),
+            (l, r) => Err(VmError::TypeError(format!(
+                "range operator `..` requires two Int values, got {:?} and {:?}",
+                l, r
+            ))),
+        },
+        Operator::RangeInclusive => match (lv, rv_val) {
+            (RuntimeValue::Int(start), RuntimeValue::Int(end)) => Ok(RuntimeValue::Range {
+                start,
+                end,
+                inclusive: true,
+            }),
+            (l, r) => Err(VmError::TypeError(format!(
+                "range operator `..=` requires two Int values, got {:?} and {:?}",
+                l, r
+            ))),
+        },
+        Operator::In => match rv_val {
+            RuntimeValue::Range {
+                start,
+                end,
+                inclusive,
+            } => match lv {
+                RuntimeValue::Int(n) => {
+                    let contains = if inclusive {
+                        n >= start && n <= end
+                    } else {
+                        n >= start && n < end
+                    };
+                    Ok(RuntimeValue::Bool(contains))
+                }
+                other => Err(VmError::TypeError(format!(
+                    "`in` requires an Int on the left-hand side, got {:?}",
+                    other
+                ))),
+            },
+            other => Err(VmError::TypeError(format!(
+                "`in` requires a Range on the right-hand side, got {:?}",
+                other
+            ))),
+        },
         // Handled above via early return.
         Operator::And | Operator::Or | Operator::Assign => unreachable!(),
     }
@@ -798,6 +861,18 @@ pub(super) fn is_truthy(v: &RuntimeValue) -> bool {
         RuntimeValue::Float(f) => *f != 0.0 && !f.is_nan(),
         // An empty list is falsy; a non-empty list is truthy.
         RuntimeValue::List(items) => !items.is_empty(),
+        // A non-empty range is truthy.
+        RuntimeValue::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            if *inclusive {
+                end >= start
+            } else {
+                end > start
+            }
+        }
         _ => true,
     }
 }
@@ -858,6 +933,18 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
                     .iter()
                     .all(|(k, v)| f2.get(k).is_some_and(|fv| values_equal(v, fv)))
         }
+        (
+            RuntimeValue::Range {
+                start: s1,
+                end: e1,
+                inclusive: i1,
+            },
+            RuntimeValue::Range {
+                start: s2,
+                end: e2,
+                inclusive: i2,
+            },
+        ) => s1 == s2 && e1 == e2 && i1 == i2,
         // Function and ScriptDecorator have no meaningful value equality — two distinct
         // function objects are never considered the same even if their bodies are
         // identical.  Any type not listed above (including future variants) defaults
@@ -1640,5 +1727,185 @@ mod tests {
             .unwrap();
         let result = resolve_interp_path("inv.gold", &env).unwrap();
         assert_eq!(result, RuntimeValue::Int(99));
+    }
+
+    // ── Range ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_range_exclusive_constructs() {
+        let env = Environment::default();
+        let ast = Ast::range_exclusive_op(
+            Ast::value(RuntimeValue::Int(0)),
+            Ast::value(RuntimeValue::Int(5)),
+        );
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(
+            result,
+            RuntimeValue::Range {
+                start: 0,
+                end: 5,
+                inclusive: false
+            }
+        );
+    }
+
+    #[test]
+    fn test_range_inclusive_constructs() {
+        let env = Environment::default();
+        let ast = Ast::range_inclusive_op(
+            Ast::value(RuntimeValue::Int(0)),
+            Ast::value(RuntimeValue::Int(5)),
+        );
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(
+            result,
+            RuntimeValue::Range {
+                start: 0,
+                end: 5,
+                inclusive: true
+            }
+        );
+    }
+
+    #[test]
+    fn test_in_operator_true() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Int(3)),
+            Ast::range_exclusive_op(
+                Ast::value(RuntimeValue::Int(0)),
+                Ast::value(RuntimeValue::Int(5)),
+            ),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(true));
+    }
+
+    #[test]
+    fn test_in_operator_false_at_exclusive_bound() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Int(5)),
+            Ast::range_exclusive_op(
+                Ast::value(RuntimeValue::Int(0)),
+                Ast::value(RuntimeValue::Int(5)),
+            ),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(false));
+    }
+
+    #[test]
+    fn test_in_operator_true_at_inclusive_bound() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Int(5)),
+            Ast::range_inclusive_op(
+                Ast::value(RuntimeValue::Int(0)),
+                Ast::value(RuntimeValue::Int(5)),
+            ),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(true));
+    }
+
+    #[test]
+    fn test_range_len_method() {
+        let mut env = Environment::new();
+        env.set(
+            "r",
+            RuntimeValue::Range {
+                start: 0,
+                end: 5,
+                inclusive: false,
+            },
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["r".into(), "len".into()])),
+            Ast::expr_list(vec![]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(5));
+    }
+
+    #[test]
+    fn test_range_is_truthy_nonempty() {
+        assert!(is_truthy(&RuntimeValue::Range {
+            start: 0,
+            end: 5,
+            inclusive: false
+        }));
+    }
+
+    #[test]
+    fn test_range_is_truthy_empty() {
+        assert!(!is_truthy(&RuntimeValue::Range {
+            start: 5,
+            end: 5,
+            inclusive: false
+        }));
+    }
+
+    #[test]
+    fn test_range_is_truthy_inclusive_single_element() {
+        assert!(is_truthy(&RuntimeValue::Range {
+            start: 5,
+            end: 5,
+            inclusive: true
+        }));
+    }
+
+    #[test]
+    fn test_range_values_equal() {
+        let r1 = RuntimeValue::Range {
+            start: 0,
+            end: 5,
+            inclusive: false,
+        };
+        let r2 = RuntimeValue::Range {
+            start: 0,
+            end: 5,
+            inclusive: false,
+        };
+        assert!(values_equal(&r1, &r2));
+    }
+
+    #[test]
+    fn test_range_values_not_equal_different_bound() {
+        let r1 = RuntimeValue::Range {
+            start: 0,
+            end: 5,
+            inclusive: false,
+        };
+        let r2 = RuntimeValue::Range {
+            start: 0,
+            end: 6,
+            inclusive: false,
+        };
+        assert!(!values_equal(&r1, &r2));
+    }
+
+    #[test]
+    fn test_range_values_not_equal_inclusive_vs_exclusive() {
+        let r1 = RuntimeValue::Range {
+            start: 0,
+            end: 5,
+            inclusive: false,
+        };
+        let r2 = RuntimeValue::Range {
+            start: 0,
+            end: 5,
+            inclusive: true,
+        };
+        assert!(!values_equal(&r1, &r2));
+    }
+
+    #[test]
+    fn test_in_operator_wrong_rhs_type_errors() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Int(3)),
+            Ast::value(RuntimeValue::Int(5)),
+        );
+        assert!(eval_expr(&ast, &env).is_err());
     }
 }

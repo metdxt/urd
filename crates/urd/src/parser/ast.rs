@@ -142,6 +142,12 @@ pub enum Operator {
     Or,
     /// Assignment operator (=)
     Assign,
+    /// Exclusive range operator (..)
+    RangeExclusive,
+    /// Inclusive range operator (..=)
+    RangeInclusive,
+    /// Membership test operator (in)
+    In,
 }
 
 /// Represents unary operators in the Urd language.
@@ -193,6 +199,8 @@ pub enum TypeAnnotation {
     Label,
     /// A named user-defined type, e.g. an enum variant path like `Direction`
     Named(Vec<String>),
+    /// The `range` type (e.g. `0..5` or `0..=5`)
+    Range,
 }
 
 /// The optional event-kind constraint on a decorator definition.
@@ -762,6 +770,18 @@ impl Ast {
     }
     pub fn assign_op(l: Ast, r: Ast) -> Self {
         Ast::binop(Operator::Assign, l, r)
+    }
+    /// Creates a `BinOp` node with `Operator::RangeExclusive`.
+    pub fn range_exclusive_op(left: Ast, right: Ast) -> Ast {
+        Ast::binop(Operator::RangeExclusive, left, right)
+    }
+    /// Creates a `BinOp` node with `Operator::RangeInclusive`.
+    pub fn range_inclusive_op(left: Ast, right: Ast) -> Ast {
+        Ast::binop(Operator::RangeInclusive, left, right)
+    }
+    /// Creates a `BinOp` node with `Operator::In`.
+    pub fn in_op(left: Ast, right: Ast) -> Ast {
+        Ast::binop(Operator::In, left, right)
     }
 
     pub fn bitwise_not_op(expr: Ast) -> Self {

@@ -538,6 +538,8 @@ fn is_compatible(
 
         TypeAnnotation::Label => matches!(value, RuntimeValue::Label { .. }),
 
+        TypeAnnotation::Range => matches!(value, RuntimeValue::Range { .. }),
+
         TypeAnnotation::Named(type_path) => match value {
             // `null` is always compatible with a Named type (nullable enum).
             RuntimeValue::Null => true,
@@ -654,6 +656,7 @@ fn is_compatible_simple(value: &RuntimeValue, annotation: &TypeAnnotation) -> bo
         TypeAnnotation::List | TypeAnnotation::Map => true,
         TypeAnnotation::Dice => matches!(value, RuntimeValue::Dice(_, _)),
         TypeAnnotation::Label => matches!(value, RuntimeValue::Label { .. }),
+        TypeAnnotation::Range => matches!(value, RuntimeValue::Range { .. }),
         // Nested named type — best-effort accept.
         TypeAnnotation::Named(_) => true,
     }
@@ -680,6 +683,7 @@ fn runtime_value_type_name(value: &RuntimeValue) -> String {
         RuntimeValue::List(_) => "list".to_owned(),
         RuntimeValue::Function { .. } => "fn".to_owned(),
         RuntimeValue::ScriptDecorator { .. } => "decorator".to_owned(),
+        RuntimeValue::Range { .. } => "range".to_owned(),
         RuntimeValue::Struct { name, .. } => format!("struct '{name}'"),
     }
 }

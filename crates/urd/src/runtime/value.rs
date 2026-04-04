@@ -84,6 +84,24 @@ pub enum RuntimeValue {
         node_id: NodeIndex,
     },
 
+    /// An integer range value: `start..end` (exclusive) or `start..=end` (inclusive).
+    ///
+    /// Ranges are integer-only. The `inclusive` flag distinguishes `..` from `..=`.
+    /// Ranges are fully serialisable since all fields are primitive integers.
+    ///
+    /// ## Semantics
+    ///
+    /// - `len()`: exclusive → `max(0, end - start)`, inclusive → `max(0, end - start + 1)`
+    /// - `contains(n)`: exclusive → `start <= n && n < end`, inclusive → `start <= n && n <= end`
+    Range {
+        /// The lower bound (inclusive start of the range)
+        start: i64,
+        /// The upper bound
+        end: i64,
+        /// `true` for `..=` (inclusive end), `false` for `..` (exclusive end)
+        inclusive: bool,
+    },
+
     /// A runtime map value: `:{key: value, ...}` literals or the implicit
     /// `event` map passed to decorator bodies.
     ///

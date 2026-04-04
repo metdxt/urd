@@ -591,6 +591,9 @@ fn ast_short(ast: &crate::parser::ast::Ast) -> String {
                 Operator::And => "and",
                 Operator::Or => "or",
                 Operator::Assign => "=",
+                Operator::RangeExclusive => "..",
+                Operator::RangeInclusive => "..=",
+                Operator::In => "in",
             };
             format!(
                 "{} {op_sym} {}",

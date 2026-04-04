@@ -92,6 +92,9 @@ fn format_token(token: &Token) -> String {
         Token::BitwiseNot => "'!'".to_owned(),
         Token::LeftShift => "'<<'".to_owned(),
         Token::RightShift => "'>>'".to_owned(),
+        Token::DotDot => "'..'".to_owned(),
+        Token::DotDotEq => "'..='".to_owned(),
+        Token::In => "'in'".to_owned(),
 
         // ── Comparison operators ───────────────────────────────────────────
         Token::Assign => "'='".to_owned(),

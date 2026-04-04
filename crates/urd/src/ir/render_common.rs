@@ -107,6 +107,17 @@ pub(super) fn rv_summary(rv: &RuntimeValue) -> String {
         RuntimeValue::List(items) => format!("⟨list({})⟩", items.len()),
         RuntimeValue::Function { params, .. } => format!("⟨fn({})⟩", params.len()),
         RuntimeValue::ScriptDecorator { .. } => "⟨decorator⟩".into(),
+        RuntimeValue::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            if *inclusive {
+                format!("{start}..={end}")
+            } else {
+                format!("{start}..{end}")
+            }
+        }
         RuntimeValue::Struct { name, fields } => format!("⟨{}({})⟩", name, fields.len()),
     }
 }

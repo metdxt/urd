@@ -170,6 +170,14 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> BoxedUrdParser<'tokens, I> {
             infix(left(8), just(Token::RightShift), |l, _, r, _| {
                 Ast::right_shift_op(l, r)
             }),
+            // Exclusive range (precedence 8, same level as shifts)
+            infix(left(8), just(Token::DotDot), |l, _, r, _| {
+                Ast::range_exclusive_op(l, r)
+            }),
+            // Inclusive range (precedence 8)
+            infix(left(8), just(Token::DotDotEq), |l, _, r, _| {
+                Ast::range_inclusive_op(l, r)
+            }),
             // Comparisons (precedence 7)
             infix(left(7), just(Token::GreaterThan), |l, _, r, _| {
                 Ast::greater_than_op(l, r)
@@ -183,6 +191,8 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> BoxedUrdParser<'tokens, I> {
             infix(left(7), just(Token::LessThanOrEquals), |l, _, r, _| {
                 Ast::less_than_or_equals_op(l, r)
             }),
+            // Range membership (precedence 7, same level as comparisons)
+            infix(left(7), just(Token::In), |l, _, r, _| Ast::in_op(l, r)),
             // Equality (precedence 6)
             infix(left(6), just(Token::Equals), |l, _, r, _| {
                 Ast::equals_op(l, r)
@@ -275,6 +285,7 @@ pub(crate) fn type_annotation<'tok, I: UrdInput<'tok>>() -> impl Parser<
             Token::IdentPath(path) if path == ["list"]  => TypeAnnotation::List,
             Token::IdentPath(path) if path == ["map"]   => TypeAnnotation::Map,
             Token::IdentPath(path) if path == ["dice"]  => TypeAnnotation::Dice,
+            Token::IdentPath(path) if path == ["range"] => TypeAnnotation::Range,
             // `label` is a keyword token, not an IdentPath, so it needs its own arm
             Token::Label => TypeAnnotation::Label,
             // Any other identifier path is a user-defined (named) type
@@ -586,6 +597,120 @@ mod tests {
                 );
             }
             other => panic!("expected AstContent::FnDef, got {:?}", other),
+        }
+    }
+
+    mod range_tests {
+        use super::super::{expr, type_annotation};
+        use crate::parse_test;
+        use crate::parser::ast::{AstContent, Operator, TypeAnnotation};
+        use crate::runtime::value::RuntimeValue;
+
+        #[test]
+        fn test_exclusive_range_parses() {
+            let result = parse_test!(expr(), "0..5");
+            assert!(result.is_ok(), "exclusive range should parse: {:?}", result);
+            let ast = result.unwrap();
+            assert!(
+                matches!(
+                    ast.content(),
+                    AstContent::BinOp {
+                        op: Operator::RangeExclusive,
+                        ..
+                    }
+                ),
+                "expected BinOp RangeExclusive, got {:?}",
+                ast.content()
+            );
+        }
+
+        #[test]
+        fn test_inclusive_range_parses() {
+            let result = parse_test!(expr(), "0..=5");
+            assert!(result.is_ok(), "inclusive range should parse: {:?}", result);
+            let ast = result.unwrap();
+            assert!(
+                matches!(
+                    ast.content(),
+                    AstContent::BinOp {
+                        op: Operator::RangeInclusive,
+                        ..
+                    }
+                ),
+                "expected BinOp RangeInclusive, got {:?}",
+                ast.content()
+            );
+        }
+
+        #[test]
+        fn test_in_operator_parses() {
+            let result = parse_test!(expr(), "x in 0..5");
+            assert!(result.is_ok(), "in operator should parse: {:?}", result);
+            let ast = result.unwrap();
+            match ast.content() {
+                AstContent::BinOp {
+                    op: Operator::In,
+                    left,
+                    right,
+                } => {
+                    assert!(
+                        matches!(
+                            left.content(),
+                            AstContent::Value(RuntimeValue::IdentPath(_))
+                        ),
+                        "left operand of `in` should be IdentPath, got {:?}",
+                        left.content()
+                    );
+                    assert!(
+                        matches!(
+                            right.content(),
+                            AstContent::BinOp {
+                                op: Operator::RangeExclusive,
+                                ..
+                            }
+                        ),
+                        "right operand of `in` should be RangeExclusive, got {:?}",
+                        right.content()
+                    );
+                }
+                other => panic!("expected BinOp {{ op: In, .. }}, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_range_precedence_higher_than_in() {
+            // `x in 0..n` must parse as `x in (0..n)`, not `(x in 0)..n`
+            let result = parse_test!(expr(), "x in 0..n");
+            assert!(result.is_ok(), "x in 0..n should parse: {:?}", result);
+            let ast = result.unwrap();
+            match ast.content() {
+                AstContent::BinOp {
+                    op: Operator::In,
+                    right,
+                    ..
+                } => {
+                    assert!(
+                        matches!(
+                            right.content(),
+                            AstContent::BinOp {
+                                op: Operator::RangeExclusive,
+                                ..
+                            }
+                        ),
+                        "right operand of `in` should be RangeExclusive, got {:?}",
+                        right.content()
+                    );
+                }
+                other => panic!("expected BinOp {{ op: In, .. }} at root, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_type_annotation_range() {
+            assert_eq!(
+                parse_test!(type_annotation(), ": range").map_err(|_| ()),
+                Ok(TypeAnnotation::Range)
+            );
         }
     }
 }

@@ -27,6 +27,7 @@ mod int_methods;
 mod list_methods;
 pub mod loader;
 mod map_methods;
+mod range_methods;
 pub mod registry;
 mod str_methods;
 
