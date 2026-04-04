@@ -219,6 +219,12 @@ fn check_match(
     scope: &ScopeStack,
     errors: &mut Vec<AnalysisError>,
 ) {
+    // ── Dice scrutinee — use dedicated dice-coverage check ──────────────
+    if let AstContent::Value(RuntimeValue::Dice(count, sides)) = scrutinee.content() {
+        check_dice_match(*count, *sides, arms, span, errors);
+        return; // Dice matches are never enum-checked.
+    }
+
     // A wildcard arm always makes the match exhaustive.
     if arms.iter().any(|arm| arm.pattern == MatchPattern::Wildcard) {
         return;
@@ -255,6 +261,163 @@ fn check_match(
             missing_variants,
             span,
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dice-specific exhaustiveness check
+// ---------------------------------------------------------------------------
+
+/// Check a `match` whose scrutinee is a dice literal (`NdS`).
+///
+/// ## Dead-pattern detection (always runs)
+///
+/// Any `Value(Int(k))` or `Range { start, end, inclusive }` arm whose entire
+/// range falls outside `[min_sum, max_sum]` is reported as
+/// [`AnalysisError::DeadDicePattern`].  This runs even when a wildcard arm is
+/// present because a permanently unreachable arm is always a bug.
+///
+/// ## Coverage check (only without a wildcard arm)
+///
+/// After collecting the live intervals the function sweeps `[min_sum, max_sum]`
+/// for gaps.  Any uncovered sub-range is reported as
+/// [`AnalysisError::NonExhaustiveDiceMatch`].
+///
+/// ## Array patterns
+///
+/// `Array` patterns enumerate individual die faces rather than sums, so
+/// full sum-coverage via arrays is impractical.  A dice `match` that contains
+/// any `Array` arm and has no `_` wildcard receives
+/// [`AnalysisError::DiceMatchRequiresWildcard`], and the function returns early
+/// (dead-pattern detection is also skipped for such matches).
+fn check_dice_match(
+    count: u8,
+    sides: u8,
+    arms: &[MatchArm],
+    span: SimpleSpan,
+    errors: &mut Vec<AnalysisError>,
+) {
+    let has_wildcard = arms.iter().any(|arm| arm.pattern == MatchPattern::Wildcard);
+    let min_sum = count as i64;
+    let max_sum = count as i64 * sides as i64;
+    let dice = format!("{count}d{sides}");
+
+    // 1. Array-pattern guard: sum-coverage via arrays is intractable.
+    if arms
+        .iter()
+        .any(|arm| matches!(arm.pattern, MatchPattern::Array(_)))
+    {
+        if !has_wildcard {
+            errors.push(AnalysisError::DiceMatchRequiresWildcard { dice, span });
+        }
+        return;
+    }
+
+    // 2. Walk arms: collect live intervals, flag out-of-range arms as dead.
+    let mut intervals: Vec<(i64, i64)> = vec![];
+    for arm in arms {
+        match &arm.pattern {
+            MatchPattern::Wildcard => {} // handled via has_wildcard above
+            MatchPattern::Array(_) => {} // unreachable — caught above
+            MatchPattern::Value(ast) => {
+                if let AstContent::Value(RuntimeValue::Int(k)) = ast.content() {
+                    let k = *k;
+                    if k < min_sum || k > max_sum {
+                        errors.push(AnalysisError::DeadDicePattern {
+                            pattern_display: k.to_string(),
+                            dice: dice.clone(),
+                            valid_min: min_sum,
+                            valid_max: max_sum,
+                            span,
+                        });
+                    } else {
+                        intervals.push((k, k));
+                    }
+                }
+                // Non-Int Value arms are silently skipped: a type mismatch
+                // against a dice scrutinee is caught by the types pass.
+            }
+            MatchPattern::Range {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
+                let Some(s) = int_from_ast(start) else {
+                    continue;
+                };
+                let Some(e) = int_from_ast(end) else {
+                    continue;
+                };
+                let e_incl = if *inclusive { e } else { e - 1 };
+                if e_incl < min_sum || s > max_sum {
+                    let pattern_display = if *inclusive {
+                        format!("{s}..={e}")
+                    } else {
+                        format!("{s}..{e}")
+                    };
+                    errors.push(AnalysisError::DeadDicePattern {
+                        pattern_display,
+                        dice: dice.clone(),
+                        valid_min: min_sum,
+                        valid_max: max_sum,
+                        span,
+                    });
+                } else {
+                    // Clamp to the reachable range before recording.
+                    intervals.push((s.max(min_sum), e_incl.min(max_sum)));
+                }
+            }
+        }
+    }
+
+    // 3. Coverage check is skipped when a wildcard arm is present.
+    if has_wildcard {
+        return;
+    }
+
+    // Sort intervals, then sweep [min_sum, max_sum] looking for gaps.
+    intervals.sort_unstable_by_key(|(s, _)| *s);
+    let mut cursor = min_sum;
+    let mut missing: Vec<(i64, i64)> = vec![];
+    for (s, e) in &intervals {
+        if *s > cursor {
+            missing.push((cursor, *s - 1));
+        }
+        if *e >= cursor {
+            cursor = *e + 1;
+        }
+    }
+    if cursor <= max_sum {
+        missing.push((cursor, max_sum));
+    }
+
+    // 4. Emit NonExhaustiveDiceMatch when gaps remain.
+    if !missing.is_empty() {
+        let missing_display = missing
+            .iter()
+            .map(|(a, b)| {
+                if a == b {
+                    format!("{a}")
+                } else {
+                    format!("{a}..={b}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        errors.push(AnalysisError::NonExhaustiveDiceMatch {
+            dice,
+            missing_display,
+            span,
+        });
+    }
+}
+
+/// Return the `i64` wrapped inside `Value(Int(i))`, or `None` for any other node.
+fn int_from_ast(ast: &Ast) -> Option<i64> {
+    match ast.content() {
+        AstContent::Value(RuntimeValue::Int(i)) => Some(*i),
+        _ => None,
     }
 }
 
@@ -867,6 +1030,300 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    // ── dice test helpers ────────────────────────────────────────────────
+
+    /// Build a `MatchArm` with a `Value(Int(k))` pattern.
+    fn int_value_arm(k: i64, body: Ast) -> MatchArm {
+        MatchArm::new(MatchPattern::Value(Ast::value(RuntimeValue::Int(k))), body)
+    }
+
+    /// Build a `MatchArm` with a `Range` pattern.
+    fn range_arm(start: i64, end: i64, inclusive: bool, body: Ast) -> MatchArm {
+        MatchArm::new(
+            MatchPattern::Range {
+                start: Ast::value(RuntimeValue::Int(start)),
+                end: Ast::value(RuntimeValue::Int(end)),
+                inclusive,
+                binding: None,
+            },
+            body,
+        )
+    }
+
+    /// Build a `MatchArm` with an `Array` pattern of integer literals.
+    fn array_arm(values: Vec<i64>, body: Ast) -> MatchArm {
+        MatchArm::new(
+            MatchPattern::Array(
+                values
+                    .into_iter()
+                    .map(|k| Ast::value(RuntimeValue::Int(k)))
+                    .collect(),
+            ),
+            body,
+        )
+    }
+
+    // ── dice exhaustiveness tests ─────────────────────────────────────────
+
+    /// All six values of 1d6 are covered explicitly — no error expected.
+    #[test]
+    fn test_dice_match_fully_covered_1d6() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 6));
+        let arms = vec![
+            int_value_arm(1, return_block()),
+            int_value_arm(2, return_block()),
+            int_value_arm(3, return_block()),
+            int_value_arm(4, return_block()),
+            int_value_arm(5, return_block()),
+            int_value_arm(6, return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert!(
+            errors.is_empty(),
+            "1d6 fully covered — no errors expected, got: {errors:?}"
+        );
+    }
+
+    /// Only 1 and 6 are covered; 2..=5 is missing.
+    #[test]
+    fn test_dice_match_missing_values_1d6() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 6));
+        let arms = vec![
+            int_value_arm(1, return_block()),
+            int_value_arm(6, return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::NonExhaustiveDiceMatch {
+                missing_display, ..
+            } => {
+                assert!(
+                    missing_display.contains("2..=5"),
+                    "expected '2..=5' in missing_display, got: {missing_display}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// A single 1..=20 range exactly covers 1d20 — no error expected.
+    #[test]
+    fn test_dice_match_range_fully_covered() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 20));
+        let arms = vec![range_arm(1, 20, true, return_block())];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert!(
+            errors.is_empty(),
+            "1d20 with 1..=20 range — no errors expected, got: {errors:?}"
+        );
+    }
+
+    /// 1..=10 and 15..=20 leave 11..=14 uncovered in 1d20.
+    #[test]
+    fn test_dice_match_range_gap() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 20));
+        let arms = vec![
+            range_arm(1, 10, true, return_block()),
+            range_arm(15, 20, true, return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::NonExhaustiveDiceMatch {
+                missing_display, ..
+            } => {
+                assert!(
+                    missing_display.contains("11..=14"),
+                    "expected '11..=14' in missing_display, got: {missing_display}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// A wildcard arm suppresses coverage checking even when only 1 of 20 sums
+    /// is explicitly handled.
+    #[test]
+    fn test_dice_match_wildcard_skips_check() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 20));
+        let arms = vec![
+            int_value_arm(1, return_block()),
+            wildcard_arm(return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert!(
+            errors.is_empty(),
+            "wildcard suppresses coverage check — no errors expected, got: {errors:?}"
+        );
+    }
+
+    /// An array pattern with no wildcard requires one.
+    #[test]
+    fn test_dice_match_array_no_wildcard() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let arms = vec![array_arm(vec![1, 1], return_block())];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::DiceMatchRequiresWildcard { dice, .. } => {
+                assert_eq!(dice, "2d6");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// An array pattern alongside a wildcard arm is perfectly fine.
+    #[test]
+    fn test_dice_match_array_with_wildcard() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let arms = vec![
+            array_arm(vec![1, 1], return_block()),
+            wildcard_arm(return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert!(
+            errors.is_empty(),
+            "array pattern with wildcard — no errors expected, got: {errors:?}"
+        );
+    }
+
+    /// Arm `7` can never fire on 1d6 (range [1,6]) — DeadDicePattern emitted
+    /// even though a wildcard is present (dead patterns are always bugs).
+    #[test]
+    fn test_dice_match_dead_value_pattern() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 6));
+        let arms = vec![
+            int_value_arm(7, return_block()),
+            wildcard_arm(return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected 1 error for dead value 7 in 1d6, got: {errors:?}"
+        );
+        match &errors[0] {
+            AnalysisError::DeadDicePattern {
+                pattern_display,
+                dice,
+                valid_min,
+                valid_max,
+                ..
+            } => {
+                assert_eq!(pattern_display, "7");
+                assert_eq!(dice, "1d6");
+                assert_eq!(*valid_min, 1);
+                assert_eq!(*valid_max, 6);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Range 8..=10 is entirely outside 1d6's sum range [1,6] — DeadDicePattern.
+    #[test]
+    fn test_dice_match_dead_range_pattern() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 6));
+        let arms = vec![
+            range_arm(8, 10, true, return_block()),
+            wildcard_arm(return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected 1 error for dead range 8..=10 in 1d6, got: {errors:?}"
+        );
+        match &errors[0] {
+            AnalysisError::DeadDicePattern {
+                dice,
+                valid_min,
+                valid_max,
+                ..
+            } => {
+                assert_eq!(dice, "1d6");
+                assert_eq!(*valid_min, 1);
+                assert_eq!(*valid_max, 6);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// A single 2..=12 range exactly covers 2d6's sum range — no error expected.
+    #[test]
+    fn test_dice_match_multi_die_sum_coverage() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let arms = vec![range_arm(2, 12, true, return_block())];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert!(
+            errors.is_empty(),
+            "2d6 with 2..=12 range — no errors expected, got: {errors:?}"
+        );
+    }
+
+    /// Only 7 is covered on 2d6 (sum range [2,12]); 2..=6 and 8..=12 are missing.
+    #[test]
+    fn test_dice_match_multi_die_partial_coverage() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let arms = vec![int_value_arm(7, return_block())];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::NonExhaustiveDiceMatch {
+                missing_display, ..
+            } => {
+                assert!(
+                    missing_display.contains("2..=6"),
+                    "expected '2..=6' in missing_display, got: {missing_display}"
+                );
+                assert!(
+                    missing_display.contains("8..=12"),
+                    "expected '8..=12' in missing_display, got: {missing_display}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Overlapping ranges 1..=7 and 5..=10 together cover all of 1d10 — no error.
+    #[test]
+    fn test_dice_match_overlapping_ranges() {
+        let ctx = make_ctx(&[], &[]);
+        let scrutinee = Ast::value(RuntimeValue::Dice(1, 10));
+        let arms = vec![
+            range_arm(1, 7, true, return_block()),
+            range_arm(5, 10, true, return_block()),
+        ];
+        let ast = Ast::match_stmt(scrutinee, arms);
+        let errors = check(&ast, &ctx);
+        assert!(
+            errors.is_empty(),
+            "overlapping 1..=7 + 5..=10 covers 1d10 fully — no errors expected, got: {errors:?}"
+        );
     }
 
     #[test]

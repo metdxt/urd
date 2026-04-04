@@ -265,6 +265,47 @@ pub enum AnalysisError {
         span: SimpleSpan,
     },
 
+    /// Some achievable sums of a dice expression are not covered by any arm.
+    ///
+    /// Emitted when a `match NdS { … }` with only `Value` / `Range` patterns
+    /// leaves at least one integer in `[N, N*S]` uncovered and has no wildcard.
+    NonExhaustiveDiceMatch {
+        /// The dice expression, e.g. `"1d20"` or `"2d6"`.
+        dice: String,
+        /// Human-readable list of uncovered sum ranges, e.g. `"1..=3, 15..=20"`.
+        missing_display: String,
+        /// Source span of the offending `match` node.
+        span: SimpleSpan,
+    },
+
+    /// A dice `match` contains `Array` patterns but has no `_` wildcard fallback.
+    ///
+    /// Array-pattern exhaustiveness requires tuple enumeration (`S^N` outcomes),
+    /// which is impractical in general; a wildcard arm is required instead.
+    DiceMatchRequiresWildcard {
+        /// The dice expression, e.g. `"2d6"`.
+        dice: String,
+        /// Source span of the offending `match` node.
+        span: SimpleSpan,
+    },
+
+    /// A match arm pattern can never fire because its value falls entirely outside
+    /// the range of achievable dice sums `[N, N*S]`.
+    ///
+    /// For example, arm `25` in `match 1d20 { … }` (max sum = 20) is dead.
+    DeadDicePattern {
+        /// Display string of the dead pattern, e.g. `"25"` or `"18..20"`.
+        pattern_display: String,
+        /// The dice expression, e.g. `"1d20"`.
+        dice: String,
+        /// Minimum achievable sum (= N).
+        valid_min: i64,
+        /// Maximum achievable sum (= N * S).
+        valid_max: i64,
+        /// Source span of the offending `match` node.
+        span: SimpleSpan,
+    },
+
     // ── Warnings ──────────────────────────────────────────────────────────
     /// A labeled block can never be reached from any `jump`, `let-call`, or `@entry`.
     UnreachableLabel {
@@ -464,6 +505,9 @@ impl AnalysisError {
             AnalysisError::IdOnUnsupportedNode { span, .. } => *span,
             AnalysisError::InvalidFluentDecorator { span, .. } => *span,
             AnalysisError::FluentOnUnsupportedNode { span, .. } => *span,
+            AnalysisError::NonExhaustiveDiceMatch { span, .. } => *span,
+            AnalysisError::DiceMatchRequiresWildcard { span, .. } => *span,
+            AnalysisError::DeadDicePattern { span, .. } => *span,
         }
     }
 
@@ -481,7 +525,8 @@ impl AnalysisError {
             | Self::InfiniteDialogueLoop { .. }
             | Self::UndefinedLabel { .. }
             | Self::IdOnUnsupportedNode { .. }
-            | Self::FluentOnUnsupportedNode { .. } => true,
+            | Self::FluentOnUnsupportedNode { .. }
+            | Self::DeadDicePattern { .. } => true,
             #[cfg(feature = "spellcheck")]
             Self::Misspelling { .. } => true,
             _ => false,
@@ -693,6 +738,37 @@ impl AnalysisError {
             AnalysisError::FluentOnUnsupportedNode { node_kind, .. } => {
                 format!("@fluent has no effect on `{node_kind}` nodes")
             }
+
+            AnalysisError::NonExhaustiveDiceMatch {
+                dice,
+                missing_display,
+                ..
+            } => {
+                format!(
+                    "Non-exhaustive dice match on `{dice}`: \
+                     missing coverage for sums {missing_display}"
+                )
+            }
+
+            AnalysisError::DiceMatchRequiresWildcard { dice, .. } => {
+                format!(
+                    "Dice match on `{dice}` with array patterns requires a `_` wildcard arm \
+                     (array-pattern exhaustiveness cannot be statically verified)"
+                )
+            }
+
+            AnalysisError::DeadDicePattern {
+                pattern_display,
+                dice,
+                valid_min,
+                valid_max,
+                ..
+            } => {
+                format!(
+                    "Dead pattern `{pattern_display}` in dice match on `{dice}`: \
+                     achievable sums are {valid_min}..={valid_max}"
+                )
+            }
         }
     }
 
@@ -833,6 +909,29 @@ impl AnalysisError {
 
             AnalysisError::FluentOnUnsupportedNode { node_kind, .. } => {
                 format!("@fluent has no effect on `{node_kind}` nodes")
+            }
+
+            AnalysisError::NonExhaustiveDiceMatch {
+                dice,
+                missing_display,
+                ..
+            } => {
+                format!("`{dice}` match is missing sums: {missing_display}")
+            }
+
+            AnalysisError::DiceMatchRequiresWildcard { dice, .. } => {
+                format!("`{dice}` match with array patterns needs a `_` arm")
+            }
+
+            AnalysisError::DeadDicePattern {
+                pattern_display,
+                valid_min,
+                valid_max,
+                ..
+            } => {
+                format!(
+                    "`{pattern_display}` can never match (valid sums: {valid_min}..={valid_max})"
+                )
             }
         }
     }
