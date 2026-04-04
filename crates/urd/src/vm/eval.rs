@@ -566,7 +566,6 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
                 format!("[{parts}]")
             }
             RuntimeValue::IdentPath(path) => path.join("."),
-            RuntimeValue::Label { name, .. } => name.clone(),
             RuntimeValue::Map(m) => format!("map({})", m.len()),
             RuntimeValue::List(items) => {
                 let parts: Vec<String> = items
@@ -1039,7 +1038,6 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
             }
         }
         (RuntimeValue::Str(x), RuntimeValue::Str(y)) => x.to_string() == y.to_string(),
-        (RuntimeValue::Label { node_id: x, .. }, RuntimeValue::Label { node_id: y, .. }) => x == y,
         (RuntimeValue::List(xs), RuntimeValue::List(ys)) => {
             xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(a, b)| values_equal(a, b))
         }

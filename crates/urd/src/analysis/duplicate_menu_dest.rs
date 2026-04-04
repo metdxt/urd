@@ -75,7 +75,7 @@ fn check_menu_options(options: &[Ast], errors: &mut Vec<AnalysisError>) {
 
         let a = &options[i];
         let (a_label, a_content) = match a.content() {
-            AstContent::MenuOption { label, content } => (label.as_str(), content.as_ref()),
+            AstContent::MenuOption { label, content, .. } => (label.as_str(), content.as_ref()),
             // Guard against malformed ASTs where a non-MenuOption ends up in
             // the options list (should never happen from the parser).
             _ => continue,
@@ -83,7 +83,7 @@ fn check_menu_options(options: &[Ast], errors: &mut Vec<AnalysisError>) {
 
         for (j, b) in options.iter().enumerate().skip(i + 1) {
             let (b_label, b_content) = match b.content() {
-                AstContent::MenuOption { label, content } => (label.as_str(), content.as_ref()),
+                AstContent::MenuOption { label, content, .. } => (label.as_str(), content.as_ref()),
                 _ => continue,
             };
 
@@ -124,11 +124,11 @@ mod tests {
     }
 
     fn make_option_end(label: &str) -> Ast {
-        Ast::menu_option(label.to_owned(), Ast::block(vec![make_end_call()]))
+        Ast::menu_option(label.to_owned(), Ast::block(vec![make_end_call()]), false)
     }
 
     fn make_option_jump(label: &str, target: &str) -> Ast {
-        Ast::menu_option(label.to_owned(), Ast::block(vec![make_jump(target)]))
+        Ast::menu_option(label.to_owned(), Ast::block(vec![make_jump(target)]), false)
     }
 
     fn make_option_dialogue(label: &str, text: &str) -> Ast {
@@ -138,6 +138,7 @@ mod tests {
         Ast::menu_option(
             label.to_owned(),
             Ast::block(vec![dialogue, make_end_call()]),
+            false,
         )
     }
 
@@ -198,10 +199,15 @@ label start {
     #[test]
     fn options_with_same_label_but_different_bodies_are_clean() {
         // Same display label text, but different bodies → not a duplicate body.
-        let a = Ast::menu_option("Same label".to_owned(), Ast::block(vec![make_end_call()]));
+        let a = Ast::menu_option(
+            "Same label".to_owned(),
+            Ast::block(vec![make_end_call()]),
+            false,
+        );
         let b = Ast::menu_option(
             "Same label".to_owned(),
             Ast::block(vec![make_jump("other")]),
+            false,
         );
         let menu = Ast::menu(vec![a, b]);
         let errors = check(&menu);
@@ -381,6 +387,7 @@ label start {
         let c = Ast::menu_option(
             "C".to_owned(),
             Ast::block(vec![inner_menu, make_end_call()]),
+            false,
         );
 
         let outer = Ast::menu(vec![a, b, c]);

@@ -536,8 +536,6 @@ fn is_compatible(
 
         TypeAnnotation::Dice => matches!(value, RuntimeValue::Dice(_, _) | RuntimeValue::Roll(_)),
 
-        TypeAnnotation::Label => matches!(value, RuntimeValue::Label { .. }),
-
         TypeAnnotation::Range => matches!(value, RuntimeValue::Range { .. }),
 
         TypeAnnotation::Named(type_path) => match value {
@@ -655,7 +653,6 @@ fn is_compatible_simple(value: &RuntimeValue, annotation: &TypeAnnotation) -> bo
         // Collection and complex types — best-effort accept.
         TypeAnnotation::List | TypeAnnotation::Map => true,
         TypeAnnotation::Dice => matches!(value, RuntimeValue::Dice(_, _) | RuntimeValue::Roll(_)),
-        TypeAnnotation::Label => matches!(value, RuntimeValue::Label { .. }),
         TypeAnnotation::Range => matches!(value, RuntimeValue::Range { .. }),
         // Nested named type — best-effort accept.
         TypeAnnotation::Named(_) => true,
@@ -678,7 +675,6 @@ fn runtime_value_type_name(value: &RuntimeValue) -> String {
                 format!("path '{}'", path.join("."))
             }
         }
-        RuntimeValue::Label { name, .. } => format!("label '{name}'"),
         RuntimeValue::Map(_) => "map".to_owned(),
         RuntimeValue::List(_) => "list".to_owned(),
         RuntimeValue::Roll(_) => "roll".to_owned(),

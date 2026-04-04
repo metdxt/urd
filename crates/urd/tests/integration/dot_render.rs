@@ -410,21 +410,18 @@ fn dot_has_define_script_decorator_node() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-fn dot_has_label_value_in_decorator_node() -> Result<(), Box<dyn std::error::Error>> {
+fn dot_has_decorator_and_label_block() -> Result<(), Box<dyn std::error::Error>> {
     let dot = compile_example()?.to_dot();
-    // @timed(3.0, notice_board) — the second argument resolves to
-    // RuntimeValue::Label("notice_board") and is stored in the event map.
     // The dialogue node that carries @timed should mention @timed in its label.
     assert!(
         dot.contains("@timed"),
         "DOT must show @timed annotation on the decorated dialogue node"
     );
     // notice_board is a known label in the script — it must be present as a
-    // cluster subgraph (verifying the label itself compiled correctly alongside
-    // being used as a first-class value in the decorator argument).
+    // cluster subgraph.
     assert!(
         dot.contains("subgraph cluster_notice_board"),
-        "notice_board label (used as a value in @timed) must still compile as a real label block"
+        "notice_board label must compile as a real label block"
     );
     Ok(())
 }

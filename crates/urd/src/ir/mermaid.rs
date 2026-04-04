@@ -626,7 +626,11 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
                         })
                         .map(|e| e.target());
                     let entry = opt_raw.and_then(|r| follow_nops(graph, r));
-                    let lbl = format!("[{i}] {}", truncate(&opt.label, 24));
+                    let lbl = if opt.is_default {
+                        format!("[{i}] _ (default)")
+                    } else {
+                        format!("[{i}] {}", truncate(&opt.label, 24))
+                    };
                     let escaped_lbl = escape_mermaid(&lbl);
                     let dst = match entry {
                         None => {
@@ -635,7 +639,11 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
                         }
                         Some(t) => nid(t),
                     };
-                    writeln!(out, "    {n} -->|\"{escaped_lbl}\"| {dst}").ok();
+                    if opt.is_default {
+                        writeln!(out, "    {n} -.\"  {escaped_lbl}  \".-> {dst}").ok();
+                    } else {
+                        writeln!(out, "    {n} -->|\"{escaped_lbl}\"| {dst}").ok();
+                    }
                 }
             }
 
@@ -1211,6 +1219,7 @@ mod tests {
                     Ast::value(RuntimeValue::IdentPath(vec!["a".into()])),
                     Ast::value(RuntimeValue::Int(1)),
                 )]),
+                false,
             ),
             Ast::menu_option(
                 "No".into(),
@@ -1219,6 +1228,7 @@ mod tests {
                     Ast::value(RuntimeValue::IdentPath(vec!["b".into()])),
                     Ast::value(RuntimeValue::Int(2)),
                 )]),
+                false,
             ),
         ])]))
         .to_mermaid();

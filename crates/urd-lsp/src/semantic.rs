@@ -123,7 +123,7 @@ fn format_type_annotation(ta: &TypeAnnotation) -> String {
         TypeAnnotation::List => "list".into(),
         TypeAnnotation::Map => "map".into(),
         TypeAnnotation::Dice => "dice".into(),
-        TypeAnnotation::Label => "label".into(),
+
         TypeAnnotation::Range => "range".into(),
         TypeAnnotation::Named(parts) => parts.join("."),
     }
@@ -933,7 +933,7 @@ fn find_loc_id_recursive(ast: &Ast, ctx: &mut IdContext, byte_offset: usize) -> 
 
             let mut result = None;
             for opt_ast in options {
-                if let AstContent::MenuOption { label, content } = opt_ast.content() {
+                if let AstContent::MenuOption { label, content, .. } = opt_ast.content() {
                     let opt_override = extract_id_override(opt_ast.decorators());
                     // next_option_id MUST be called for every option in order
                     // (advances the slug-collision counter) even if not the target.

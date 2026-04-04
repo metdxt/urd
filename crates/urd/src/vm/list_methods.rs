@@ -604,7 +604,7 @@ fn format_for_join(val: &RuntimeValue) -> String {
         RuntimeValue::Float(f) => f.to_string(),
         RuntimeValue::Str(ps) => ps.to_string(),
         RuntimeValue::Dice(c, s) => format!("{}d{}", c, s),
-        RuntimeValue::Label { name, .. } => name.clone(),
+
         RuntimeValue::List(items) => format!(
             "[{}]",
             items

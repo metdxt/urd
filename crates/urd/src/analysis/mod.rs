@@ -321,6 +321,12 @@ pub enum AnalysisError {
         span: SimpleSpan,
     },
 
+    /// A `menu` block has more than one `_` (wildcard/default) option.
+    MultipleMenuDefaults {
+        /// Source span of the offending `menu` node.
+        span: SimpleSpan,
+    },
+
     /// A dialogue line has an empty string or an empty block body.
     EmptyDialogue {
         /// Speaker identifier (e.g. `"narrator"`).
@@ -490,6 +496,7 @@ impl AnalysisError {
             AnalysisError::EmptyMenu { span, .. } => *span,
             AnalysisError::UnreachableLabel { span, .. } => *span,
             AnalysisError::SingleOptionMenu { span, .. } => *span,
+            AnalysisError::MultipleMenuDefaults { span, .. } => *span,
             AnalysisError::EmptyDialogue { span, .. } => *span,
             AnalysisError::DuplicateMenuDestination { span, .. } => *span,
             AnalysisError::OverwrittenAssignment { span, .. } => *span,
@@ -645,6 +652,11 @@ impl AnalysisError {
 
             AnalysisError::SingleOptionMenu { .. } => {
                 "Single-option menu: the player has no real choice (only one option)".to_owned()
+            }
+
+            AnalysisError::MultipleMenuDefaults { .. } => {
+                "Multiple default options: a menu can have at most one `_` wildcard option"
+                    .to_owned()
             }
 
             AnalysisError::EmptyDialogue { speaker, .. } => {
@@ -831,6 +843,10 @@ impl AnalysisError {
             }
 
             AnalysisError::SingleOptionMenu { .. } => "this menu has only one option".to_owned(),
+
+            AnalysisError::MultipleMenuDefaults { .. } => {
+                "this menu has more than one `_` default option".to_owned()
+            }
 
             AnalysisError::EmptyDialogue { speaker, .. } => {
                 format!("'{speaker}' says nothing here")

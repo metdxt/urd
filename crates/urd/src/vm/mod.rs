@@ -350,20 +350,7 @@ impl Vm {
             }
         }
 
-        // Pre-seed every compiled label name as a RuntimeValue::Label builtin
-        // so scripts can reference labels as values (e.g. pass them to decorator
-        // arguments) without polluting the globals map that a save-file system
-        // would serialise.
-        let mut env = Environment::new();
-        for (name, &node_idx) in &graph.labels {
-            env.define_builtin(
-                name.clone(),
-                RuntimeValue::Label {
-                    name: name.clone(),
-                    node_id: node_idx,
-                },
-            );
-        }
+        let env = Environment::new();
 
         // Pre-build the exit-scope lookup map (label → continuation NodeIndex).
         // This replaces the former O(n) linear scan done on every EnterScope.
@@ -925,12 +912,14 @@ impl Vm {
                     match choice {
                         // ── Player provided a choice index ───────────────────
                         Some(idx) => {
-                            if idx >= options.len() {
+                            // Count only non-default options (visible to the host).
+                            let real_count = options.iter().filter(|o| !o.is_default).count();
+                            if idx >= real_count {
                                 log::warn!(
                                     "Choice index {} out of bounds (len={}); \
                                          re-emitting Choice event",
                                     idx,
-                                    options.len()
+                                    real_count
                                 );
                                 // Re-emit without advancing.
                                 return build_choice_event(
@@ -942,13 +931,49 @@ impl Vm {
                                     localizer.as_ref(),
                                 );
                             }
-                            // Follow the Option(idx) edge to the chosen option's entry.
+                            // Map host-visible index (among non-default options)
+                            // to the IR graph index (which includes defaults).
+                            let graph_idx = {
+                                let mut real_idx = 0;
+                                let mut found = None;
+                                for (i, opt) in options.iter().enumerate() {
+                                    if opt.is_default {
+                                        continue;
+                                    }
+                                    if real_idx == idx {
+                                        found = Some(i);
+                                        break;
+                                    }
+                                    real_idx += 1;
+                                }
+                                match found {
+                                    Some(gi) => gi,
+                                    None => {
+                                        // Should be unreachable after the bounds
+                                        // check above, but handle gracefully.
+                                        log::error!(
+                                            "Choice index {idx} passed bounds check \
+                                             but no matching non-default option found"
+                                        );
+                                        return build_choice_event(
+                                            options,
+                                            decorators,
+                                            loc_id,
+                                            &state.env,
+                                            &state.registry,
+                                            localizer.as_ref(),
+                                        );
+                                    }
+                                }
+                            };
+                            // Follow the Option(graph_idx) edge to the chosen
+                            // option's entry.
                             let entry = graph
                                 .graph
                                 .edges_directed(node_idx, Direction::Outgoing)
                                 .find(|e| {
                                     if let IrEdge::Option(i) = e.weight() {
-                                        *i == idx
+                                        *i == graph_idx
                                     } else {
                                         false
                                     }
@@ -963,23 +988,56 @@ impl Vm {
                         // ── No choice provided ───────────────────────────────
                         None => {
                             if state.pending_choice == Some(node_idx) {
-                                // Already waiting for a choice at this node — re-emit.
-                                log::warn!(
-                                    "Choice at node {:?} is already pending; \
-                                         re-emitting Event::Choice without advancing",
-                                    node_idx
-                                );
+                                // Already pending — check for a default option.
+                                let default_entry = options
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(_, opt)| opt.is_default)
+                                    .and_then(|(i, _)| {
+                                        graph
+                                            .graph
+                                            .edges_directed(
+                                                node_idx,
+                                                Direction::Outgoing,
+                                            )
+                                            .find(|e| {
+                                                matches!(e.weight(), IrEdge::Option(opt_idx) if *opt_idx == i)
+                                            })
+                                            .map(|e| e.target())
+                                    });
+
+                                if let Some(entry) = default_entry {
+                                    // Follow the default option.
+                                    state.pending_choice = None;
+                                    state.cursor = Some(entry);
+                                    // Continue loop — not an observable event.
+                                } else {
+                                    // No default — re-emit as before.
+                                    log::warn!(
+                                        "Choice at node {:?} is already pending; \
+                                             re-emitting Event::Choice without advancing",
+                                        node_idx
+                                    );
+                                    return build_choice_event(
+                                        options,
+                                        decorators,
+                                        loc_id,
+                                        &state.env,
+                                        &state.registry,
+                                        localizer.as_ref(),
+                                    );
+                                }
                             } else {
                                 state.pending_choice = Some(node_idx);
+                                return build_choice_event(
+                                    options,
+                                    decorators,
+                                    loc_id,
+                                    &state.env,
+                                    &state.registry,
+                                    localizer.as_ref(),
+                                );
                             }
-                            return build_choice_event(
-                                options,
-                                decorators,
-                                loc_id,
-                                &state.env,
-                                &state.registry,
-                                localizer.as_ref(),
-                            );
                         }
                     }
                 }
@@ -1446,9 +1504,14 @@ fn build_choice_event(
         }
     }
 
-    // Build per-option ChoiceEvent entries.
+    let has_default = options.iter().any(|o| o.is_default);
+
+    // Build per-option ChoiceEvent entries (excluding default/wildcard options).
     let mut choice_options: Vec<ChoiceEvent> = Vec::new();
     for opt in options {
+        if opt.is_default {
+            continue; // Default options are not visible to the player.
+        }
         let mut opt_fields: HashMap<String, RuntimeValue> = HashMap::new();
         for dec in &opt.decorators {
             match apply_decorator(dec, env, registry, opt_fields, &EventConstraint::Choice) {
@@ -1496,6 +1559,7 @@ fn build_choice_event(
         fields,
         loc_id: loc_id.clone(),
         fluent_vars: env.collect_fluent_bindings(),
+        has_default,
     })
 }
 
@@ -1595,8 +1659,8 @@ mod tests {
     /// Choice event and each option carry their generated `loc_id` values.
     #[test]
     fn test_choice_event_carries_loc_ids() {
-        let opt1 = Ast::menu_option("yes".to_string(), Ast::block(vec![]));
-        let opt2 = Ast::menu_option("no".to_string(), Ast::block(vec![]));
+        let opt1 = Ast::menu_option("yes".to_string(), Ast::block(vec![]), false);
+        let opt2 = Ast::menu_option("no".to_string(), Ast::block(vec![]), false);
         let menu = Ast::menu(vec![opt1, opt2]);
         let labeled = Ast::labeled_block("start".to_string(), menu);
         let ast = Ast::block(vec![labeled]);
@@ -1736,10 +1800,12 @@ mod tests {
         let opt_a = Ast::menu_option(
             "Option A".to_string(),
             Ast::block(vec![decl("picked", int(1))]),
+            false,
         );
         let opt_b = Ast::menu_option(
             "Option B".to_string(),
             Ast::block(vec![decl("picked", int(2))]),
+            false,
         );
         let ast = Ast::menu(vec![opt_a, opt_b]);
 
@@ -1791,7 +1857,7 @@ mod tests {
     /// and does NOT advance the cursor.
     #[test]
     fn test_choice_out_of_bounds_reemits() {
-        let opt = Ast::menu_option("Only".to_string(), Ast::block(vec![]));
+        let opt = Ast::menu_option("Only".to_string(), Ast::block(vec![]), false);
         let ast = Ast::menu(vec![opt]);
         let mut vm = build_vm(ast);
 
@@ -2528,118 +2594,6 @@ mod tests {
             err,
             VmError::IndexOutOfBounds { index: 5, len: 1 }
         ));
-    }
-
-    #[test]
-    fn test_label_values_preseeded_in_env() {
-        let body = Ast::block(vec![]);
-        let labeled = Ast::labeled_block("scene_one".to_string(), body);
-        let script = Ast::block(vec![labeled]);
-
-        let graph = Compiler::compile(&script).expect("compile");
-        let vm = Vm::new(graph, empty_registry()).expect("vm construction");
-
-        let expected_node_id = *vm.graph().labels.get("scene_one").expect("label in graph");
-        let val = vm.env().get("scene_one").expect("label should be in env");
-        assert_eq!(
-            val,
-            RuntimeValue::Label {
-                name: "scene_one".to_string(),
-                node_id: expected_node_id,
-            }
-        );
-    }
-
-    #[test]
-    fn test_label_value_equality() {
-        // Equality is by node_id — the canonical execution reference.
-        assert!(values_equal(
-            &RuntimeValue::Label {
-                name: "a".to_string(),
-                node_id: NodeIndex::new(0),
-            },
-            &RuntimeValue::Label {
-                name: "a".to_string(),
-                node_id: NodeIndex::new(0),
-            },
-        ));
-        // Different node indices → not equal, even if names match.
-        assert!(!values_equal(
-            &RuntimeValue::Label {
-                name: "a".to_string(),
-                node_id: NodeIndex::new(0),
-            },
-            &RuntimeValue::Label {
-                name: "a".to_string(),
-                node_id: NodeIndex::new(1),
-            },
-        ));
-    }
-
-    #[test]
-    fn test_label_value_in_decorator_fields() {
-        use crate::parser::ast::{DecoratorParam, EventConstraint};
-
-        let fallback_label = Ast::labeled_block("fallback".to_string(), Ast::block(vec![]));
-
-        let event_ident = Ast::value(RuntimeValue::IdentPath(vec!["event".to_string()]));
-        let key_ast = Ast::value(RuntimeValue::Str(
-            crate::lexer::strings::ParsedString::new_plain("next"),
-        ));
-        let param_ident = Ast::value(RuntimeValue::IdentPath(vec!["fallback_label".to_string()]));
-        let subscript_assign = Ast::subscript_assign(event_ident, key_ast, param_ident);
-        let dec_body = Ast::block(vec![subscript_assign]);
-
-        let decorator_def = Ast::decorator_def(
-            "timed".to_string(),
-            EventConstraint::Any,
-            vec![DecoratorParam {
-                name: "fallback_label".to_string(),
-                type_annotation: None,
-            }],
-            dec_body,
-        );
-
-        let speakers = Ast::expr_list(vec![str_lit("Alice")]);
-        let lines = Ast::expr_list(vec![str_lit("Hurry!")]);
-        let deco = Decorator::new(
-            "timed".to_string(),
-            Ast::expr_list(vec![Ast::value(RuntimeValue::IdentPath(vec![
-                "fallback".to_string(),
-            ]))]),
-        );
-        let dialogue = Ast::new_decorated(
-            AstContent::Dialogue {
-                speakers: Box::new(speakers),
-                content: Box::new(lines),
-            },
-            vec![deco],
-        );
-
-        let ast = Ast::block(vec![fallback_label, decorator_def, dialogue]);
-        let mut vm = build_vm(ast);
-
-        let ev = match vm.next(None) {
-            VmStep::Event(e) => e,
-            other => panic!("expected Event, got {:?}", other),
-        };
-        match ev {
-            Event::Dialogue { fields, .. } => {
-                assert!(
-                    fields.contains_key("next"),
-                    "expected 'next' in fields, got {:?}",
-                    fields
-                );
-                match fields.get("next") {
-                    Some(RuntimeValue::Label { name, .. }) => assert_eq!(
-                        name, "fallback",
-                        "expected Label pointing at 'fallback', got name '{name}'"
-                    ),
-                    other => panic!("expected Label for 'next' field, got {:?}", other),
-                }
-            }
-            other => panic!("expected Dialogue, got {:?}", other),
-        }
     }
 
     /// `jump label and return` (compiled to LetCall) pushes a call frame,
@@ -3477,5 +3431,176 @@ label beta {
         let mut vm = build_vm_with_roller(ast, StubRoller(vec![6, 1]));
 
         expect_dialogue_line(&mut vm, "wrong order");
+    }
+
+    // ── Wildcard / default menu option tests ─────────────────────────────────
+
+    /// A menu with 2 real options and 1 default emits an `Event::Choice` with
+    /// only 2 visible options, and `has_default == true`.
+    #[test]
+    fn test_menu_default_option_not_in_event() {
+        let opt_a = Ast::menu_option(
+            "Option A".to_string(),
+            Ast::block(vec![dialogue_node("narrator", "picked A")]),
+            false,
+        );
+        let opt_b = Ast::menu_option(
+            "Option B".to_string(),
+            Ast::block(vec![dialogue_node("narrator", "picked B")]),
+            false,
+        );
+        let opt_default =
+            Ast::menu_default_option(Ast::block(vec![dialogue_node("narrator", "default fired")]));
+        let ast = Ast::menu(vec![opt_a, opt_b, opt_default]);
+        let mut vm = build_vm(ast);
+
+        match vm.next(None) {
+            VmStep::Event(Event::Choice {
+                options,
+                has_default,
+                ..
+            }) => {
+                assert_eq!(options.len(), 2, "default option must be excluded");
+                assert!(has_default, "has_default must be true");
+                assert_eq!(options[0].label, "Option A");
+                assert_eq!(options[1].label, "Option B");
+            }
+            other => panic!("expected Choice event, got {:?}", other),
+        }
+    }
+
+    /// When a menu has a default option and is already pending, calling
+    /// `vm.next(None)` follows the default branch instead of re-emitting.
+    #[test]
+    fn test_menu_default_triggered_by_none() {
+        let opt_a = Ast::menu_option(
+            "Option A".to_string(),
+            Ast::block(vec![dialogue_node("narrator", "picked A")]),
+            false,
+        );
+        let opt_default =
+            Ast::menu_default_option(Ast::block(vec![dialogue_node("narrator", "default fired")]));
+        let ast = Ast::menu(vec![opt_a, opt_default]);
+        let mut vm = build_vm(ast);
+
+        // First next(None) → emits Choice and sets pending.
+        match vm.next(None) {
+            VmStep::Event(Event::Choice { has_default, .. }) => {
+                assert!(has_default);
+            }
+            other => panic!("expected Choice event, got {:?}", other),
+        }
+
+        // Second next(None) → follows default option, emits its dialogue.
+        match vm.next(None) {
+            VmStep::Event(Event::Dialogue { lines, .. }) => match &lines[0] {
+                RuntimeValue::Str(ps) => {
+                    assert_eq!(
+                        ps.to_string(),
+                        "default fired",
+                        "expected default branch dialogue"
+                    );
+                }
+                other => panic!("expected Str line, got {:?}", other),
+            },
+            other => panic!("expected Dialogue from default branch, got {:?}", other),
+        }
+    }
+
+    /// A menu WITHOUT a default option re-emits the Choice event when
+    /// `vm.next(None)` is called while already pending (existing behavior).
+    #[test]
+    fn test_menu_without_default_reemits_on_none() {
+        let opt_a = Ast::menu_option(
+            "Option A".to_string(),
+            Ast::block(vec![dialogue_node("narrator", "picked A")]),
+            false,
+        );
+        let opt_b = Ast::menu_option(
+            "Option B".to_string(),
+            Ast::block(vec![dialogue_node("narrator", "picked B")]),
+            false,
+        );
+        let ast = Ast::menu(vec![opt_a, opt_b]);
+        let mut vm = build_vm(ast);
+
+        // First next(None) → emits Choice.
+        match vm.next(None) {
+            VmStep::Event(Event::Choice { has_default, .. }) => {
+                assert!(!has_default, "no default option present");
+            }
+            other => panic!("expected Choice event, got {:?}", other),
+        }
+
+        // Second next(None) → re-emits Choice (no default to follow).
+        match vm.next(None) {
+            VmStep::Event(Event::Choice { has_default, .. }) => {
+                assert!(!has_default, "still no default");
+            }
+            other => panic!("expected re-emitted Choice event, got {:?}", other),
+        }
+    }
+
+    /// Host-provided choice indices map correctly when a default option sits
+    /// between real options: menu ["A", _ , "B"] → host sees indices 0 ("A")
+    /// and 1 ("B"); the default is skipped in the index mapping.
+    #[test]
+    fn test_menu_default_choice_index_mapping() {
+        let opt_a = Ast::menu_option(
+            "Option A".to_string(),
+            Ast::block(vec![dialogue_node("narrator", "picked A")]),
+            false,
+        );
+        let opt_default =
+            Ast::menu_default_option(Ast::block(vec![dialogue_node("narrator", "default fired")]));
+        let opt_b = Ast::menu_option(
+            "Option B".to_string(),
+            Ast::block(vec![dialogue_node("narrator", "picked B")]),
+            false,
+        );
+        // Order: A (idx 0), default (idx 1), B (idx 2)
+        let ast = Ast::menu(vec![opt_a, opt_default, opt_b]);
+
+        // ── Test host index 0 → "A" ─────────────────────────────────────
+        {
+            let mut vm = build_vm(ast.clone());
+            match vm.next(None) {
+                VmStep::Event(Event::Choice { options, .. }) => {
+                    assert_eq!(options.len(), 2);
+                    assert_eq!(options[0].label, "Option A");
+                    assert_eq!(options[1].label, "Option B");
+                }
+                other => panic!("expected Choice, got {:?}", other),
+            }
+            // Choose index 0 → should follow "Option A"
+            match vm.next(Some(0)) {
+                VmStep::Event(Event::Dialogue { lines, .. }) => match &lines[0] {
+                    RuntimeValue::Str(ps) => {
+                        assert_eq!(ps.to_string(), "picked A", "index 0 should map to Option A");
+                    }
+                    other => panic!("expected Str line, got {:?}", other),
+                },
+                other => panic!("expected Dialogue from Option A, got {:?}", other),
+            }
+        }
+
+        // ── Test host index 1 → "B" (not default!) ──────────────────────
+        {
+            let mut vm = build_vm(ast.clone());
+            match vm.next(None) {
+                VmStep::Event(Event::Choice { .. }) => {}
+                other => panic!("expected Choice, got {:?}", other),
+            }
+            // Choose index 1 → should follow "Option B", NOT default
+            match vm.next(Some(1)) {
+                VmStep::Event(Event::Dialogue { lines, .. }) => match &lines[0] {
+                    RuntimeValue::Str(ps) => {
+                        assert_eq!(ps.to_string(), "picked B", "index 1 should map to Option B");
+                    }
+                    other => panic!("expected Str line, got {:?}", other),
+                },
+                other => panic!("expected Dialogue from Option B, got {:?}", other),
+            }
+        }
     }
 }

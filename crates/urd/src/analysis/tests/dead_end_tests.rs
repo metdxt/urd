@@ -244,11 +244,12 @@ fn if_with_only_then_terminating_is_dead_end() {
 
 #[test]
 fn menu_all_options_terminate_is_ok() {
-    let opt_a = Ast::menu_option("Yes".to_owned(), Ast::block(vec![return_node()]));
-    let opt_b = Ast::menu_option("No".to_owned(), Ast::block(vec![end_call()]));
+    let opt_a = Ast::menu_option("Yes".to_owned(), Ast::block(vec![return_node()]), false);
+    let opt_b = Ast::menu_option("No".to_owned(), Ast::block(vec![end_call()]), false);
     let opt_c = Ast::menu_option(
         "Maybe".to_owned(),
         Ast::block(vec![jump_one_way("elsewhere")]),
+        false,
     );
     let ast = Ast::block(vec![Ast::menu(vec![opt_a, opt_b, opt_c])]);
     assert_no_errors(&dead_end::check(&ast));
@@ -260,8 +261,8 @@ fn menu_all_options_terminate_is_ok() {
 
 #[test]
 fn menu_one_option_open_is_dead_end() {
-    let opt_a = Ast::menu_option("Agree".to_owned(), Ast::block(vec![return_node()]));
-    let opt_b = Ast::menu_option("Disagree".to_owned(), Ast::block(vec![dialogue()])); // open
+    let opt_a = Ast::menu_option("Agree".to_owned(), Ast::block(vec![return_node()]), false);
+    let opt_b = Ast::menu_option("Disagree".to_owned(), Ast::block(vec![dialogue()]), false); // open
     // Wrap in a LabeledBlock so dead_end::check treats it as a flow-bearing
     // root and emit_terminal_menu_errors fires for the open option.
     let ast = Ast::labeled_block(

@@ -1,4 +1,4 @@
-//! Shared helper functions for IR graph renderers (DOT, Mermaid, sequence).
+//! Shared helper functions for IR graph renderers (DOT, Mermaid).
 //!
 //! These utilities were extracted from [`super::dot`] and [`super::mermaid`]
 //! to eliminate duplication.  All items use `pub(super)` visibility so they
@@ -102,7 +102,7 @@ pub(super) fn rv_summary(rv: &RuntimeValue) -> String {
         RuntimeValue::Str(_) => "\"…\"".into(),
         RuntimeValue::Dice(c, s) => format!("{c}d{s}"),
         RuntimeValue::IdentPath(p) => p.join("."),
-        RuntimeValue::Label { name, .. } => format!(":{name}"),
+
         RuntimeValue::Map(m) => format!("⟨map({})⟩", m.len()),
         RuntimeValue::List(items) => format!("⟨list({})⟩", items.len()),
         RuntimeValue::Roll(rolls) => format!("⟨roll({})⟩", rolls.len()),

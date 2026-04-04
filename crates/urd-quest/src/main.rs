@@ -4,7 +4,7 @@
 //!
 //! - **`run`** (default) — loads a `.urd` file and runs it interactively.
 //! - **`export`** — compiles a `.urd` file and exports its IR graph as
-//!   Graphviz DOT, Mermaid flowchart, or Mermaid sequence diagram.
+//!   Graphviz DOT or Mermaid flowchart.
 
 mod localizer;
 
@@ -97,8 +97,6 @@ enum ExportFormat {
     Dot,
     /// Mermaid flowchart
     Mermaid,
-    /// Mermaid sequence diagram
-    Sequence,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -192,7 +190,7 @@ fn display_value(val: &RuntimeValue) -> String {
         RuntimeValue::Float(f) => f.to_string(),
         RuntimeValue::Null => "null".to_string(),
         RuntimeValue::Dice(count, sides) => format!("{}d{}", count, sides),
-        RuntimeValue::Label { name, .. } => name.clone(),
+
         RuntimeValue::Roll(rolls) => {
             let sum: i64 = rolls.iter().sum();
             let parts = rolls
@@ -1030,7 +1028,6 @@ fn cmd_export(script_path: &Path, format: ExportFormat, output: Option<&Path>) {
     let rendered = match format {
         ExportFormat::Dot => graph.to_dot(),
         ExportFormat::Mermaid => graph.to_mermaid(),
-        ExportFormat::Sequence => graph.to_sequence_mermaid(),
     };
 
     match output {
@@ -1047,7 +1044,6 @@ fn cmd_export(script_path: &Path, format: ExportFormat, output: Option<&Path>) {
             let fmt_label = match format {
                 ExportFormat::Dot => "DOT",
                 ExportFormat::Mermaid => "Mermaid flowchart",
-                ExportFormat::Sequence => "Mermaid sequence diagram",
             };
             eprintln!("Exported {} graph to '{}'", fmt_label, path.display());
         }

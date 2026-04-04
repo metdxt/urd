@@ -482,7 +482,7 @@ mod tests {
     /// A `@fluent` on a `Menu` node produces a warning (unsupported node kind).
     #[test]
     fn fluent_on_menu_emits_warning() {
-        let option = Ast::menu_option("go".to_string(), Ast::block(vec![]));
+        let option = Ast::menu_option("go".to_string(), Ast::block(vec![]), false);
         let menu = Ast::menu(vec![option]).with_decorators(vec![fluent_bare()]);
         let ast = in_label("scene", vec![menu]);
 

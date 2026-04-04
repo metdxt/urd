@@ -604,13 +604,22 @@ pub fn render_dot(graph: &IrGraph) -> String {
                         })
                         .map(|e| e.target());
                     let entry = opt_raw.and_then(|r| follow_nops(graph, r));
-                    let lbl = format!("[{i}] {}", truncate(&opt.label, 24));
+                    let lbl = if opt.is_default {
+                        format!("[{i}] _ (default)")
+                    } else {
+                        format!("[{i}] {}", truncate(&opt.label, 24))
+                    };
+                    let style = if opt.is_default {
+                        "color=purple, style=dashed"
+                    } else {
+                        "color=purple"
+                    };
                     write_edge(
                         &mut out,
                         &n,
                         entry,
                         Some(&lbl),
-                        Some("color=purple"),
+                        Some(style),
                         &mut has_end_edge,
                     );
                 }
@@ -1206,10 +1215,12 @@ mod tests {
                     Ast::menu_option(
                         "a".into(),
                         Ast::block(vec![Ast::jump_stmt("unfinished".into(), false)]),
+                        false,
                     ),
                     Ast::menu_option(
                         "b".into(),
                         Ast::block(vec![Ast::jump_stmt("done".into(), false)]),
+                        false,
                     ),
                 ])]),
             ),
@@ -1522,6 +1533,7 @@ mod tests {
                     Ast::value(RuntimeValue::IdentPath(vec!["a".into()])),
                     Ast::value(RuntimeValue::Int(1)),
                 )]),
+                false,
             ),
             Ast::menu_option(
                 "No".into(),
@@ -1530,6 +1542,7 @@ mod tests {
                     Ast::value(RuntimeValue::IdentPath(vec!["b".into()])),
                     Ast::value(RuntimeValue::Int(2)),
                 )]),
+                false,
             ),
         ])]))
         .to_dot();

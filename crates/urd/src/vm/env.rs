@@ -48,13 +48,6 @@ pub struct Environment {
     /// `scopes` so that a `const x` inside a label block does not permanently
     /// mark `x` as constant — once the scope is popped the name guard is gone.
     constant_frames: Vec<HashSet<String>>,
-    /// Read-only structural values injected by the VM — never writable from
-    /// script code and never part of a save file.
-    ///
-    /// Currently used to expose compiled label names as [`RuntimeValue::Label`]
-    /// values so they can be passed as arguments (e.g. to decorators) without
-    /// being treated as saveable game state.
-    builtins: HashMap<String, RuntimeValue>,
     /// Runtime-provided extern values injected by the host before execution.
     /// These are read-only from script code — only the runtime can write them
     /// via [`Environment::provide_extern`]. Never part of a save file.
@@ -76,7 +69,6 @@ impl fmt::Debug for Environment {
             .field("structs", &self.structs)
             .field("globals", &self.globals)
             .field("constant_frames", &self.constant_frames)
-            .field("builtins", &self.builtins)
             .field("externs", &self.externs)
             .field("roller", &self.roller.as_ref().map(|_| "<DiceRoller>"))
             .finish()
@@ -238,10 +230,7 @@ impl Environment {
     }
 
     /// Looks up `name`, searching from the innermost scope outward, then
-    /// globals, then builtins.
-    ///
-    /// Builtins are consulted last so that script-declared variables and globals
-    /// can shadow them, but builtins are never writable via [`Self::set`].
+    /// globals, then externs.
     ///
     /// # Errors
     /// Returns [`VmError::UndefinedVariable`] if `name` is not found anywhere.
@@ -257,21 +246,7 @@ impl Environment {
         if let Some(v) = self.externs.get(name) {
             return Ok(v.clone());
         }
-        if let Some(v) = self.builtins.get(name) {
-            return Ok(v.clone());
-        }
         Err(VmError::UndefinedVariable(name.to_string()))
-    }
-
-    /// Inserts a read-only builtin value.
-    ///
-    /// Builtins are structural values injected by the VM itself (e.g. label
-    /// references). They are never writable from script code and are never
-    /// serialised into a save file.
-    ///
-    /// Silently overwrites any previous builtin with the same name.
-    pub fn define_builtin(&mut self, name: impl Into<String>, value: RuntimeValue) {
-        self.builtins.insert(name.into(), value);
     }
 
     /// Registers an enum type with its ordered variant names.

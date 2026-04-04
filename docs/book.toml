@@ -1,0 +1,29 @@
+[book]
+title = "The Urd Book"
+description = "Comprehensive documentation for the Urd dialogue scripting language"
+authors = ["Urd Contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/metdxt/urd"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/metdxt/urd/edit/main/docs/{path}"
+site-url = "/urd/"
+no-section-label = false
+additional-js = ["highlight-urd.js"]
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-hierarchical-headings = true

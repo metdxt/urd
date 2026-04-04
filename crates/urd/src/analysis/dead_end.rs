@@ -785,8 +785,8 @@ mod tests {
 
     #[test]
     fn menu_all_options_terminate_terminates() {
-        let opt_a = Ast::menu_option("A".to_owned(), Ast::block(vec![return_node()]));
-        let opt_b = Ast::menu_option("B".to_owned(), Ast::block(vec![end_call()]));
+        let opt_a = Ast::menu_option("A".to_owned(), Ast::block(vec![return_node()]), false);
+        let opt_b = Ast::menu_option("B".to_owned(), Ast::block(vec![end_call()]), false);
         let ast = Ast::menu(vec![opt_a, opt_b]);
         let mut errors = vec![];
         let t = termination_of(
@@ -804,8 +804,8 @@ mod tests {
         // termination_of(Menu) never emits per-option errors — that is the
         // responsibility of emit_terminal_menu_errors, called only from
         // LabeledBlock when the menu is known to be in a terminal position.
-        let opt_a = Ast::menu_option("Yes".to_owned(), Ast::block(vec![return_node()]));
-        let opt_b = Ast::menu_option("No".to_owned(), Ast::block(vec![dialogue_node()]));
+        let opt_a = Ast::menu_option("Yes".to_owned(), Ast::block(vec![return_node()]), false);
+        let opt_b = Ast::menu_option("No".to_owned(), Ast::block(vec![dialogue_node()]), false);
         let ast = Ast::menu(vec![opt_a, opt_b]);
         let mut errors = vec![];
         let t = termination_of(
@@ -825,8 +825,12 @@ mod tests {
     fn menu_all_options_open_is_open_without_errors() {
         // Uniformly-open menu (all options show dialogue and fall through).
         // No errors from the menu node itself.
-        let opt_a = Ast::menu_option("Browse".to_owned(), Ast::block(vec![dialogue_node()]));
-        let opt_b = Ast::menu_option("Leave".to_owned(), Ast::block(vec![dialogue_node()]));
+        let opt_a = Ast::menu_option(
+            "Browse".to_owned(),
+            Ast::block(vec![dialogue_node()]),
+            false,
+        );
+        let opt_b = Ast::menu_option("Leave".to_owned(), Ast::block(vec![dialogue_node()]), false);
         let ast = Ast::menu(vec![opt_a, opt_b]);
         let mut errors = vec![];
         let t = termination_of(
@@ -854,8 +858,8 @@ mod tests {
         // Label block whose only statement is an asymmetric menu (one option
         // terminates, one does not).  Because nothing follows the menu,
         // emit_terminal_menu_errors should fire for the open option.
-        let opt_yes = Ast::menu_option("Yes".to_owned(), Ast::block(vec![return_node()]));
-        let opt_no = Ast::menu_option("No".to_owned(), Ast::block(vec![dialogue_node()]));
+        let opt_yes = Ast::menu_option("Yes".to_owned(), Ast::block(vec![return_node()]), false);
+        let opt_no = Ast::menu_option("No".to_owned(), Ast::block(vec![dialogue_node()]), false);
         let ast = labeled_block_with_stmts("start", vec![Ast::menu(vec![opt_yes, opt_no])]);
         let errors = super::super::dead_end::check(&ast);
         assert!(
@@ -871,8 +875,8 @@ mod tests {
     fn terminal_menu_uniformly_open_emits_per_option_errors() {
         // All options are open and the menu is the last statement — every
         // option should be flagged.
-        let opt_a = Ast::menu_option("A".to_owned(), Ast::block(vec![dialogue_node()]));
-        let opt_b = Ast::menu_option("B".to_owned(), Ast::block(vec![dialogue_node()]));
+        let opt_a = Ast::menu_option("A".to_owned(), Ast::block(vec![dialogue_node()]), false);
+        let opt_b = Ast::menu_option("B".to_owned(), Ast::block(vec![dialogue_node()]), false);
         let ast = labeled_block_with_stmts("start", vec![Ast::menu(vec![opt_a, opt_b])]);
         let errors = super::super::dead_end::check(&ast);
         assert!(
@@ -896,9 +900,9 @@ mod tests {
         // Menu (asymmetric: opt A terminates, opts B/C open) followed by
         // `jump next` in the same label.  The jump covers the open options
         // so there must be zero errors.
-        let opt_a = Ast::menu_option("A".to_owned(), Ast::block(vec![return_node()]));
-        let opt_b = Ast::menu_option("B".to_owned(), Ast::block(vec![dialogue_node()]));
-        let opt_c = Ast::menu_option("C".to_owned(), Ast::block(vec![dialogue_node()]));
+        let opt_a = Ast::menu_option("A".to_owned(), Ast::block(vec![return_node()]), false);
+        let opt_b = Ast::menu_option("B".to_owned(), Ast::block(vec![dialogue_node()]), false);
+        let opt_c = Ast::menu_option("C".to_owned(), Ast::block(vec![dialogue_node()]), false);
         let ast = labeled_block_with_stmts(
             "market",
             vec![
@@ -916,8 +920,12 @@ mod tests {
     #[test]
     fn menu_followed_by_jump_uniformly_open_no_errors() {
         // All options open, but a jump follows the menu — no errors.
-        let opt_a = Ast::menu_option("Browse".to_owned(), Ast::block(vec![dialogue_node()]));
-        let opt_b = Ast::menu_option("Leave".to_owned(), Ast::block(vec![dialogue_node()]));
+        let opt_a = Ast::menu_option(
+            "Browse".to_owned(),
+            Ast::block(vec![dialogue_node()]),
+            false,
+        );
+        let opt_b = Ast::menu_option("Leave".to_owned(), Ast::block(vec![dialogue_node()]), false);
         let ast = labeled_block_with_stmts(
             "market",
             vec![

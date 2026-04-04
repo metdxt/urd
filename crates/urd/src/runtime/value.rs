@@ -4,31 +4,7 @@
 //! The `RuntimeValue` enum represents all possible values that can be produced
 //! by the interpreter during script execution.
 
-use petgraph::stable_graph::NodeIndex;
-
 use crate::lexer::{Token, strings::ParsedString};
-
-// ─── NodeIndex serde helpers ──────────────────────────────────────────────────
-
-/// Serde helper module for `petgraph::stable_graph::NodeIndex`.
-///
-/// `NodeIndex` serde support is gated behind petgraph's `serde-1` feature,
-/// which we do not enable.  Instead we round-trip through the raw `usize`
-/// index, which is stable for the lifetime of a single compiled [`crate::ir::IrGraph`].
-mod node_index_serde {
-    use petgraph::stable_graph::NodeIndex;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    #[allow(clippy::trivially_copy_pass_by_ref)]
-    pub fn serialize<S: Serializer>(idx: &NodeIndex, ser: S) -> Result<S::Ok, S::Error> {
-        idx.index().serialize(ser)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<NodeIndex, D::Error> {
-        let n = usize::deserialize(de)?;
-        Ok(NodeIndex::new(n))
-    }
-}
 
 /// Represents a value in the Urd runtime environment.
 ///
@@ -69,29 +45,6 @@ pub enum RuntimeValue {
 
     /// Identifier representing a variable or property path
     IdentPath(Vec<String>),
-
-    /// A reference to a compiled label in the script.
-    ///
-    /// Label values are pre-seeded into the VM environment at startup (one per
-    /// `label name { }` block) and are fully serialisable.
-    ///
-    /// - `node_id` is the **reliable execution reference**: the concrete
-    ///   [`NodeIndex`] of the label's [`crate::ir::IrNodeKind::EnterScope`] node
-    ///   in the compiled [`crate::ir::IrGraph`].  This is unambiguous within a
-    ///   single graph and is what the VM uses to navigate.  When multi-file
-    ///   support arrives, this becomes a `(module_id, NodeIndex)` pair.
-    /// - `name` is the human-readable label identifier, used for display,
-    ///   string interpolation, and as the serialised form the game engine sees.
-    Label {
-        /// Human-readable label name (e.g. `"intro_scene"`).
-        name: String,
-        /// Concrete graph node this label resolves to.
-        ///
-        /// Serialised as a raw `usize` index via [`node_index_serde`] since
-        /// petgraph's serde support requires an optional cargo feature.
-        #[serde(with = "node_index_serde")]
-        node_id: NodeIndex,
-    },
 
     /// An integer range value: `start..end` (exclusive) or `start..=end` (inclusive).
     ///

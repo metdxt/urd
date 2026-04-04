@@ -754,7 +754,7 @@ fn typed_decl_inside_if_else_branch_is_checked() {
 fn typed_decl_inside_menu_option_is_checked() {
     let ctx = make_ctx(&[], &[]);
     let bad_decl = typed_decl("choice", TypeAnnotation::Bool, int_lit(1)); // mismatch
-    let option = Ast::menu_option("Option A".to_owned(), Ast::block(vec![bad_decl]));
+    let option = Ast::menu_option("Option A".to_owned(), Ast::block(vec![bad_decl]), false);
     let menu = Ast::menu(vec![option]);
     let ast = Ast::block(vec![menu]);
     assert_type_mismatch(&types::check(&ast, &ctx), "choice");

@@ -129,10 +129,11 @@ fn test_id_decorator_override_used_in_compile_named() {
         AstContent::MenuOption {
             label: "Take a torch from Zara".to_string(),
             content: Box::new(Ast::block(vec![])),
+            is_default: false,
         },
         vec![id_dec],
     );
-    let opt2 = Ast::menu_option("Walk away".to_string(), Ast::block(vec![]));
+    let opt2 = Ast::menu_option("Walk away".to_string(), Ast::block(vec![]), false);
     let menu_ast = Ast::menu(vec![opt1, opt2]);
     let labeled = Ast::labeled_block("start".to_string(), Ast::block(vec![menu_ast]));
     let ast = Ast::block(vec![labeled]);
@@ -377,7 +378,8 @@ fn test_menu_ast_structure() {
                     DeclKind::Variable,
                     Ast::value(RuntimeValue::IdentPath(vec!["x".to_string()])),
                     Ast::value(RuntimeValue::Int(1))
-                )])
+                )]),
+                false
             ),
             Ast::menu_option(
                 "Option 2".to_string(),
@@ -385,7 +387,8 @@ fn test_menu_ast_structure() {
                     DeclKind::Variable,
                     Ast::value(RuntimeValue::IdentPath(vec!["y".to_string()])),
                     Ast::value(RuntimeValue::Int(2))
-                )])
+                )]),
+                false
             ),
         ])]))
     );

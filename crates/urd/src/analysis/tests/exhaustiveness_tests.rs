@@ -316,7 +316,7 @@ fn error_location_reflects_menu_option() {
     let scrutinee = ident_path("t");
     let arms = vec![value_arm("A", return_block())]; // "B" missing
     let match_node = Ast::match_stmt(scrutinee, arms);
-    let option = Ast::menu_option("Choice One".to_owned(), Ast::block(vec![match_node]));
+    let option = Ast::menu_option("Choice One".to_owned(), Ast::block(vec![match_node]), false);
     let menu = Ast::menu(vec![option]);
     let root = Ast::block(vec![menu]);
     let errors = exhaustiveness::check(&root, &ctx);

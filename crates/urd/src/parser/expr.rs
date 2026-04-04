@@ -286,8 +286,6 @@ pub(crate) fn type_annotation<'tok, I: UrdInput<'tok>>() -> impl Parser<
             Token::IdentPath(path) if path == ["map"]   => TypeAnnotation::Map,
             Token::IdentPath(path) if path == ["dice"]  => TypeAnnotation::Dice,
             Token::IdentPath(path) if path == ["range"] => TypeAnnotation::Range,
-            // `label` is a keyword token, not an IdentPath, so it needs its own arm
-            Token::Label => TypeAnnotation::Label,
             // Any other identifier path is a user-defined (named) type
             Token::IdentPath(path) => TypeAnnotation::Named(path),
         }
@@ -411,13 +409,6 @@ mod tests {
     #[test]
     fn test_type_annotation_dice() {
         assert_eq!(parse_type_annotation(": dice"), Ok(TypeAnnotation::Dice));
-    }
-
-    /// `label` is a keyword token (not an `IdentPath`), so it needs its own
-    /// dedicated arm in the `select!` macro.  This test guards that arm.
-    #[test]
-    fn test_type_annotation_label() {
-        assert_eq!(parse_type_annotation(": label"), Ok(TypeAnnotation::Label));
     }
 
     #[test]

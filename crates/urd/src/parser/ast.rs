@@ -195,8 +195,6 @@ pub enum TypeAnnotation {
     Map,
     /// The `dice` type (e.g. `2d6`)
     Dice,
-    /// A label reference — used to annotate parameters that accept label values.
-    Label,
     /// A named user-defined type, e.g. an enum variant path like `Direction`
     Named(Vec<String>),
     /// The `range` type (e.g. `0..5` or `0..=5`)
@@ -511,6 +509,8 @@ pub enum AstContent {
         label: String,
         /// The block of code executed when this option is chosen.
         content: Box<Ast>,
+        /// Whether this is a wildcard/default option (`_`).
+        is_default: bool,
     },
 
     /// Return statement with optional value to return
@@ -952,10 +952,20 @@ impl Ast {
     }
 
     /// Create a single menu option node
-    pub fn menu_option(label: String, content: Ast) -> Self {
+    pub fn menu_option(label: String, content: Ast, is_default: bool) -> Self {
         Self::new(AstContent::MenuOption {
             label,
             content: Box::new(content),
+            is_default,
+        })
+    }
+
+    /// Create a default/wildcard menu option node (`_ { ... }`)
+    pub fn menu_default_option(content: Ast) -> Self {
+        Self::new(AstContent::MenuOption {
+            label: "_".to_string(),
+            content: Box::new(content),
+            is_default: true,
         })
     }
 

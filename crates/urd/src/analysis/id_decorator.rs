@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn valid_id_on_menu_is_clean() {
-        let option = Ast::menu_option("go".to_string(), Ast::block(vec![]));
+        let option = Ast::menu_option("go".to_string(), Ast::block(vec![]), false);
         let menu = Ast::menu(vec![option]).with_decorators(vec![id_dec("my-menu")]);
         let ast = in_label("scene", vec![menu]);
 
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn valid_id_on_menu_option_is_clean() {
-        let option = Ast::menu_option("go".to_string(), Ast::block(vec![]))
+        let option = Ast::menu_option("go".to_string(), Ast::block(vec![]), false)
             .with_decorators(vec![id_dec("go-opt")]);
         let menu = Ast::menu(vec![option]);
         let ast = in_label("scene", vec![menu]);
@@ -624,7 +624,7 @@ mod tests {
         let dialogue = Ast::dialogue(ident_val("narrator"), str_val("welcome"))
             .with_decorators(vec![id_dec("welcome-line")]);
 
-        let option = Ast::menu_option("choice".to_string(), Ast::block(vec![]));
+        let option = Ast::menu_option("choice".to_string(), Ast::block(vec![]), false);
         let menu = Ast::menu(vec![option]).with_decorators(vec![id_dec("main-menu")]);
 
         let block = Ast::block(vec![dialogue, menu]);

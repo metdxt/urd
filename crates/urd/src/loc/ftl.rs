@@ -322,6 +322,11 @@ pub fn generate_ftl(graph: &IrGraph, file_slug: &str) -> String {
                     let mut block = String::new();
                     block.push_str(&format!("# menu: {id}\n"));
                     for option in options {
+                        // Default options (`_`) are not player-visible text
+                        // and should not appear in the localisation file.
+                        if option.is_default {
+                            continue;
+                        }
                         if let Some(opt_id) = &option.loc_id {
                             block.push_str(&format!(
                                 "{opt_id} = {}\n",
@@ -606,8 +611,8 @@ mod tests {
     #[test]
     fn choice_with_options_renders_menu_block() {
         let menu = Ast::menu(vec![
-            Ast::menu_option("Enter the cave".to_string(), Ast::block(vec![])),
-            Ast::menu_option("Walk away".to_string(), Ast::block(vec![])),
+            Ast::menu_option("Enter the cave".to_string(), Ast::block(vec![]), false),
+            Ast::menu_option("Walk away".to_string(), Ast::block(vec![]), false),
         ]);
         let ast = Ast::block(vec![Ast::labeled_block(
             "start".to_string(),
@@ -702,8 +707,12 @@ mod tests {
     fn menu_option_interpolation_converted_to_fluent_syntax() {
         // "Buy it for {price} gold" must become "Buy it for { $price } gold"
         // in the FTL output — the raw urd {var} brace form is not valid Fluent.
-        let opt_buy = Ast::menu_option("Buy it for {price} gold".to_string(), Ast::block(vec![]));
-        let opt_haggle = Ast::menu_option("Try to haggle".to_string(), Ast::block(vec![]));
+        let opt_buy = Ast::menu_option(
+            "Buy it for {price} gold".to_string(),
+            Ast::block(vec![]),
+            false,
+        );
+        let opt_haggle = Ast::menu_option("Try to haggle".to_string(), Ast::block(vec![]), false);
         let menu = Ast::menu(vec![opt_buy, opt_haggle]);
         let ast = Ast::block(vec![Ast::labeled_block(
             "browse".to_string(),

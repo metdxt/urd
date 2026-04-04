@@ -700,13 +700,25 @@ impl CompilerState {
 
                 for opt_ast in options {
                     match opt_ast.content() {
-                        AstContent::MenuOption { label, content } => {
+                        AstContent::MenuOption {
+                            label,
+                            content,
+                            is_default,
+                        } => {
                             let opt_override = if self.id_ctx.is_some() {
                                 extract_id_override(opt_ast.decorators())
                             } else {
                                 None
                             };
-                            let opt_loc_id = if let Some(q) = &mut self.preassign_ids {
+                            let opt_loc_id = if *is_default {
+                                // Default/wildcard options are not player-visible
+                                // text — they never get a localization ID.
+                                if let Some(q) = &mut self.preassign_ids {
+                                    // Still consume the pre-assigned slot (always None).
+                                    q.pop_front();
+                                }
+                                None
+                            } else if let Some(q) = &mut self.preassign_ids {
                                 // Replay mode: consume the pre-assigned option ID.
                                 q.pop_front().flatten()
                             } else if let Some(ctx) = &mut self.id_ctx {
@@ -723,6 +735,7 @@ impl CompilerState {
                                 label: label.clone(),
                                 decorators: opt_ast.decorators().to_vec(),
                                 loc_id: opt_loc_id,
+                                is_default: *is_default,
                             });
                         }
                         _ => {
@@ -1008,9 +1021,19 @@ fn preassign_subtree(ast: &Ast, id_ctx: &mut IdContext) -> VecDeque<Option<Strin
             id_ctx.push_container(EventKind::Menu, override_id);
             q.push_back(id_ctx.current_full_path());
             for opt_ast in options {
-                if let AstContent::MenuOption { label, content } = opt_ast.content() {
-                    let opt_override = extract_id_override(opt_ast.decorators());
-                    q.push_back(id_ctx.next_option_id(label, opt_override));
+                if let AstContent::MenuOption {
+                    label,
+                    content,
+                    is_default,
+                } = opt_ast.content()
+                {
+                    if *is_default {
+                        // Default/wildcard options never get a localization ID.
+                        q.push_back(None);
+                    } else {
+                        let opt_override = extract_id_override(opt_ast.decorators());
+                        q.push_back(id_ctx.next_option_id(label, opt_override));
+                    }
                     q.extend(preassign_subtree(content, id_ctx));
                 }
             }
@@ -1513,10 +1536,12 @@ mod tests {
         let opt1 = Ast::menu_option(
             "Option A".to_string(),
             Ast::block(vec![decl("picked", int(1))]),
+            false,
         );
         let opt2 = Ast::menu_option(
             "Option B".to_string(),
             Ast::block(vec![decl("picked", int(2))]),
+            false,
         );
         let ast = Ast::menu(vec![opt1, opt2]);
 
@@ -2120,8 +2145,8 @@ mod tests {
 
     #[test]
     fn test_compile_named_menu_gets_loc_id() {
-        let opt1 = Ast::menu_option("alcohol".to_string(), Ast::block(vec![]));
-        let opt2 = Ast::menu_option("nicotine".to_string(), Ast::block(vec![]));
+        let opt1 = Ast::menu_option("alcohol".to_string(), Ast::block(vec![]), false);
+        let opt2 = Ast::menu_option("nicotine".to_string(), Ast::block(vec![]), false);
         let menu = Ast::menu(vec![opt1, opt2]);
         let labeled = Ast::labeled_block("start".to_string(), Ast::block(vec![menu]));
         let ast = Ast::block(vec![labeled]);
@@ -2151,8 +2176,16 @@ mod tests {
 
     #[test]
     fn test_compile_named_two_menus_independent_counters() {
-        let menu1 = Ast::menu(vec![Ast::menu_option("a".to_string(), Ast::block(vec![]))]);
-        let menu2 = Ast::menu(vec![Ast::menu_option("b".to_string(), Ast::block(vec![]))]);
+        let menu1 = Ast::menu(vec![Ast::menu_option(
+            "a".to_string(),
+            Ast::block(vec![]),
+            false,
+        )]);
+        let menu2 = Ast::menu(vec![Ast::menu_option(
+            "b".to_string(),
+            Ast::block(vec![]),
+            false,
+        )]);
         let labeled = Ast::labeled_block("start".to_string(), Ast::block(vec![menu1, menu2]));
         let ast = Ast::block(vec![labeled]);
 

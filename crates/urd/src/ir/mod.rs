@@ -16,13 +16,11 @@
 //!
 //! - [`dot`]: Graphviz DOT renderer for [`IrGraph`].
 //! - [`mermaid`]: Mermaid flowchart renderer for [`IrGraph`].
-//! - [`sequence`]: Mermaid sequence diagram renderer for [`IrGraph`].
 
 pub mod analysis;
 pub mod dot;
 pub mod mermaid;
 mod render_common;
-pub mod sequence;
 
 use std::collections::HashMap;
 
@@ -239,6 +237,10 @@ pub struct IrChoiceOption {
     /// Localization key for this option, if any.
     /// `None` when the compiler was invoked without a file stem context.
     pub loc_id: Option<String>,
+    /// `true` when this option is a wildcard/default (`_`) — selected when
+    /// the host passes `None` to a pending choice (e.g. on timer expiry).
+    /// Default options are not included in the emitted [`Event::Choice`] options.
+    pub is_default: bool,
 }
 
 /// One arm of a compiled [`IrNodeKind::Switch`] node.
@@ -516,6 +518,10 @@ pub enum Event {
         loc_id: Option<String>,
         /// Fluent variable bindings for this choice event's scope context.
         fluent_vars: std::collections::HashMap<String, crate::runtime::value::RuntimeValue>,
+        /// `true` when the menu has a wildcard/default option (`_ { ... }`).
+        /// The host can use this to display a timeout indicator or skip UI.
+        /// To trigger the default, call `vm.next(None)` while the choice is pending.
+        has_default: bool,
     },
 }
 

@@ -463,7 +463,6 @@ pub fn return_type_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
             Token::IdentPath(path) if path == ["list"]  => TypeAnnotation::List,
             Token::IdentPath(path) if path == ["map"]   => TypeAnnotation::Map,
             Token::IdentPath(path) if path == ["dice"]  => TypeAnnotation::Dice,
-            Token::Label                                    => TypeAnnotation::Label,
             Token::IdentPath(path)                      => TypeAnnotation::Named(path),
         }
         .labelled("return type"),
@@ -720,22 +719,24 @@ pub fn extern_decl<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 fn menu_parser<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
-    let option_label = select! {
-        Token::StrLit(s) => s,
-    };
-
-    let option = decorators_parser()
+    let string_option = decorators_parser()
         .or_not()
-        .then(option_label)
-        .then(block)
+        .then(select! { Token::StrLit(s) => s })
+        .then(block.clone())
         .map_with(|((maybe_decorators, label), code_block), extra| {
             // Use Display trait to convert ParsedString to String
-            let node = Ast::menu_option(format!("{}", label), code_block);
+            let node = Ast::menu_option(format!("{}", label), code_block, false);
             match maybe_decorators {
                 Some(decs) => node.with_decorators(decs).with_span(extra.span()),
                 None => node.with_span(extra.span()),
             }
         });
+
+    let default_option = just(Token::Wildcard)
+        .ignore_then(block)
+        .map_with(|code_block, extra| Ast::menu_default_option(code_block).with_span(extra.span()));
+
+    let option = string_option.or(default_option);
 
     let options = option
         .separated_by(just(Token::Newline).repeated().at_least(1))
