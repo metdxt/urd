@@ -184,11 +184,19 @@ fn check_decorator_known(
 /// Implement this trait to substitute the default `rand`-based roller with a
 /// deterministic stub in tests, or a custom RNG in production.
 pub trait DiceRoller: Send + Sync {
-    /// Roll `count` dice, each with `sides` faces, and return the total.
+    /// Roll `count` dice each with `sides` faces and return each individual result.
     ///
-    /// Each die produces a value in `1..=sides`.  A `count` of `0` returns
-    /// `0`.  Behaviour for `sides == 0` is implementation-defined.
-    fn roll(&self, count: u32, sides: u32) -> i64;
+    /// Each element is in the range `1..=sides`. An empty `Vec` is returned
+    /// when `count == 0`. Behaviour for `sides == 0` is implementation-defined.
+    fn roll_individual(&self, count: u32, sides: u32) -> Vec<i64>;
+
+    /// Roll and return the total (sum of all individual results).
+    ///
+    /// Provided as a convenience; defaults to
+    /// `self.roll_individual(count, sides).iter().sum()`.
+    fn roll(&self, count: u32, sides: u32) -> i64 {
+        self.roll_individual(count, sides).iter().sum()
+    }
 }
 
 /// Default [`DiceRoller`] implementation backed by [`rand::rng`].
@@ -197,10 +205,12 @@ pub trait DiceRoller: Send + Sync {
 pub struct DefaultDiceRoller;
 
 impl DiceRoller for DefaultDiceRoller {
-    fn roll(&self, count: u32, sides: u32) -> i64 {
+    fn roll_individual(&self, count: u32, sides: u32) -> Vec<i64> {
         use rand::RngExt;
         let mut rng = rand::rng();
-        (0..count).map(|_| rng.random_range(1..=sides) as i64).sum()
+        (0..count)
+            .map(|_| rng.random_range(1..=sides) as i64)
+            .collect()
     }
 }
 

@@ -398,6 +398,65 @@ fn str_not_compatible_with_dice_annotation() {
     assert_type_mismatch(&types::check(&ast, &ctx), "roll");
 }
 
+#[test]
+fn roll_compatible_with_dice_annotation() {
+    // RuntimeValue::Roll is the evaluated form of a dice expression and must
+    // satisfy a TypeAnnotation::Dice constraint at the analysis layer.
+    let ctx = make_ctx(&[], &[]);
+    let ast = Ast::block(vec![typed_decl(
+        "result",
+        TypeAnnotation::Dice,
+        Ast::value(RuntimeValue::Roll(vec![3, 5])),
+    )]);
+    assert_no_errors(&types::check(&ast, &ctx));
+}
+
+#[test]
+fn roll_is_not_compatible_with_int_annotation() {
+    // A Roll value must NOT be accepted where an Int is expected.
+    let ctx = make_ctx(&[], &[]);
+    let ast = Ast::block(vec![typed_decl(
+        "result",
+        TypeAnnotation::Int,
+        Ast::value(RuntimeValue::Roll(vec![3, 5])),
+    )]);
+    assert_type_mismatch(&types::check(&ast, &ctx), "result");
+}
+
+#[test]
+fn roll_is_not_compatible_with_str_annotation() {
+    let ctx = make_ctx(&[], &[]);
+    let ast = Ast::block(vec![typed_decl(
+        "result",
+        TypeAnnotation::Str,
+        Ast::value(RuntimeValue::Roll(vec![3, 5])),
+    )]);
+    assert_type_mismatch(&types::check(&ast, &ctx), "result");
+}
+
+#[test]
+fn roll_is_not_compatible_with_bool_annotation() {
+    let ctx = make_ctx(&[], &[]);
+    let ast = Ast::block(vec![typed_decl(
+        "result",
+        TypeAnnotation::Bool,
+        Ast::value(RuntimeValue::Roll(vec![3, 5])),
+    )]);
+    assert_type_mismatch(&types::check(&ast, &ctx), "result");
+}
+
+#[test]
+fn empty_roll_compatible_with_dice_annotation() {
+    // An empty Roll (0d6) must still satisfy TypeAnnotation::Dice.
+    let ctx = make_ctx(&[], &[]);
+    let ast = Ast::block(vec![typed_decl(
+        "result",
+        TypeAnnotation::Dice,
+        Ast::value(RuntimeValue::Roll(vec![])),
+    )]);
+    assert_no_errors(&types::check(&ast, &ctx));
+}
+
 // ---------------------------------------------------------------------------
 // List annotation
 // ---------------------------------------------------------------------------

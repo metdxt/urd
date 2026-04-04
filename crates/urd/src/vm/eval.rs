@@ -78,6 +78,11 @@ pub fn eval_expr(
 
                     match receiver {
                         RuntimeValue::List(list) => list_methods::dispatch(list, method, &args),
+                        RuntimeValue::Roll(rolls) => {
+                            let as_list: Vec<RuntimeValue> =
+                                rolls.iter().map(|&n| RuntimeValue::Int(n)).collect();
+                            list_methods::dispatch(as_list, method, &args)
+                        }
                         RuntimeValue::Str(s) => str_methods::dispatch(s, method, &args),
                         RuntimeValue::Int(n) => int_methods::dispatch(n, method, &args),
                         RuntimeValue::Float(f) => float_methods::dispatch(f, method, &args),
@@ -124,6 +129,28 @@ pub fn eval_expr(
                             name: path[0].clone(),
                             fields,
                         });
+                    }
+                    // Global aggregate builtins: min(x), max(x), sum(x) where x is Roll or List
+                    if let AstContent::Value(RuntimeValue::IdentPath(path)) = func_path.content()
+                        && path.len() == 1
+                        && args.len() == 1
+                    {
+                        let fn_name = path[0].as_str();
+                        let arg_as_list: Option<Vec<RuntimeValue>> = match &args[0] {
+                            RuntimeValue::Roll(rolls) => {
+                                Some(rolls.iter().map(|&n| RuntimeValue::Int(n)).collect())
+                            }
+                            RuntimeValue::List(items) => Some(items.clone()),
+                            _ => None,
+                        };
+                        if let Some(list) = arg_as_list {
+                            match fn_name {
+                                "min" | "max" | "sum" => {
+                                    return list_methods::dispatch(list, fn_name, &[]);
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                     Err(VmError::UndefinedFunction(format!(
                         "function '{}' is not defined",
@@ -270,6 +297,35 @@ pub fn eval_expr(
                     };
                     Ok(list[actual].clone())
                 }
+                RuntimeValue::Roll(rolls) => {
+                    let as_list: Vec<RuntimeValue> =
+                        rolls.iter().map(|&n| RuntimeValue::Int(n)).collect();
+                    let idx = match key_val {
+                        RuntimeValue::Int(i) => i,
+                        other => {
+                            return Err(VmError::TypeError(format!(
+                                "list index must be Int, got {:?}",
+                                other
+                            )));
+                        }
+                    };
+                    let len = as_list.len();
+                    // Support Python-style negative indexing.
+                    let actual = if idx < 0 {
+                        let pos = len as i64 + idx;
+                        if pos < 0 {
+                            return Err(VmError::IndexOutOfBounds { index: idx, len });
+                        }
+                        pos as usize
+                    } else {
+                        let pos = idx as usize;
+                        if pos >= len {
+                            return Err(VmError::IndexOutOfBounds { index: idx, len });
+                        }
+                        pos
+                    };
+                    Ok(as_list[actual].clone())
+                }
                 RuntimeValue::Struct { ref fields, .. } => {
                     let key_str = match &key_val {
                         RuntimeValue::Str(ps) => ps.to_string(),
@@ -400,8 +456,8 @@ pub(super) fn eval_runtime_value(
             Ok(RuntimeValue::Str(interpolate_string(ps, env)))
         }
         RuntimeValue::Dice(count, sides) => env
-            .roll_dice(*count as u32, *sides as u32)
-            .map(RuntimeValue::Int),
+            .roll_dice_individual(*count as u32, *sides as u32)
+            .map(RuntimeValue::Roll),
         other => Ok(other.clone()),
     }
 }
@@ -495,6 +551,14 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
             RuntimeValue::Float(f) => f.to_string(),
             RuntimeValue::Str(ps) => ps.to_string(),
             RuntimeValue::Dice(count, sides) => format!("{}d{}", count, sides),
+            RuntimeValue::Roll(rolls) => {
+                let parts = rolls
+                    .iter()
+                    .map(|r| r.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("[{parts}]")
+            }
             RuntimeValue::IdentPath(path) => path.join("."),
             RuntimeValue::Label { name, .. } => name.clone(),
             RuntimeValue::Map(m) => format!("map({})", m.len()),
@@ -664,6 +728,7 @@ pub(super) fn to_float(v: &RuntimeValue) -> Option<f64> {
     match v {
         RuntimeValue::Float(f) => Some(*f),
         RuntimeValue::Int(i) => Some(*i as f64),
+        RuntimeValue::Roll(rolls) => Some(rolls.iter().sum::<i64>() as f64),
         _ => None,
     }
 }
@@ -861,6 +926,7 @@ pub(super) fn is_truthy(v: &RuntimeValue) -> bool {
         RuntimeValue::Float(f) => *f != 0.0 && !f.is_nan(),
         // An empty list is falsy; a non-empty list is truthy.
         RuntimeValue::List(items) => !items.is_empty(),
+        RuntimeValue::Roll(rolls) => !rolls.is_empty(),
         // A non-empty range is truthy.
         RuntimeValue::Range {
             start,
@@ -945,6 +1011,7 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
                 inclusive: i2,
             },
         ) => s1 == s2 && e1 == e2 && i1 == i2,
+        (RuntimeValue::Roll(a), RuntimeValue::Roll(b)) => a == b,
         // Function and ScriptDecorator have no meaningful value equality — two distinct
         // function objects are never considered the same even if their bodies are
         // identical.  Any type not listed above (including future variants) defaults
@@ -1907,5 +1974,411 @@ mod tests {
             Ast::value(RuntimeValue::Int(5)),
         );
         assert!(eval_expr(&ast, &env).is_err());
+    }
+
+    // ── RuntimeValue::Roll tests ──────────────────────────────────────────────
+
+    /// A deterministic roller that returns a fixed sequence of values,
+    /// truncated to the requested `count`.  Used to make dice-evaluation
+    /// tests reproducible.
+    struct FixedRoller(Vec<i64>);
+
+    impl crate::vm::DiceRoller for FixedRoller {
+        fn roll_individual(&self, count: u32, _sides: u32) -> Vec<i64> {
+            self.0[..count as usize].to_vec()
+        }
+    }
+
+    // 1. Dice evaluates to Roll ────────────────────────────────────────────────
+
+    #[test]
+    fn test_dice_evaluates_to_roll_with_fixed_roller() {
+        let mut env = Environment::new();
+        env.set_dice_roller(Box::new(FixedRoller(vec![3, 5])));
+        // Evaluating Dice(2, 6) with the fixed roller must produce Roll([3, 5]).
+        let ast = Ast::value(RuntimeValue::Dice(2, 6));
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Roll(vec![3, 5]));
+    }
+
+    #[test]
+    fn test_dice_evaluates_to_roll_element_count_matches_n() {
+        let mut env = Environment::new();
+        // Roller supplies 4 fixed values; we only ask for 3.
+        env.set_dice_roller(Box::new(FixedRoller(vec![2, 4, 6, 1])));
+        let ast = Ast::value(RuntimeValue::Dice(3, 6));
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Roll(vec![2, 4, 6]));
+        if let RuntimeValue::Roll(dice) = result {
+            assert_eq!(dice.len(), 3);
+        }
+    }
+
+    #[test]
+    fn test_dice_evaluates_to_roll_zero_count_returns_empty() {
+        let mut env = Environment::new();
+        env.set_dice_roller(Box::new(FixedRoller(vec![])));
+        let ast = Ast::value(RuntimeValue::Dice(0, 6));
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Roll(vec![]));
+    }
+
+    // 2. Arithmetic coercion: Roll is treated as its sum ──────────────────────
+
+    #[test]
+    fn test_roll_plus_int_coerces_to_sum() {
+        // Roll([3, 5]) has sum 8; 8 + 2 = 10.0 (float because Roll is not Int)
+        let env = Environment::default();
+        let ast = Ast::binop(
+            Operator::Plus,
+            Ast::value(RuntimeValue::Roll(vec![3, 5])),
+            Ast::value(RuntimeValue::Int(2)),
+        );
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Float(10.0));
+    }
+
+    #[test]
+    fn test_roll_minus_int_coerces_to_sum() {
+        // Roll([3, 5]) sum = 8; 8 - 1 = 7.0
+        let env = Environment::default();
+        let ast = Ast::binop(
+            Operator::Minus,
+            Ast::value(RuntimeValue::Roll(vec![3, 5])),
+            Ast::value(RuntimeValue::Int(1)),
+        );
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Float(7.0));
+    }
+
+    #[test]
+    fn test_roll_multiply_int_coerces_to_sum() {
+        // Roll([2, 4]) sum = 6; 6 * 3 = 18.0
+        let env = Environment::default();
+        let ast = Ast::binop(
+            Operator::Multiply,
+            Ast::value(RuntimeValue::Roll(vec![2, 4])),
+            Ast::value(RuntimeValue::Int(3)),
+        );
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Float(18.0));
+    }
+
+    #[test]
+    fn test_roll_divide_int_coerces_to_sum() {
+        // Roll([4, 2]) sum = 6; 6 / 2 = 3.0
+        let env = Environment::default();
+        let ast = Ast::binop(
+            Operator::Divide,
+            Ast::value(RuntimeValue::Roll(vec![4, 2])),
+            Ast::value(RuntimeValue::Int(2)),
+        );
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Float(3.0));
+    }
+
+    #[test]
+    fn test_int_plus_roll_coerces_roll_to_sum() {
+        // Roll is on the rhs; same coercion applies: 2 + 8 = 10.0
+        let env = Environment::default();
+        let ast = Ast::binop(
+            Operator::Plus,
+            Ast::value(RuntimeValue::Int(2)),
+            Ast::value(RuntimeValue::Roll(vec![3, 5])),
+        );
+        let result = eval_expr(&ast, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Float(10.0));
+    }
+
+    // 3. Method dispatch on Roll ───────────────────────────────────────────────
+
+    #[test]
+    fn test_roll_method_min() {
+        let mut env = Environment::new();
+        env.set(
+            "roll",
+            RuntimeValue::Roll(vec![3, 1, 5, 2]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["roll".into(), "min".into()])),
+            Ast::expr_list(vec![]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(1));
+    }
+
+    #[test]
+    fn test_roll_method_max() {
+        let mut env = Environment::new();
+        env.set(
+            "roll",
+            RuntimeValue::Roll(vec![3, 1, 5, 2]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["roll".into(), "max".into()])),
+            Ast::expr_list(vec![]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(5));
+    }
+
+    #[test]
+    fn test_roll_method_sum() {
+        let mut env = Environment::new();
+        env.set(
+            "roll",
+            RuntimeValue::Roll(vec![3, 1, 5, 2]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["roll".into(), "sum".into()])),
+            Ast::expr_list(vec![]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(11));
+    }
+
+    #[test]
+    fn test_roll_method_len() {
+        let mut env = Environment::new();
+        env.set(
+            "roll",
+            RuntimeValue::Roll(vec![3, 1, 5, 2]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["roll".into(), "len".into()])),
+            Ast::expr_list(vec![]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(4));
+    }
+
+    #[test]
+    fn test_roll_method_min_on_single_element() {
+        let mut env = Environment::new();
+        env.set("roll", RuntimeValue::Roll(vec![6]), &DeclKind::Variable)
+            .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["roll".into(), "min".into()])),
+            Ast::expr_list(vec![]),
+        );
+        assert_eq!(eval_expr(&call, &env).unwrap(), RuntimeValue::Int(6));
+    }
+
+    // 4. Free-function builtins: min(roll), max(roll), sum(roll) ──────────────
+
+    #[test]
+    fn test_roll_free_function_min() {
+        let mut env = Environment::new();
+        env.set(
+            "roll",
+            RuntimeValue::Roll(vec![2, 6, 4]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["min".into()])),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::IdentPath(vec![
+                "roll".into(),
+            ]))]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(2));
+    }
+
+    #[test]
+    fn test_roll_free_function_max() {
+        let mut env = Environment::new();
+        env.set(
+            "roll",
+            RuntimeValue::Roll(vec![2, 6, 4]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["max".into()])),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::IdentPath(vec![
+                "roll".into(),
+            ]))]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(6));
+    }
+
+    #[test]
+    fn test_roll_free_function_sum() {
+        let mut env = Environment::new();
+        env.set(
+            "roll",
+            RuntimeValue::Roll(vec![2, 6, 4]),
+            &DeclKind::Variable,
+        )
+        .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["sum".into()])),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::IdentPath(vec![
+                "roll".into(),
+            ]))]),
+        );
+        let result = eval_expr(&call, &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(12));
+    }
+
+    #[test]
+    fn test_roll_free_function_min_on_empty_roll_returns_null() {
+        let mut env = Environment::new();
+        env.set("roll", RuntimeValue::Roll(vec![]), &DeclKind::Variable)
+            .unwrap();
+        let call = Ast::call(
+            Ast::value(RuntimeValue::IdentPath(vec!["min".into()])),
+            Ast::expr_list(vec![Ast::value(RuntimeValue::IdentPath(vec![
+                "roll".into(),
+            ]))]),
+        );
+        assert_eq!(eval_expr(&call, &env).unwrap(), RuntimeValue::Null);
+    }
+
+    // 5. Subscript indexing into Roll ─────────────────────────────────────────
+
+    #[test]
+    fn test_roll_subscript_first_element() {
+        let env = Environment::default();
+        let ast = Ast::subscript(
+            Ast::value(RuntimeValue::Roll(vec![3, 5])),
+            Ast::value(RuntimeValue::Int(0)),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Int(3));
+    }
+
+    #[test]
+    fn test_roll_subscript_second_element() {
+        let env = Environment::default();
+        let ast = Ast::subscript(
+            Ast::value(RuntimeValue::Roll(vec![3, 5])),
+            Ast::value(RuntimeValue::Int(1)),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Int(5));
+    }
+
+    #[test]
+    fn test_roll_subscript_negative_index() {
+        // -1 refers to the last element.
+        let env = Environment::default();
+        let ast = Ast::subscript(
+            Ast::value(RuntimeValue::Roll(vec![3, 5])),
+            Ast::value(RuntimeValue::Int(-1)),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Int(5));
+    }
+
+    #[test]
+    fn test_roll_subscript_out_of_bounds_errors() {
+        let env = Environment::default();
+        let ast = Ast::subscript(
+            Ast::value(RuntimeValue::Roll(vec![3, 5])),
+            Ast::value(RuntimeValue::Int(5)),
+        );
+        let err = eval_expr(&ast, &env).unwrap_err();
+        assert!(
+            matches!(err, VmError::IndexOutOfBounds { index: 5, len: 2 }),
+            "expected IndexOutOfBounds, got {err:?}"
+        );
+    }
+
+    // 6. format_runtime_value for Roll ────────────────────────────────────────
+
+    #[test]
+    fn test_roll_format_produces_bracketed_list() {
+        let roll = RuntimeValue::Roll(vec![3, 5]);
+        assert_eq!(format_runtime_value(&roll, None), "[3, 5]");
+    }
+
+    #[test]
+    fn test_roll_format_single_element() {
+        let roll = RuntimeValue::Roll(vec![6]);
+        assert_eq!(format_runtime_value(&roll, None), "[6]");
+    }
+
+    #[test]
+    fn test_roll_format_empty_roll_is_empty_brackets() {
+        let roll = RuntimeValue::Roll(vec![]);
+        assert_eq!(format_runtime_value(&roll, None), "[]");
+    }
+
+    #[test]
+    fn test_roll_format_multiple_elements() {
+        let roll = RuntimeValue::Roll(vec![1, 2, 3, 4]);
+        assert_eq!(format_runtime_value(&roll, None), "[1, 2, 3, 4]");
+    }
+
+    // 7. Equality semantics for Roll ──────────────────────────────────────────
+
+    #[test]
+    fn test_roll_values_equal_same_elements_same_order() {
+        let a = RuntimeValue::Roll(vec![3, 5]);
+        let b = RuntimeValue::Roll(vec![3, 5]);
+        assert!(values_equal(&a, &b));
+    }
+
+    #[test]
+    fn test_roll_values_not_equal_different_order() {
+        // Order matters: [3, 5] != [5, 3]
+        let a = RuntimeValue::Roll(vec![3, 5]);
+        let b = RuntimeValue::Roll(vec![5, 3]);
+        assert!(!values_equal(&a, &b));
+    }
+
+    #[test]
+    fn test_roll_values_not_equal_different_length() {
+        let a = RuntimeValue::Roll(vec![3, 5]);
+        let b = RuntimeValue::Roll(vec![3]);
+        assert!(!values_equal(&a, &b));
+    }
+
+    #[test]
+    fn test_roll_values_equal_empty_rolls() {
+        let a = RuntimeValue::Roll(vec![]);
+        let b = RuntimeValue::Roll(vec![]);
+        assert!(values_equal(&a, &b));
+    }
+
+    #[test]
+    fn test_roll_not_equal_to_int_with_same_sum() {
+        // Roll([3, 5]) must not compare equal to Int(8) — different types.
+        let roll = RuntimeValue::Roll(vec![3, 5]);
+        let int = RuntimeValue::Int(8);
+        assert!(!values_equal(&roll, &int));
+    }
+
+    #[test]
+    fn test_roll_not_equal_to_list_with_same_elements() {
+        // Roll([3, 5]) must not compare equal to List([Int(3), Int(5)]).
+        let roll = RuntimeValue::Roll(vec![3, 5]);
+        let list = RuntimeValue::List(vec![RuntimeValue::Int(3), RuntimeValue::Int(5)]);
+        assert!(!values_equal(&roll, &list));
+    }
+
+    // 8. Truthiness for Roll ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_roll_non_empty_is_truthy() {
+        assert!(is_truthy(&RuntimeValue::Roll(vec![3, 5])));
+    }
+
+    #[test]
+    fn test_roll_single_element_is_truthy() {
+        assert!(is_truthy(&RuntimeValue::Roll(vec![1])));
+    }
+
+    #[test]
+    fn test_roll_empty_is_falsy() {
+        assert!(!is_truthy(&RuntimeValue::Roll(vec![])));
     }
 }

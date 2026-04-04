@@ -124,6 +124,7 @@ fn format_type_annotation(ta: &TypeAnnotation) -> String {
         TypeAnnotation::Map => "map".into(),
         TypeAnnotation::Dice => "dice".into(),
         TypeAnnotation::Label => "label".into(),
+        TypeAnnotation::Range => "range".into(),
         TypeAnnotation::Named(parts) => parts.join("."),
     }
 }

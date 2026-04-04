@@ -193,6 +193,15 @@ fn display_value(val: &RuntimeValue) -> String {
         RuntimeValue::Null => "null".to_string(),
         RuntimeValue::Dice(count, sides) => format!("{}d{}", count, sides),
         RuntimeValue::Label { name, .. } => name.clone(),
+        RuntimeValue::Roll(rolls) => {
+            let sum: i64 = rolls.iter().sum();
+            let parts = rolls
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("roll({sum}) [{parts}]")
+        }
         other => format!("{:?}", other),
     }
 }

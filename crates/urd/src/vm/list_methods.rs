@@ -465,6 +465,49 @@ pub(super) fn dispatch(
             Ok(RuntimeValue::List(result))
         }
 
+        // ── Aggregates ────────────────────────────────────────────────────────
+        "min" => {
+            require_args("min", args, 0)?;
+            if list.is_empty() {
+                return Ok(RuntimeValue::Null);
+            }
+            let mut min_val = coerce_to_i64(&list[0], "min")?;
+            for el in &list[1..] {
+                let v = coerce_to_i64(el, "min")?;
+                if v < min_val {
+                    min_val = v;
+                }
+            }
+            Ok(RuntimeValue::Int(min_val))
+        }
+
+        "max" => {
+            require_args("max", args, 0)?;
+            if list.is_empty() {
+                return Ok(RuntimeValue::Null);
+            }
+            let mut max_val = coerce_to_i64(&list[0], "max")?;
+            for el in &list[1..] {
+                let v = coerce_to_i64(el, "max")?;
+                if v > max_val {
+                    max_val = v;
+                }
+            }
+            Ok(RuntimeValue::Int(max_val))
+        }
+
+        "sum" => {
+            require_args("sum", args, 0)?;
+            if list.is_empty() {
+                return Ok(RuntimeValue::Int(0));
+            }
+            let mut total: i64 = 0;
+            for el in &list {
+                total += coerce_to_i64(el, "sum")?;
+            }
+            Ok(RuntimeValue::Int(total))
+        }
+
         // ── Unknown ───────────────────────────────────────────────────────────
         other => Err(super::VmError::UnknownMethod(format!("'{other}' on List"))),
     }
@@ -532,6 +575,21 @@ fn require_int(val: &RuntimeValue, method: &str, param: &str) -> Result<i64, sup
     }
 }
 
+/// Coerce a [`RuntimeValue`] to `i64` for numeric aggregate operations.
+///
+/// Accepts `Int` directly and truncates `Float` via `as i64`.  All other
+/// variants are rejected with a [`super::VmError::TypeError`].
+fn coerce_to_i64(val: &RuntimeValue, method: &str) -> Result<i64, super::VmError> {
+    match val {
+        RuntimeValue::Int(i) => Ok(*i),
+        RuntimeValue::Float(f) => Ok(*f as i64),
+        other => Err(super::VmError::TypeError(format!(
+            "list.{method}() expected a numeric element (Int or Float), got {:?}",
+            other
+        ))),
+    }
+}
+
 /// Format a [`RuntimeValue`] as a plain string for use in `join()`.
 ///
 /// This is a simple display conversion — no format-spec support — that mirrors
@@ -552,6 +610,14 @@ fn format_for_join(val: &RuntimeValue) -> String {
             items
                 .iter()
                 .map(format_for_join)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        RuntimeValue::Roll(rolls) => format!(
+            "[{}]",
+            rolls
+                .iter()
+                .map(|n| n.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

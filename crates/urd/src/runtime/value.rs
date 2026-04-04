@@ -58,6 +58,15 @@ pub enum RuntimeValue {
     Str(ParsedString),
     /// Dice roll value (count, sides)
     Dice(u8, u8),
+
+    /// The individual results of evaluating a [`RuntimeValue::Dice`] expression.
+    ///
+    /// Produced at runtime when a dice expression (e.g. `2d6`) is evaluated.
+    /// Each element is a single die result in the range `1..=sides`.
+    /// This variant is never present in an AST node and is never serialised.
+    #[serde(skip)]
+    Roll(Vec<i64>),
+
     /// Identifier representing a variable or property path
     IdentPath(Vec<String>),
 

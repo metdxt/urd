@@ -534,7 +534,7 @@ fn is_compatible(
             true
         }
 
-        TypeAnnotation::Dice => matches!(value, RuntimeValue::Dice(_, _)),
+        TypeAnnotation::Dice => matches!(value, RuntimeValue::Dice(_, _) | RuntimeValue::Roll(_)),
 
         TypeAnnotation::Label => matches!(value, RuntimeValue::Label { .. }),
 
@@ -654,7 +654,7 @@ fn is_compatible_simple(value: &RuntimeValue, annotation: &TypeAnnotation) -> bo
         TypeAnnotation::Null => matches!(value, RuntimeValue::Null),
         // Collection and complex types — best-effort accept.
         TypeAnnotation::List | TypeAnnotation::Map => true,
-        TypeAnnotation::Dice => matches!(value, RuntimeValue::Dice(_, _)),
+        TypeAnnotation::Dice => matches!(value, RuntimeValue::Dice(_, _) | RuntimeValue::Roll(_)),
         TypeAnnotation::Label => matches!(value, RuntimeValue::Label { .. }),
         TypeAnnotation::Range => matches!(value, RuntimeValue::Range { .. }),
         // Nested named type — best-effort accept.
@@ -681,6 +681,7 @@ fn runtime_value_type_name(value: &RuntimeValue) -> String {
         RuntimeValue::Label { name, .. } => format!("label '{name}'"),
         RuntimeValue::Map(_) => "map".to_owned(),
         RuntimeValue::List(_) => "list".to_owned(),
+        RuntimeValue::Roll(_) => "roll".to_owned(),
         RuntimeValue::Function { .. } => "fn".to_owned(),
         RuntimeValue::ScriptDecorator { .. } => "decorator".to_owned(),
         RuntimeValue::Range { .. } => "range".to_owned(),

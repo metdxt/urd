@@ -333,13 +333,31 @@ impl Environment {
         self.roller = Some(Arc::from(roller));
     }
 
-    /// Roll `count`d`sides` using the registered roller.
+    /// Roll `count`d`sides` using the registered roller and return the total sum.
     ///
     /// Returns `Err(`[`VmError::NotImplemented`]`)` when no roller is
     /// registered (i.e. the roller was explicitly removed or never set).
+    ///
+    /// Prefer [`Self::roll_dice_individual`] when per-die results are needed.
+    /// This method is retained as a convenience for embedders and tests.
+    #[allow(dead_code)]
     pub(crate) fn roll_dice(&self, count: u32, sides: u32) -> Result<i64, VmError> {
         match &self.roller {
             Some(r) => Ok(r.roll(count, sides)),
+            None => Err(VmError::NotImplemented(format!(
+                "dice evaluation ({}d{}) — no dice roller registered",
+                count, sides
+            ))),
+        }
+    }
+
+    /// Roll `count`d`sides` using the registered roller and return each individual die result.
+    ///
+    /// Returns `Err(`[`VmError::NotImplemented`]`)` when no roller is
+    /// registered (i.e. the roller was explicitly removed or never set).
+    pub(crate) fn roll_dice_individual(&self, count: u32, sides: u32) -> Result<Vec<i64>, VmError> {
+        match &self.roller {
+            Some(r) => Ok(r.roll_individual(count, sides)),
             None => Err(VmError::NotImplemented(format!(
                 "dice evaluation ({}d{}) — no dice roller registered",
                 count, sides
