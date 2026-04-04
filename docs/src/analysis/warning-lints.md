@@ -34,7 +34,7 @@ label ending {
 
 **Diagnostic message:**
 
-```
+```text
 Unreachable label 'orphan': no `jump`, `let-call`, or `@entry` can reach this label
 ```
 
@@ -59,7 +59,7 @@ label scene {
 
 **Diagnostic message:**
 
-```
+```text
 Empty dialogue for speaker 'narrator': the dialogue content is blank
 ```
 
@@ -89,7 +89,7 @@ label tavern {
 
 **Diagnostic message:**
 
-```
+```text
 Single-option menu: the player has no real choice (only one option)
 ```
 
@@ -122,7 +122,7 @@ label crossroads {
 
 **Diagnostic message:**
 
-```
+```text
 Duplicate menu destination: options 'Go left' and 'Go right' have identical bodies
 ```
 
@@ -150,7 +150,7 @@ label setup {
 
 **Diagnostic message:**
 
-```
+```text
 Overwritten assignment: 'gold' is assigned a value that is immediately overwritten without being read
 ```
 
@@ -176,7 +176,7 @@ label intro {
 
 **Diagnostic message:**
 
-```
+```text
 Unused variable: 'debug_mode' is declared but never read
 ```
 
@@ -218,11 +218,11 @@ label check {
 
 **Diagnostic messages:**
 
-```
+```text
 Always-dead branch: condition is always `true`, the `else` branch is never executed
 ```
 
-```
+```text
 Always-dead branch: condition is always `false`, the `then` branch is never executed
 ```
 
@@ -250,7 +250,7 @@ label intro {
 
 **Diagnostic message:**
 
-```
+```text
 Possible typo: 'narator' looks like it could be the speaker 'narrator'
 ```
 
@@ -281,7 +281,7 @@ label ending {
 
 **Diagnostic message:**
 
-```
+```text
 Undefined label 'endig' — did you mean 'ending'?
 ```
 
@@ -315,7 +315,7 @@ label pong {
 
 **Diagnostic message:**
 
-```
+```text
 Infinite dialogue loop: label 'ping' is part of a cycle with no escaping path to a terminator
 ```
 

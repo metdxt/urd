@@ -4,7 +4,7 @@ This walkthrough covers the `examples/multifile/` project — a five-file Urd sc
 
 ## Project Structure
 
-```
+```text
 examples/multifile/
 ├── main.urd          ← entry point, story spine
 ├── characters.urd    ← shared Character struct, Faction enum, speaker constants
@@ -15,7 +15,7 @@ examples/multifile/
 
 The dependency graph looks like this:
 
-```
+```text
          main.urd
         /    |    \
        /     |     \

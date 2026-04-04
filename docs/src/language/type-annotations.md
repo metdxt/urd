@@ -141,7 +141,7 @@ Two diagnostics are directly related to type annotations:
 Raised when a value is assigned to a variable whose declared type is
 incompatible:
 
-```
+```text
 error: Type mismatch for variable 'health'
    expected int, got str
    --> cave.urd:12:5
@@ -152,7 +152,7 @@ error: Type mismatch for variable 'health'
 Raised when a map literal assigned to a struct-typed variable has field errors
 (missing fields, extra fields, or field-type mismatches):
 
-```
+```text
 error: Struct mismatch for variable 'loot' (struct Item)
    missing field: 'value'
    --> items.urd:8:5

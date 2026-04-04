@@ -280,7 +280,7 @@ The second form is subscript assignment for lists and maps.
 
 Strings support inline expression interpolation via `{expr}` syntax:
 
-```
+```urd
 "You have {gold} gold pieces."
 "Hello, {player.name}! Your health is {health}."
 "Result: {value:.2}"
@@ -290,7 +290,7 @@ Format specifiers (e.g., `:.2` for two decimal places, `:04` for zero-padded) ar
 
 ### Comments
 
-```
+```urd
 # This is a line comment. Everything after # until end-of-line is ignored.
 
 ## This is a doc comment. It documents the next declaration.

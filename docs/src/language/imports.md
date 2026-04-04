@@ -214,7 +214,7 @@ with two implementations:
 The default loader resolves paths relative to the importing file's directory.
 Given this project structure:
 
-```
+```text
 project/
 ├── main.urd
 ├── tavern.urd

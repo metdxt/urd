@@ -4,7 +4,7 @@ This walkthrough covers the `examples/circular/` project — a two-file script t
 
 ## File Structure
 
-```
+```text
 examples/circular/
 ├── main.urd      ← Village of Greyhollow (entry point)
 └── tavern.urd    ← The Tarnished Flagon (tavern scenes)
@@ -12,7 +12,7 @@ examples/circular/
 
 The import relationship is circular:
 
-```
+```text
 main.urd  ──import "tavern.urd" as tavern──▶  tavern.urd
 tavern.urd ──import "main.urd"  as main  ──▶  main.urd
 ```
@@ -168,7 +168,7 @@ The `jump main.hub` sends the player back to the village square, where they can 
 
 ## The Jump Flow
 
-```
+```text
 main.start ─────────────▶ main.hub
                               │
                          (menu choice)

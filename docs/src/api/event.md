@@ -105,7 +105,7 @@ pub struct ChoiceEvent {
 
 Localization IDs are generated automatically during named compilation (`Compiler::compile_named`). The format is:
 
-```
+```text
 <file_stem>-<label>-<node_description>
 ```
 

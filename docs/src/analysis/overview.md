@@ -73,7 +73,7 @@ Suggestions are generated using two strategies:
 
 These suggestions appear in the diagnostic message:
 
-```
+```text
 warning: Undefined label 'taven' — did you mean 'tavern'?
 ```
 

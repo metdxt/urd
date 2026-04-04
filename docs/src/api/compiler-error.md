@@ -26,7 +26,7 @@ label start {
 
 **Error message:**
 
-```
+```text
 jump to unknown label `nonexistent_label`
 ```
 
@@ -54,7 +54,7 @@ label greeting {    # ← duplicate
 
 **Error message:**
 
-```
+```text
 duplicate label definition `greeting`
 ```
 
@@ -68,7 +68,7 @@ An AST node appeared at statement level where it is not permitted. This typicall
 
 **Error message:**
 
-```
+```text
 invalid statement: <description>
 ```
 
@@ -86,7 +86,7 @@ import "missing_module.urd" as missing
 
 **Error message:**
 
-```
+```text
 module load error for 'missing_module.urd': file not found
 ```
 
@@ -109,14 +109,14 @@ Common causes:
 
 A circular import was detected during module resolution.
 
-```
+```text
 main.urd  ──import "tavern.urd" as tavern──▶  tavern.urd
 tavern.urd ──import "main.urd"  as main  ──▶  main.urd   (circular!)
 ```
 
 **Error message:**
 
-```
+```text
 circular import detected for 'main.urd'
 ```
 

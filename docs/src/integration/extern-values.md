@@ -70,7 +70,7 @@ loop {
 If the script evaluates an extern variable that was never provided, the VM
 returns:
 
-```
+```rust
 VmStep::Error(VmError::ExternNotProvided("player_name".into()))
 ```
 

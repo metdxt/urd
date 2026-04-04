@@ -6,7 +6,7 @@
 
 The server is built on [tower-lsp](https://github.com/ebkalderon/tower-lsp) and communicates over **stdin/stdout** using the standard JSON-RPC protocol. It runs as a single-threaded async Tokio process — one instance per editor workspace.
 
-```
+```text
 Editor  ←──JSON-RPC over stdin/stdout──→  urd-lsp
                                             ├── Parser (chumsky)
                                             ├── IR Compiler

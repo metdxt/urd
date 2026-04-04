@@ -241,7 +241,7 @@ This is a clean pattern for scripts with multiple endings — every ending label
 
 ## Branching Structure
 
-```
+```text
 start
 ├── "Enter the cave"         → cave_entrance
 ├── "Take a torch from Zara" → cave_entrance (has_torch = true)

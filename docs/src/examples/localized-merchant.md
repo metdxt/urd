@@ -4,7 +4,7 @@ This walkthrough covers the `examples/localization/` directory — a short merch
 
 ## File Structure
 
-```
+```text
 examples/localization/
 ├── merchant.urd              ← the Urd script
 ├── README.md                 ← detailed notes on the item ID pattern

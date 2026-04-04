@@ -281,7 +281,7 @@ menu {
 
 **Diagnostic:**
 
-```
+```text
 Multiple default options: a menu can have at most one _ wildcard option
 ```
 

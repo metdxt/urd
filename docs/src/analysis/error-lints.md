@@ -20,7 +20,7 @@ let x: int = "hello"
 
 **Diagnostic:**
 
-```
+```text
 Type mismatch for 'x': expected Int, got Str
 ```
 
@@ -48,7 +48,7 @@ const bob: Suspect = :{ name: "Bob", age: "thirty" }
 
 **Diagnostic:**
 
-```
+```text
 Struct mismatch for 'bob': expected struct 'Suspect': missing field 'alibi': str; field 'age': expected Int, got Str
 ```
 
@@ -78,7 +78,7 @@ label start {
 
 **Diagnostic:**
 
-```
+```text
 Top-level assignment is not allowed; only definitions (let/const/global, enum, struct, decorator, import, label) may appear at the top level
 ```
 
@@ -110,7 +110,7 @@ label tutorial {
 
 **Diagnostic:**
 
-```
+```text
 Duplicate @entry decorator on label 'tutorial'
 ```
 
@@ -138,7 +138,7 @@ label start {
 
 **Diagnostic:**
 
-```
+```text
 Constant reassignment: 'MAX_HEALTH' is declared as `const` and cannot be reassigned
 ```
 
@@ -165,7 +165,7 @@ label stuck {
 
 **Diagnostic:**
 
-```
+```text
 Empty menu: the player can never make a choice (menu has no options)
 ```
 
@@ -196,7 +196,7 @@ label ambush {
 
 **Diagnostic:**
 
-```
+```text
 Multiple default options: a menu can have at most one _ wildcard option
 ```
 
@@ -235,7 +235,7 @@ label check {
 
 **Diagnostic:**
 
-```
+```text
 Non-exhaustive match on enum 'Status': missing variants: Detained
 ```
 
@@ -269,7 +269,7 @@ label greeting {
 
 **Diagnostic:**
 
-```
+```text
 Dead end in label 'greeting': execution path has no terminator (use `end!`, `todo!`, `return`, or `jump`)
 ```
 
@@ -305,7 +305,7 @@ struct Character {
 
 **Diagnostic:**
 
-```
+```text
 @fluent has no effect on `struct` nodes
 ```
 
@@ -339,7 +339,7 @@ label shop {
 
 **Diagnostic:**
 
-```
+```text
 invalid @id decorator: @id requires exactly one string argument
 ```
 
@@ -359,7 +359,7 @@ label shop {
 
 **Diagnostic:**
 
-```
+```text
 duplicate @id value `greeting` in the same scope
 ```
 
@@ -386,7 +386,7 @@ label start {
 
 **Diagnostic:**
 
-```
+```text
 Undefined variable 'playr_health': not declared in any visible scope — did you mean 'player_health'?
 ```
 

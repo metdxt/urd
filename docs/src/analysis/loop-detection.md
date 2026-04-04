@@ -22,7 +22,7 @@ label dangerous {
 
 The compiler will emit:
 
-```
+```text
 warning: Infinite dialogue loop: label 'dangerous' is part of a cycle with no
          escaping path to a terminator
 ```
@@ -134,7 +134,7 @@ label loop_middle {
 
 Running analysis produces two warnings:
 
-```
+```text
 warning: Infinite dialogue loop: label 'loop_start' is part of a cycle with no
          escaping path to a terminator
 warning: Infinite dialogue loop: label 'loop_middle' is part of a cycle with no
