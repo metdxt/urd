@@ -1,0 +1,33 @@
+# fizzbuzz.urd — FizzBuzz 1 to 500 benchmark
+#
+# Measures conditional branching throughput in urd.
+# Outputs "FizzBuzz" for multiples of 15, "Fizz" for 3, "Buzz" for 5,
+# and the number itself otherwise.
+#
+# Each iteration emits one dialogue line — the sheer volume of output
+# is suppressed at the shell level with > /dev/null.
+
+const narrator = :{ name: "Narrator", name_color: "white" }
+
+global i = 1
+
+@entry
+label fizzbuzz_loop {
+    if i % 15 == 0 {
+        narrator: "FizzBuzz"
+    } elif i % 3 == 0 {
+        narrator: "Fizz"
+    } elif i % 5 == 0 {
+        narrator: "Buzz"
+    } else {
+        narrator: "{i}"
+    }
+
+    i = i + 1
+
+    if i <= 500 {
+        jump fizzbuzz_loop
+    }
+
+    end!()
+}

@@ -1,0 +1,31 @@
+# fibonacci.urd — iterative Fibonacci(35) benchmark
+#
+# Measures raw arithmetic loop throughput in urd.
+# Uses the classic two-variable iteration:  (a, b) → (b, a+b)
+#
+# After 35 iterations starting from (a=0, b=1):
+#   a holds fib(35), b holds fib(36)
+#
+# Expected output:  fib(35) = 9227465
+
+const narrator = :{ name: "Narrator", name_color: "white" }
+
+global a    = 0
+global b    = 1
+global temp = 0
+global i    = 0
+
+@entry
+label fib_loop {
+    temp = a + b
+    a    = b
+    b    = temp
+    i    = i + 1
+
+    if i < 35 {
+        jump fib_loop
+    }
+
+    narrator: "fib(35) = {a}"
+    end!()
+}
