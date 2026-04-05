@@ -956,10 +956,14 @@ fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
 //  Subcommand: gen-l10n
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Compile `script_path` and write a Fluent `.ftl` stub to `output_dir`.
+/// Compile `script_path` and write Fluent `.ftl` stubs to `output_dir`.
 ///
-/// The output file is named `<script_stem>.ftl` and placed under
-/// `<output_dir>/` (defaults to `i18n/en-US/` next to the script).
+/// For single-file scripts, one `<script_stem>.ftl` is produced.  For
+/// multi-file scripts (with imports), one `.ftl` is produced **per source
+/// module** — the root module and each imported file get their own file,
+/// so shared imports are never duplicated across `.ftl` files.
+///
+/// Output defaults to `i18n/en-US/` next to the script.
 fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) {
     let graph = match build_graph(script_path) {
         Ok(g) => g,
@@ -975,9 +979,7 @@ fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) {
         .and_then(|s| s.to_str())
         .unwrap_or("script");
 
-    let ftl_content = urd::loc::ftl::generate_ftl(&graph, file_slug);
-
-    // Determine output path.
+    // Determine output directory.
     let out_dir = output_dir.map(|p| p.to_path_buf()).unwrap_or_else(|| {
         let parent = script_path
             .parent()
@@ -995,9 +997,41 @@ fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) {
         std::process::exit(1);
     }
 
-    let out_file = out_dir.join(format!("{}.ftl", file_slug));
+    // Collect the distinct source modules.  For multi-file scripts this
+    // returns one entry per source file ("" = root, "common.urd" = import);
+    // for single-file scripts the vec is empty and we fall back to emitting
+    // one monolithic .ftl.
+    let modules = urd::loc::ftl::source_modules(&graph);
 
-    if let Err(e) = std::fs::write(&out_file, &ftl_content) {
+    if modules.is_empty() {
+        // Single-file script: emit everything into one .ftl.
+        let ftl_content = urd::loc::ftl::generate_ftl(&graph, file_slug);
+        write_ftl(&out_dir, file_slug, &ftl_content);
+    } else {
+        // Multi-file script: one .ftl per source module — no duplicates.
+        for source in &modules {
+            let slug = if source.is_empty() {
+                // Root module → use the script's own stem.
+                file_slug.to_string()
+            } else {
+                // Imported module: "common.urd" → "common".
+                Path::new(source.as_str())
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(source)
+                    .to_string()
+            };
+            let ftl_content = urd::loc::ftl::generate_ftl_for_file(&graph, &slug, source);
+            write_ftl(&out_dir, &slug, &ftl_content);
+        }
+    }
+}
+
+/// Write `content` to `<dir>/<slug>.ftl`, printing a success message or
+/// exiting on I/O error.
+fn write_ftl(dir: &Path, slug: &str, content: &str) {
+    let out_file = dir.join(format!("{slug}.ftl"));
+    if let Err(e) = std::fs::write(&out_file, content) {
         eprintln!(
             "\x1b[91mError:\x1b[0m could not write '{}': {}",
             out_file.display(),
@@ -1005,7 +1039,6 @@ fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) {
         );
         std::process::exit(1);
     }
-
     eprintln!(
         "Generated Fluent file: \x1b[32m{}\x1b[0m",
         out_file.display()

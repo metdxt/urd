@@ -488,11 +488,9 @@ fn emit_all(
         for &idx in mod_labels.values() {
             // local_labels may have the root stored under both "" and its
             // filename (e.g. "main.urd"); always record the canonical "" key.
-            let canonical_path = if path == all.order.first().map(String::as_str).unwrap_or("") {
-                String::new()
-            } else {
-                path.clone()
-            };
+            let is_root = path == all.order.first().map(String::as_str).unwrap_or("")
+                || root_path.is_some_and(|rp| path.as_str() == rp);
+            let canonical_path = if is_root { String::new() } else { path.clone() };
             state
                 .graph
                 .label_sources

@@ -6,9 +6,12 @@
 //! carries a `loc_id` gets one message entry pre-filled with its
 //! source-language text.  Translators copy the file and replace the values.
 //!
-//! ## Entry point
+//! ## Entry points
 //!
-//! [`generate_ftl`] — compile a graph into a `.ftl` string.
+//! - [`generate_ftl`] — compile a graph into a `.ftl` string (all labels).
+//! - [`generate_ftl_for_file`] — like `generate_ftl`, but only entries from
+//!   one source module.
+//! - [`source_modules`] — list the distinct source-module paths in a graph.
 //!
 //! ## Lower-level helpers (also public for testing / tooling)
 //!
@@ -225,16 +228,74 @@ pub fn render_lines_ast_as_ftl(ast: &Ast) -> String {
 /// cave-start-menu_1-enter_the_cave = Enter the cave
 /// cave-start-menu_1-walk_away = Walk away
 /// ```
+/// Generate a `.ftl` stub containing all entries from the compiled graph.
+///
+/// This is the original entry point — it emits every label regardless of
+/// source module.  See [`generate_ftl_for_file`] for per-module filtering.
 pub fn generate_ftl(graph: &IrGraph, file_slug: &str) -> String {
-    // ── Cluster analysis ─────────────────────────────────────────────────────
+    generate_ftl_inner(graph, file_slug, None)
+}
+
+/// Generate a `.ftl` stub containing only the entries that belong to the
+/// specified source module.
+///
+/// `source_filter` selects which labels to include based on
+/// [`IrGraph::label_sources`]:
+/// - `""` (empty string) → only the root module's labels.
+/// - `"tavern.urd"` → only labels from that imported module.
+///
+/// When `label_sources` is empty (single-file compilation), *all* labels are
+/// included — the filter is a no-op.
+///
+/// `file_slug` is used for the FTL header comment (e.g. `"merchant"`).
+pub fn generate_ftl_for_file(graph: &IrGraph, file_slug: &str, source_filter: &str) -> String {
+    generate_ftl_inner(graph, file_slug, Some(source_filter))
+}
+
+/// Returns the distinct source-module paths from [`IrGraph::label_sources`],
+/// sorted alphabetically and deduplicated.
+///
+/// When `label_sources` is empty (single-file compilation), returns an empty
+/// vec — callers should fall back to [`generate_ftl`] in that case.
+pub fn source_modules(graph: &IrGraph) -> Vec<String> {
+    if graph.label_sources.is_empty() {
+        return Vec::new();
+    }
+    let mut modules: Vec<String> = graph.label_sources.values().cloned().collect();
+    modules.sort();
+    modules.dedup();
+    modules
+}
+
+// ─── Inner implementation ─────────────────────────────────────────────────────
+
+fn generate_ftl_inner(graph: &IrGraph, file_slug: &str, source_filter: Option<&str>) -> String {
+    // ── Reachability & cluster analysis ───────────────────────────────────────
     //
-    // compute_clusters does a BFS from each label's EnterScope node, stopped
-    // at cross-label boundaries.  node_to_cluster inverts the result so that
-    // for any NodeIndex we can ask "which label owns this node?" in O(1).
+    // For FTL generation every label's subgraph must be considered reachable —
+    // not just nodes reachable from graph.entry.  Imported-module labels may
+    // not be called from the root module yet, but their dialogue / choice
+    // entries still need localisation stubs.
     //
-    // When cluster_names is empty (single-file compilation), compute_clusters
-    // already falls back to iterating `labels` — no special handling needed.
-    let reachable = analysis::reachable_nodes(graph);
+    // We start with the standard entry-point reachable set, then extend it
+    // with a DFS from every label entry point that wasn't already covered.
+    let reachable = {
+        let mut set = analysis::reachable_nodes(graph);
+        let label_entry_nodes: Vec<NodeIndex> = if graph.cluster_names.is_empty() {
+            graph.labels.values().copied().collect()
+        } else {
+            graph.cluster_names.keys().copied().collect()
+        };
+        for entry_idx in label_entry_nodes {
+            if !set.contains(&entry_idx) {
+                let mut dfs = petgraph::visit::Dfs::new(&graph.graph, entry_idx);
+                while let Some(idx) = dfs.next(&graph.graph) {
+                    set.insert(idx);
+                }
+            }
+        }
+        set
+    };
     let clusters = analysis::compute_clusters(graph, &reachable);
     // node_to_label borrows &str from the keys of `clusters`; clusters must
     // outlive node_to_label (guaranteed by declaration order — Rust drops in
@@ -369,6 +430,32 @@ pub fn generate_ftl(graph: &IrGraph, file_slug: &str) -> String {
             .unwrap_or(usize::MAX)
     });
 
+    // ── Step 3b: optional source-file filtering ──────────────────────────────
+    //
+    // When a source_filter is provided *and* label_sources is populated
+    // (multi-file compilation), keep only labels whose entry node maps to
+    // the requested source module.
+    if let Some(filter) = source_filter
+        && !graph.label_sources.is_empty()
+    {
+        sorted_labels.retain(|label_name| {
+            let entry_idx = graph
+                .cluster_names
+                .iter()
+                .find_map(|(&idx, n)| if n == label_name { Some(idx) } else { None })
+                .or_else(|| graph.labels.get(label_name).copied());
+
+            match entry_idx {
+                Some(idx) => graph
+                    .label_sources
+                    .get(&idx)
+                    .map(|s| s.as_str() == filter)
+                    .unwrap_or(false),
+                None => false,
+            }
+        });
+    }
+
     // ── Step 4: render ────────────────────────────────────────────────────────
     let mut out = String::new();
 
@@ -431,9 +518,11 @@ pub fn generate_ftl(graph: &IrGraph, file_slug: &str) -> String {
 mod tests {
     use super::*;
     use crate::compiler::Compiler;
+    use crate::compiler::loader::{compile_recursive_with_root_path, parse_source};
     use crate::lexer::strings::{Interpolation, ParsedString, StringPart};
     use crate::parser::ast::{Ast, DeclKind, Decorator};
     use crate::runtime::value::RuntimeValue;
+    use crate::vm::loader::MemLoader;
 
     // ── Test helpers ─────────────────────────────────────────────────────────
 
@@ -733,6 +822,191 @@ mod tests {
         assert!(
             output.contains("shop-browse-menu_1-try_to_haggle = Try to haggle"),
             "plain option label must be passed through unchanged"
+        );
+    }
+
+    // ── Multi-file FTL generation tests ──────────────────────────────────────
+
+    /// Helper: builds a two-module graph where `main.urd` imports `common.urd`.
+    fn build_main_imports_common_graph() -> IrGraph {
+        let mut loader = MemLoader::new();
+        loader.add(
+            "common.urd",
+            r#"
+label greet {
+    narrator: "Hello from common!"
+}
+"#,
+        );
+
+        let main_src = r#"
+import "common.urd" as common
+
+label start {
+    narrator: "Welcome."
+    jump common.greet
+}
+"#;
+        let ast = parse_source(main_src).expect("parse main.urd");
+        compile_recursive_with_root_path(&ast, "main.urd", &loader).expect("compile")
+    }
+
+    #[test]
+    fn multi_file_generate_ftl_includes_all_modules() {
+        let graph = build_main_imports_common_graph();
+        let output = generate_ftl(&graph, "main");
+
+        assert!(
+            output.contains("main-start-line_1"),
+            "unfiltered output must include root module entry; got:\n{output}"
+        );
+        assert!(
+            output.contains("common-greet-line_1"),
+            "unfiltered output must include imported module entry; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn multi_file_generate_ftl_for_file_filters_root_only() {
+        let graph = build_main_imports_common_graph();
+        let output = generate_ftl_for_file(&graph, "main", "");
+
+        assert!(
+            output.contains("## label: start"),
+            "root-filtered output must contain root label header; got:\n{output}"
+        );
+        assert!(
+            output.contains("main-start-line_1"),
+            "root-filtered output must contain root dialogue entry; got:\n{output}"
+        );
+        assert!(
+            !output.contains("common-greet-line_1"),
+            "root-filtered output must NOT contain imported module entry; got:\n{output}"
+        );
+        assert!(
+            !output.contains("## label: common::greet"),
+            "root-filtered output must NOT contain imported label header; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn multi_file_generate_ftl_for_file_filters_import_only() {
+        let graph = build_main_imports_common_graph();
+        let output = generate_ftl_for_file(&graph, "common", "common.urd");
+
+        assert!(
+            output.contains("common-greet-line_1"),
+            "import-filtered output must contain imported module entry; got:\n{output}"
+        );
+        assert!(
+            !output.contains("main-start-line_1"),
+            "import-filtered output must NOT contain root module entry; got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn multi_file_source_modules_returns_distinct_paths() {
+        let graph = build_main_imports_common_graph();
+        let modules = source_modules(&graph);
+
+        assert_eq!(
+            modules,
+            vec!["".to_string(), "common.urd".to_string()],
+            "source_modules must return sorted distinct paths; got: {:?}",
+            modules
+        );
+    }
+
+    #[test]
+    fn single_file_generate_ftl_for_file_includes_all() {
+        let dialogue_a = Ast::dialogue(narrator(), str_line("Scene A."));
+        let dialogue_b = Ast::dialogue(narrator(), str_line("Scene B."));
+        let ast = Ast::block(vec![
+            Ast::labeled_block("scene_a".to_string(), Ast::block(vec![dialogue_a])),
+            Ast::labeled_block("scene_b".to_string(), Ast::block(vec![dialogue_b])),
+        ]);
+
+        let graph = Compiler::compile_named(&ast, "test").expect("compile failed");
+        let output = generate_ftl_for_file(&graph, "test", "");
+
+        assert!(
+            output.contains("test-scene_a-line_1 = Scene A."),
+            "single-file filter must include all labels (scene_a); got:\n{output}"
+        );
+        assert!(
+            output.contains("test-scene_b-line_1 = Scene B."),
+            "single-file filter must include all labels (scene_b); got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn diamond_import_no_duplicate_entries() {
+        let mut loader = MemLoader::new();
+        loader.add(
+            "common.urd",
+            r#"
+label shared {
+    narrator: "Shared content."
+}
+"#,
+        );
+        loader.add(
+            "a.urd",
+            r#"
+import "common.urd" as common
+
+label branch_a {
+    narrator: "Branch A."
+    jump common.shared
+}
+"#,
+        );
+        loader.add(
+            "b.urd",
+            r#"
+import "common.urd" as common
+
+label branch_b {
+    narrator: "Branch B."
+    jump common.shared
+}
+"#,
+        );
+
+        let root_src = r#"
+import "a.urd" as a
+import "b.urd" as b
+
+label hub {
+    narrator: "Hub."
+    jump a.branch_a
+}
+"#;
+        let ast = parse_source(root_src).expect("parse root");
+        let graph = compile_recursive_with_root_path(&ast, "root.urd", &loader).expect("compile");
+
+        // Root-only output must NOT contain common::shared entries.
+        let root_output = generate_ftl_for_file(&graph, "root", "");
+        assert!(
+            root_output.contains("root-hub-line_1"),
+            "root output must contain its own label; got:\n{root_output}"
+        );
+        assert!(
+            !root_output.contains("common-shared"),
+            "root output must NOT contain common module entries; got:\n{root_output}"
+        );
+
+        // Common-only output must contain the shared entry exactly once.
+        let common_output = generate_ftl_for_file(&graph, "common", "common.urd");
+        assert!(
+            common_output.contains("common-shared-line_1"),
+            "common output must contain its shared entry; got:\n{common_output}"
+        );
+        // Verify no duplication: count occurrences of the entry key.
+        let count = common_output.matches("common-shared-line_1").count();
+        assert_eq!(
+            count, 1,
+            "common-shared-line_1 must appear exactly once (no diamond duplication); found {count}"
         );
     }
 }
