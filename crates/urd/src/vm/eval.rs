@@ -711,12 +711,36 @@ pub(super) fn eval_binop(
                     Ok(RuntimeValue::Bool(contains))
                 }
                 other => Err(VmError::TypeError(format!(
-                    "`in` requires an Int on the left-hand side, got {:?}",
+                    "`in` requires an Int on the left-hand side for Range, got {:?}",
+                    other
+                ))),
+            },
+            RuntimeValue::List(items) => {
+                let found = items.iter().any(|el| values_equal(&lv, el));
+                Ok(RuntimeValue::Bool(found))
+            }
+            RuntimeValue::Map(map) => match lv {
+                RuntimeValue::Str(ref s) => {
+                    let key = s.to_string();
+                    Ok(RuntimeValue::Bool(map.contains_key(&key)))
+                }
+                other => Err(VmError::TypeError(format!(
+                    "`in` requires a Str on the left-hand side for Map, got {:?}",
+                    other
+                ))),
+            },
+            RuntimeValue::Str(ref rhs_s) => match lv {
+                RuntimeValue::Str(ref lhs_s) => {
+                    let found = rhs_s.to_string().contains(&lhs_s.to_string());
+                    Ok(RuntimeValue::Bool(found))
+                }
+                other => Err(VmError::TypeError(format!(
+                    "`in` requires a Str on the left-hand side for Str, got {:?}",
                     other
                 ))),
             },
             other => Err(VmError::TypeError(format!(
-                "`in` requires a Range on the right-hand side, got {:?}",
+                "`in` requires a Range, List, Map, or Str on the right-hand side, got {:?}",
                 other
             ))),
         },
@@ -1327,12 +1351,18 @@ fn exec_fn_stmt(
 
                     MatchPattern::Array(elems) => match &roll_individuals {
                         Some(dice) if dice.len() == elems.len() => {
-                            elems.iter().zip(dice.iter()).all(|(pat_ast, &die_val)| {
-                                matches!(
-                                    eval_expr(pat_ast, env),
-                                    Ok(RuntimeValue::Int(v)) if v == die_val
-                                )
-                            })
+                            elems
+                                .iter()
+                                .zip(dice.iter())
+                                .all(|(pat_ast_opt, &die_val)| {
+                                    match pat_ast_opt {
+                                        None => true, // wildcard — always matches
+                                        Some(pat_ast) => matches!(
+                                            eval_expr(pat_ast, env),
+                                            Ok(RuntimeValue::Int(v)) if v == die_val
+                                        ),
+                                    }
+                                })
                         }
                         _ => false,
                     },
@@ -2125,6 +2155,130 @@ mod tests {
         let ast = Ast::in_op(
             Ast::value(RuntimeValue::Int(3)),
             Ast::value(RuntimeValue::Int(5)),
+        );
+        assert!(eval_expr(&ast, &env).is_err());
+    }
+
+    // ── `in` operator: List, Map, Str tests ──────────────────────────────────
+
+    #[test]
+    fn test_in_list_found() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Int(2)),
+            Ast::list(vec![
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2)),
+                Ast::value(RuntimeValue::Int(3)),
+            ]),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(true));
+    }
+
+    #[test]
+    fn test_in_list_not_found() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Int(99)),
+            Ast::list(vec![
+                Ast::value(RuntimeValue::Int(1)),
+                Ast::value(RuntimeValue::Int(2)),
+                Ast::value(RuntimeValue::Int(3)),
+            ]),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(false));
+    }
+
+    #[test]
+    fn test_in_list_string() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Str(ParsedString::new_plain("b"))),
+            Ast::list(vec![
+                Ast::value(RuntimeValue::Str(ParsedString::new_plain("a"))),
+                Ast::value(RuntimeValue::Str(ParsedString::new_plain("b"))),
+                Ast::value(RuntimeValue::Str(ParsedString::new_plain("c"))),
+            ]),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(true));
+    }
+
+    #[test]
+    fn test_in_list_mixed_types() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Int(1)),
+            Ast::list(vec![
+                Ast::value(RuntimeValue::Str(ParsedString::new_plain("a"))),
+                Ast::value(RuntimeValue::Str(ParsedString::new_plain("b"))),
+            ]),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(false));
+    }
+
+    #[test]
+    fn test_in_map_key_found() {
+        let env = Environment::default();
+        let mut map = HashMap::new();
+        map.insert("key".to_string(), Box::new(RuntimeValue::Int(1)));
+        map.insert("other".to_string(), Box::new(RuntimeValue::Int(2)));
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Str(ParsedString::new_plain("key"))),
+            Ast::value(RuntimeValue::Map(map)),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(true));
+    }
+
+    #[test]
+    fn test_in_map_key_not_found() {
+        let env = Environment::default();
+        let mut map = HashMap::new();
+        map.insert("key".to_string(), Box::new(RuntimeValue::Int(1)));
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Str(ParsedString::new_plain("missing"))),
+            Ast::value(RuntimeValue::Map(map)),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(false));
+    }
+
+    #[test]
+    fn test_in_map_non_string_key_errors() {
+        let env = Environment::default();
+        let mut map = HashMap::new();
+        map.insert("key".to_string(), Box::new(RuntimeValue::Int(1)));
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Int(42)),
+            Ast::value(RuntimeValue::Map(map)),
+        );
+        assert!(eval_expr(&ast, &env).is_err());
+    }
+
+    #[test]
+    fn test_in_string_found() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Str(ParsedString::new_plain("sub"))),
+            Ast::value(RuntimeValue::Str(ParsedString::new_plain("substring"))),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(true));
+    }
+
+    #[test]
+    fn test_in_string_not_found() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Str(ParsedString::new_plain("xyz"))),
+            Ast::value(RuntimeValue::Str(ParsedString::new_plain("hello world"))),
+        );
+        assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(false));
+    }
+
+    #[test]
+    fn test_in_string_non_string_lhs_errors() {
+        let env = Environment::default();
+        let ast = Ast::in_op(
+            Ast::value(RuntimeValue::Int(42)),
+            Ast::value(RuntimeValue::Str(ParsedString::new_plain("hello"))),
         );
         assert!(eval_expr(&ast, &env).is_err());
     }

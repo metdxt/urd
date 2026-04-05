@@ -132,21 +132,66 @@ let inclusive = 1..=10
 
 ## Membership (`in`)
 
-The `in` operator tests whether an integer is contained within a range.
+The `in` operator tests whether a value is contained in a range, list, map, or
+string. The meaning depends on the type of the right-hand side:
+
+### Range membership — `Int in Range`
+
+Check whether an integer falls within a range:
 
 ```urd
-if gold in 10..=100 {
-    narrator: "You have a modest purse."
-}
-
 if roll in 1..=6 {
     narrator: "Valid die roll."
 }
+
+if gold in 10..=100 {
+    narrator: "You have a modest purse."
+}
 ```
 
-The right-hand side **must** be a `Range` and the left-hand side must be an
-`Int`. Using `in` with other collection types (`List`, `Map`, `String`) is a
-`TypeError`.
+The left-hand side must be an `Int` and the right-hand side must be a `Range`.
+
+### List membership — `value in List`
+
+Check whether a value is an element of a list. Comparison uses structural
+equality, so any type that supports `==` works on the left-hand side:
+
+```urd
+let inventory = ["sword", "shield", "potion"]
+
+if "sword" in inventory {
+    narrator: "You draw your sword."
+}
+
+if 42 in [10, 20, 42, 99] {
+    narrator: "Found the answer."
+}
+```
+
+### Map key membership — `Str in Map`
+
+Check whether a string key exists in a map. The left-hand side must be a `Str`:
+
+```urd
+let stats = :{ health: 100, mana: 50 }
+
+if "mana" in stats {
+    narrator: "You channel your magical energy."
+}
+```
+
+### Substring check — `Str in Str`
+
+Check whether the left string is a substring of the right string. Both sides
+must be `Str`:
+
+```urd
+let greeting = "hello, world"
+
+if "hello" in greeting {
+    narrator: "A friendly greeting."
+}
+```
 
 ---
 

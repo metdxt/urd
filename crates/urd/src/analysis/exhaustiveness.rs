@@ -1058,7 +1058,7 @@ mod tests {
             MatchPattern::Array(
                 values
                     .into_iter()
-                    .map(|k| Ast::value(RuntimeValue::Int(k)))
+                    .map(|k| Some(Ast::value(RuntimeValue::Int(k))))
                     .collect(),
             ),
             body,

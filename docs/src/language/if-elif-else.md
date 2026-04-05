@@ -78,18 +78,37 @@ if not (gold > 100 and reputation > 50) {
 
 ### The `in` Operator
 
-Test whether an integer falls within a range:
+The `in` operator tests membership across several types:
 
 ```urd
+# Range membership — is the roll within bounds?
 let roll = 1d20
 
 if roll in 10..=20 {
     narrator: "A solid roll — you succeed!"
 }
-```
 
-The `in` operator works **only** with ranges (`Int in Range`). It does not
-support lists, maps, or strings.
+# List membership — is the value an element of the list?
+let inventory = ["sword", "shield", "potion"]
+
+if "sword" in inventory {
+    narrator: "You draw your sword!"
+}
+
+# Map key membership — does the key exist?
+let stats = :{ health: 100, mana: 50 }
+
+if "mana" in stats {
+    narrator: "You channel your magical energy."
+}
+
+# Substring check — is one string inside another?
+let greeting = "Hello, adventurer!"
+
+if "adventurer" in greeting {
+    narrator: "Someone is speaking to you."
+}
+```
 
 ### Function Calls
 

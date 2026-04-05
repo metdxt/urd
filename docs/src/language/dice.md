@@ -137,9 +137,26 @@ match roll {
 ```
 
 Array patterns match against the individual die results in order. Each element
-in the array must be an integer literal — wildcards (`_`) are **not** valid
-inside array brackets. Use the top-level `_` arm as the default catch-all for
-any combination not explicitly listed.
+in the array can be an integer literal or a wildcard (`_`). A wildcard in an
+element position matches any value for that die, while the remaining positions
+still require an exact match:
+
+- `[1, _]` — first die is 1, second can be anything
+- `[_, 6]` — first die is anything, second must be 6
+- `[_, _]` — matches any 2-element roll
+
+This lets you write patterns like "at least one six" without enumerating every
+possible pairing:
+
+```urd
+match 2d6 {
+    [1, 1] { narrator: "Snake eyes!" }
+    [6, 6] { narrator: "Double sixes!" }
+    [_, 6] { narrator: "At least one six (second die)." }
+    [6, _] { narrator: "At least one six (first die)." }
+    _      { narrator: "Something else." }
+}
+```
 
 > **Note:** When array patterns are present, the compiler requires a wildcard
 > `_` arm because exhaustiveness analysis over individual die combinations is
@@ -239,6 +256,6 @@ details.
 - Count and sides capped at 255 each
 - Dice literals are **immediately evaluated** into `Roll(Vec<i64>)` at runtime — there is no `Dice` runtime type
 - `match` with range patterns for sum-based branching
-- `match` with array patterns (`[1, 1]`, `[6, 6]`) for individual die inspection
+- `match` with array patterns (`[1, 1]`, `[_, 6]`) for individual die inspection — wildcards (`_`) are supported in element positions
 - Pluggable `DiceRoller` trait enables deterministic testing
 - First-class language support — no imports or libraries needed

@@ -857,7 +857,10 @@ fn match_parser<'tok, I: UrdInput<'tok>>(
             binding,
         });
 
-    let array_pattern = select! { Token::IntLit(i) => Ast::value(RuntimeValue::Int(i)) }
+    let array_element = select! { Token::IntLit(i) => Some(Ast::value(RuntimeValue::Int(i))) }
+        .or(just(Token::Wildcard).to(None));
+
+    let array_pattern = array_element
         .separated_by(just(Token::Comma))
         .at_least(1)
         .allow_trailing()
@@ -1739,10 +1742,11 @@ label start {
                 assert_eq!(arms.len(), 1);
                 if let MatchPattern::Array(elems) = &arms[0].pattern {
                     assert_eq!(elems.len(), 1, "expected 1 array element");
+                    let elem = elems[0].as_ref().expect("expected Some element");
                     assert!(
-                        matches!(elems[0].content(), AstContent::Value(RuntimeValue::Int(6))),
+                        matches!(elem.content(), AstContent::Value(RuntimeValue::Int(6))),
                         "expected Int(6), got {:?}",
-                        elems[0].content()
+                        elem.content()
                     );
                 } else {
                     panic!("expected Array pattern, got {:?}", arms[0].pattern);
@@ -1771,15 +1775,17 @@ label start {
                 assert_eq!(arms.len(), 1);
                 if let MatchPattern::Array(elems) = &arms[0].pattern {
                     assert_eq!(elems.len(), 2, "expected 2 array elements");
+                    let e0 = elems[0].as_ref().expect("expected Some element");
                     assert!(
-                        matches!(elems[0].content(), AstContent::Value(RuntimeValue::Int(1))),
+                        matches!(e0.content(), AstContent::Value(RuntimeValue::Int(1))),
                         "expected Int(1), got {:?}",
-                        elems[0].content()
+                        e0.content()
                     );
+                    let e1 = elems[1].as_ref().expect("expected Some element");
                     assert!(
-                        matches!(elems[1].content(), AstContent::Value(RuntimeValue::Int(20))),
+                        matches!(e1.content(), AstContent::Value(RuntimeValue::Int(20))),
                         "expected Int(20), got {:?}",
-                        elems[1].content()
+                        e1.content()
                     );
                 } else {
                     panic!("expected Array pattern, got {:?}", arms[0].pattern);
@@ -1866,7 +1872,91 @@ label start {
             parser::ast::{Ast, MatchPattern},
             runtime::value::RuntimeValue,
         };
-        let pattern = MatchPattern::Array(vec![Ast::value(RuntimeValue::Int(5))]);
+        let pattern = MatchPattern::Array(vec![Some(Ast::value(RuntimeValue::Int(5)))]);
         assert_eq!(pattern.to_string(), "[5]");
+    }
+
+    /// `[ 1, _ ]` parses to `MatchPattern::Array` with `Some(Int(1))` and `None`.
+    #[test]
+    fn test_match_array_wildcard_parses() {
+        use crate::{parser::ast::MatchPattern, runtime::value::RuntimeValue};
+        let result = parse_test!(
+            code_block(),
+            "{\n  match dice {\n    [ 1, _ ] { end! }\n  }\n}"
+        );
+        assert!(result.is_ok(), "should parse: {:?}", result);
+        let ast = result.unwrap();
+        if let AstContent::Block(stmts) = ast.content() {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::Match { arms, .. } = stmts[0].content() {
+                assert_eq!(arms.len(), 1);
+                if let MatchPattern::Array(elems) = &arms[0].pattern {
+                    assert_eq!(elems.len(), 2, "expected 2 array elements");
+                    let e0 = elems[0].as_ref().expect("expected Some for first element");
+                    assert!(
+                        matches!(e0.content(), AstContent::Value(RuntimeValue::Int(1))),
+                        "expected Int(1), got {:?}",
+                        e0.content()
+                    );
+                    assert!(
+                        elems[1].is_none(),
+                        "expected None (wildcard) for second element, got {:?}",
+                        elems[1]
+                    );
+                } else {
+                    panic!("expected Array pattern, got {:?}", arms[0].pattern);
+                }
+            } else {
+                panic!("expected Match, got {:?}", stmts[0].content());
+            }
+        } else {
+            panic!("expected Block, got {:?}", ast.content());
+        }
+    }
+
+    /// `[ _, _ ]` parses to `MatchPattern::Array` with two `None` elements.
+    #[test]
+    fn test_match_array_all_wildcards_parses() {
+        use crate::parser::ast::MatchPattern;
+        let result = parse_test!(
+            code_block(),
+            "{\n  match dice {\n    [ _, _ ] { end! }\n  }\n}"
+        );
+        assert!(result.is_ok(), "should parse: {:?}", result);
+        let ast = result.unwrap();
+        if let AstContent::Block(stmts) = ast.content() {
+            assert_eq!(stmts.len(), 1);
+            if let AstContent::Match { arms, .. } = stmts[0].content() {
+                assert_eq!(arms.len(), 1);
+                if let MatchPattern::Array(elems) = &arms[0].pattern {
+                    assert_eq!(elems.len(), 2, "expected 2 array elements");
+                    assert!(
+                        elems[0].is_none(),
+                        "expected None (wildcard) for first element"
+                    );
+                    assert!(
+                        elems[1].is_none(),
+                        "expected None (wildcard) for second element"
+                    );
+                } else {
+                    panic!("expected Array pattern, got {:?}", arms[0].pattern);
+                }
+            } else {
+                panic!("expected Match, got {:?}", stmts[0].content());
+            }
+        } else {
+            panic!("expected Block, got {:?}", ast.content());
+        }
+    }
+
+    /// `MatchPattern::Array` with wildcards displays correctly.
+    #[test]
+    fn test_match_array_wildcard_display() {
+        use crate::{
+            parser::ast::{Ast, MatchPattern},
+            runtime::value::RuntimeValue,
+        };
+        let pattern = MatchPattern::Array(vec![Some(Ast::value(RuntimeValue::Int(1))), None]);
+        assert_eq!(pattern.to_string(), "[1, _]");
     }
 }

@@ -265,7 +265,7 @@ pub enum MatchPattern {
     /// Requires the scrutinee to evaluate to a [`RuntimeValue::Roll`] with
     /// the **same number of elements** as the pattern array.  Each element
     /// is compared in order against the corresponding die result.
-    Array(Vec<Ast>),
+    Array(Vec<Option<Ast>>),
 }
 
 impl std::fmt::Display for MatchPattern {
@@ -308,9 +308,12 @@ impl std::fmt::Display for MatchPattern {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    match elem.content() {
-                        AstContent::Value(RuntimeValue::Int(v)) => write!(f, "{v}")?,
-                        _ => write!(f, "_")?,
+                    match elem {
+                        None => write!(f, "_")?,
+                        Some(ast) => match ast.content() {
+                            AstContent::Value(RuntimeValue::Int(v)) => write!(f, "{v}")?,
+                            _ => write!(f, "_")?,
+                        },
                     }
                 }
                 write!(f, "]")
@@ -1145,8 +1148,14 @@ impl Ast {
             AstContent::Match { scrutinee, arms } => {
                 let mut c = vec![scrutinee.as_ref()];
                 for arm in arms {
-                    if let MatchPattern::Value(v) = &arm.pattern {
-                        c.push(v);
+                    match &arm.pattern {
+                        MatchPattern::Value(v) => c.push(v),
+                        MatchPattern::Array(elems) => {
+                            for ast in elems.iter().flatten() {
+                                c.push(ast);
+                            }
+                        }
+                        _ => {}
                     }
                     c.push(&arm.body);
                 }

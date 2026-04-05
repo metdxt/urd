@@ -242,11 +242,25 @@ import Item as GameItem from "items.urd"
 | `and` | Logical AND (short-circuiting) | `if alive and healthy { ... }` |
 | `or` | Logical OR (short-circuiting) | `if has_key or has_lockpick { ... }` |
 | `not` | Logical NOT (unary) | `if not game_over { ... }` |
-| `in` | Range membership test (`Int in Range`) | `if 5 in 1..10 { ... }` |
+| `in` | Membership test (Range, List, Map, String) | `if 5 in 1..10 { ... }` |
 
 The `and`, `or`, and `not` operators are equivalent to their symbolic counterparts (`&&`, `||`, `!`) but read more naturally in dialogue-heavy scripts.
 
-> **Note:** The `in` operator **only** works with ranges (`Int in Range`). It does not support lists, maps, or strings.
+The `in` operator supports four right-hand side types:
+
+| Expression | Meaning | LHS Type | RHS Type |
+|------------|---------|----------|----------|
+| `x in 1..10` | Range membership | `Int` | `Range` |
+| `x in list` | List element check | any | `List` |
+| `key in map` | Map key check | `Str` | `Map` |
+| `sub in str` | Substring check | `Str` | `Str` |
+
+```urd
+if roll in 1..=6 { narrator: "Valid roll." }
+if "sword" in inventory { narrator: "You are armed." }
+if "hp" in stats { narrator: "HP is tracked." }
+if "hello" in greeting { narrator: "A friendly message." }
+```
 
 ---
 
@@ -349,7 +363,7 @@ label future_content {
 | `import` | Import | File/symbol import |
 | `from` | Import | Import source |
 | `as` | Import | Import alias |
-| `in` | Operator | Membership/iteration |
+| `in` | Operator | Membership test (Range, List, Map, String) |
 | `_` | Pattern | Wildcard pattern (match arms & menu default) |
 | `and` | Operator | Logical AND |
 | `or` | Operator | Logical OR |

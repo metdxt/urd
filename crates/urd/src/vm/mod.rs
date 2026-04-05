@@ -590,12 +590,15 @@ impl Vm {
                             MatchPattern::Array(elems) => {
                                 let ok = match &roll_individuals {
                                     Some(dice) if dice.len() == elems.len() => {
-                                        elems.iter().zip(dice.iter()).all(|(pat_ast, &die_val)| {
-                                            matches!(
-                                                eval_expr(pat_ast, &state.env),
-                                                Ok(RuntimeValue::Int(v)) if v == die_val
-                                            )
-                                        })
+                                        elems.iter().zip(dice.iter()).all(
+                                            |(pat_ast_opt, &die_val)| match pat_ast_opt {
+                                                None => true, // wildcard — always matches
+                                                Some(pat_ast) => matches!(
+                                                    eval_expr(pat_ast, &state.env),
+                                                    Ok(RuntimeValue::Int(v)) if v == die_val
+                                                ),
+                                            },
+                                        )
                                     }
                                     _ => false,
                                 };
@@ -3365,7 +3368,7 @@ label beta {
     fn test_match_array_single_die_matches() {
         let scrutinee = Ast::value(RuntimeValue::Dice(1, 6));
         let array_arm = MatchArm::new(
-            MatchPattern::Array(vec![Ast::value(RuntimeValue::Int(6))]),
+            MatchPattern::Array(vec![Some(Ast::value(RuntimeValue::Int(6)))]),
             Ast::block(vec![dialogue_node("narrator", "max")]),
         );
         let wild_arm = MatchArm::new(
@@ -3386,7 +3389,7 @@ label beta {
     fn test_match_array_single_die_no_match() {
         let scrutinee = Ast::value(RuntimeValue::Dice(1, 6));
         let array_arm = MatchArm::new(
-            MatchPattern::Array(vec![Ast::value(RuntimeValue::Int(6))]),
+            MatchPattern::Array(vec![Some(Ast::value(RuntimeValue::Int(6)))]),
             Ast::block(vec![dialogue_node("narrator", "max")]),
         );
         let wild_arm = MatchArm::new(
@@ -3408,8 +3411,8 @@ label beta {
         let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
         let array_arm = MatchArm::new(
             MatchPattern::Array(vec![
-                Ast::value(RuntimeValue::Int(1)),
-                Ast::value(RuntimeValue::Int(6)),
+                Some(Ast::value(RuntimeValue::Int(1))),
+                Some(Ast::value(RuntimeValue::Int(6))),
             ]),
             Ast::block(vec![dialogue_node("narrator", "snake+six")]),
         );
@@ -3433,8 +3436,8 @@ label beta {
         let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
         let array_arm = MatchArm::new(
             MatchPattern::Array(vec![
-                Ast::value(RuntimeValue::Int(1)),
-                Ast::value(RuntimeValue::Int(6)),
+                Some(Ast::value(RuntimeValue::Int(1))),
+                Some(Ast::value(RuntimeValue::Int(6))),
             ]),
             Ast::block(vec![dialogue_node("narrator", "one then six")]),
         );
@@ -3447,6 +3450,90 @@ label beta {
         let mut vm = build_vm_with_roller(ast, StubRoller(vec![6, 1]));
 
         expect_dialogue_line(&mut vm, "wrong order");
+    }
+
+    /// A wildcard element in an `Array` pattern matches any die value at that position.
+    ///
+    /// `2d6` rolls `[1, 6]`, arm `[1, _]` → first matches, second is wildcard → fires.
+    #[test]
+    fn test_match_array_wildcard_element_matches() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let array_arm = MatchArm::new(
+            MatchPattern::Array(vec![Some(Ast::value(RuntimeValue::Int(1))), None]),
+            Ast::block(vec![dialogue_node("narrator", "one then any")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "other")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![array_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![1, 6]));
+
+        expect_dialogue_line(&mut vm, "one then any");
+    }
+
+    /// Wildcard element still matches when the concrete die value differs.
+    ///
+    /// `2d6` rolls `[1, 3]`, arm `[1, _]` → first matches, second is wildcard → fires.
+    #[test]
+    fn test_match_array_wildcard_element_matches_any_value() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let array_arm = MatchArm::new(
+            MatchPattern::Array(vec![Some(Ast::value(RuntimeValue::Int(1))), None]),
+            Ast::block(vec![dialogue_node("narrator", "one then any")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "other")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![array_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![1, 3]));
+
+        expect_dialogue_line(&mut vm, "one then any");
+    }
+
+    /// A concrete element still rejects a mismatch even when wildcards are present.
+    ///
+    /// `2d6` rolls `[2, 6]`, arm `[1, _]` → die[0]=2 ≠ pat[0]=1 → no match → wildcard.
+    #[test]
+    fn test_match_array_wildcard_element_rejects_mismatch() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let array_arm = MatchArm::new(
+            MatchPattern::Array(vec![Some(Ast::value(RuntimeValue::Int(1))), None]),
+            Ast::block(vec![dialogue_node("narrator", "one then any")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "not one")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![array_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![2, 6]));
+
+        expect_dialogue_line(&mut vm, "not one");
+    }
+
+    /// An all-wildcard `Array` pattern `[_, _]` matches any 2-die roll.
+    ///
+    /// `2d6` rolls `[4, 2]`, arm `[_, _]` → both wildcards → fires.
+    #[test]
+    fn test_match_array_all_wildcards_matches() {
+        let scrutinee = Ast::value(RuntimeValue::Dice(2, 6));
+        let array_arm = MatchArm::new(
+            MatchPattern::Array(vec![None, None]),
+            Ast::block(vec![dialogue_node("narrator", "any pair")]),
+        );
+        let wild_arm = MatchArm::new(
+            MatchPattern::Wildcard,
+            Ast::block(vec![dialogue_node("narrator", "fallback")]),
+        );
+        let match_stmt = Ast::match_stmt(scrutinee, vec![array_arm, wild_arm]);
+        let ast = Ast::block(vec![match_stmt]);
+        let mut vm = build_vm_with_roller(ast, StubRoller(vec![4, 2]));
+
+        expect_dialogue_line(&mut vm, "any pair");
     }
 
     // ── Wildcard / default menu option tests ─────────────────────────────────

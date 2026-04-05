@@ -192,8 +192,9 @@ the arm body.
 When you care about **individual die results** (not just the sum), use array
 patterns. Array patterns match element-by-element against each die in a roll.
 
-**Important:** Array pattern elements must be integer literals. Wildcards (`_`)
-are not valid inside array brackets.
+Each element in an array pattern can be either an **integer literal** or a
+**wildcard** (`_`). A wildcard in an element position matches any value for that
+die, while integer literals require an exact match.
 
 ```urd
 match 2d6 {
@@ -203,11 +204,14 @@ match 2d6 {
     [6, 6] {
         narrator: "Boxcars! Legendary success."
     }
-    [1, 6] {
-        narrator: "A one and a six — chaos and fortune."
+    [_, 6] {
+        narrator: "At least one six (second die)."
     }
-    [3, 3] {
-        narrator: "Double threes — an omen of balance."
+    [6, _] {
+        narrator: "At least one six (first die)."
+    }
+    [_, _] {
+        narrator: "Catch-all for any 2-die combination."
     }
     _ {
         narrator: "A normal roll."
@@ -218,8 +222,9 @@ match 2d6 {
 The array length must match the dice count — `2d6` requires two-element arrays,
 `3d8` requires three-element arrays, and so on.
 
-Since array patterns can only contain integer literals, you must use the
-wildcard `_` arm (outside the array) to catch everything else.
+Use `_` inside an array to match a single element position; use `_` as a
+top-level arm to catch any remaining values (including sums or combinations not
+covered by earlier patterns).
 
 ---
 
@@ -379,8 +384,9 @@ literals or array patterns) above broader ones (like ranges or `_`).
 | Exclusive range | `6..12` | Integers 6 through 11 |
 | Range with binding | `1..=20 as roll` | Integers 1–20, captured as `roll` |
 | Array (dice) | `[1, 6]` | First die is 1, second is 6 |
+| Array with wildcard | `[_, 6]` | First die is anything, second is 6 |
 | Wildcard | `_` | Any value (catch-all) |
 
 > **Remember:** Arms use `pattern { body }` syntax — no `=>` arrow. Bindings
-> (`as name`) are only available on range patterns. Array patterns accept only
-> integer literals (no wildcards inside brackets).
+> (`as name`) are only available on range patterns. Array pattern elements can
+> be integer literals or wildcards (`_`) to match any value in that position.

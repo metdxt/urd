@@ -85,6 +85,27 @@ narrator: "Use \{braces\} for interpolation in Urd."
 # → "Use {braces} for interpolation in Urd."
 ```
 
+## Substring Checking with `in`
+
+The `in` operator can test whether one string is a substring of another:
+
+```urd
+let greeting = "hello, world"
+
+if "hello" in greeting {
+    narrator: "The greeting starts friendly."
+}
+
+if "world" in greeting {
+    narrator: "The world is mentioned."
+}
+```
+
+Both the left-hand side and right-hand side must be `Str`. This is equivalent
+to calling `.contains()`, but reads more naturally in conditions. For more
+details on the `in` operator's full capabilities, see
+[Operators](./operators.md#membership-in).
+
 ## String Methods
 
 Urd strings come with a set of built-in methods. All methods are **pure** — they return new values and never mutate the receiver. Here are a few commonly used ones:

@@ -215,7 +215,17 @@ loss). Comparing incompatible types is a `TypeError`.
 
 ### `in` (Membership)
 
-Tests whether an integer is contained in a range.
+Tests whether a value is contained in a collection or range. The behaviour
+depends on the type of the right-hand side:
+
+| LHS type | RHS type | Semantics |
+|----------|----------|-----------|
+| `Int` | `Range` | Checks if the integer falls within the range bounds |
+| any | `List` | Checks if the value is an element of the list (structural equality) |
+| `Str` | `Map` | Checks if the string is a key in the map |
+| `Str` | `Str` | Checks if the left string is a substring of the right string |
+
+#### Range membership
 
 ```urd
 if roll in 1..=6 {
@@ -223,9 +233,39 @@ if roll in 1..=6 {
 }
 ```
 
-The `in` operator **only** works with a `Range` on the right-hand side and an
-`Int` on the left-hand side. Using `in` with a `List`, `Map`, or `String` on
-the right-hand side is a `TypeError`.
+The left-hand side must be `Int` and the right-hand side must be `Range`.
+
+#### List membership
+
+```urd
+if "sword" in inventory {
+    narrator: "You draw your sword."
+}
+```
+
+The left-hand side can be any type. Elements are compared using structural
+equality.
+
+#### Map key membership
+
+```urd
+if "hp" in stats {
+    narrator: "HP is tracked."
+}
+```
+
+The left-hand side must be `Str` (map keys are always strings).
+
+#### Substring check
+
+```urd
+if "hello" in greeting {
+    narrator: "What a friendly message!"
+}
+```
+
+Both sides must be `Str`. Returns `true` if the left string appears anywhere
+inside the right string.
 
 ---
 

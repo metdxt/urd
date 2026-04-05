@@ -146,9 +146,13 @@ For the complete list of map methods, see the [Built-in Methods Reference](../re
 
 ## Membership Testing
 
-### The `in` Operator (Ranges Only)
+### The `in` Operator
 
-The `in` operator tests whether an integer falls within a range. It does **not** work with lists or maps:
+The `in` operator tests membership across several types: ranges, lists, maps, and strings.
+
+#### Range Membership (`Int in Range`)
+
+Check whether an integer falls within a range:
 
 ```urd
 let level = 5
@@ -162,31 +166,47 @@ if level in 1..=5 {
 }
 ```
 
-### Lists — Use `.contains()`
+#### List Membership (`value in List`)
 
-To check whether a value exists in a list, use the `.contains()` method:
+Check whether a value is an element of a list. Comparison uses structural equality, so any value type is supported on the left-hand side:
 
 ```urd
 let inventory = ["sword", "shield", "potion"]
 
-if inventory.contains("sword") {
+if "sword" in inventory {
     narrator: "You draw your sword."
 }
 
-if not inventory.contains("bow") {
+if not ("bow" in inventory) {
     narrator: "You don't have a ranged weapon."
 }
 ```
 
-### Maps — Use `.has()`
+#### Map Key Membership (`Str in Map`)
 
-To check whether a key exists in a map, use the `.has()` method:
+Check whether a string key exists in a map. The left-hand side must be a `Str`:
 
 ```urd
 let stats = :{ health: 100, mana: 50 }
 
-if stats.has("mana") {
+if "mana" in stats {
     narrator: "You channel your magical energy."
+}
+```
+
+### Method Alternatives
+
+The `.contains()` and `.has()` methods still work and may be preferred in some contexts:
+
+```urd
+# Equivalent to: "shield" in inventory
+if inventory.contains("shield") {
+    narrator: "Your shield is ready."
+}
+
+# Equivalent to: "mana" in stats
+if stats.has("mana") {
+    narrator: "You have mana."
 }
 ```
 
@@ -247,6 +267,8 @@ narrator: "Active quests: {quest_log["active"].len()}"
 | `map.key` | Dot access (map) |
 | `list[i] = val` | Subscript assign (list) |
 | `map["key"] = val` | Subscript assign (map) |
-| `n in range` | Range membership (`Int` on the left, `Range` on the right) |
-| `list.contains(val)` | List membership test |
-| `map.has(key)` | Map key existence test |
+| `n in range` | Range membership (`Int in Range`) |
+| `val in list` | List membership (`value in List`) |
+| `key in map` | Map key membership (`Str in Map`) |
+| `list.contains(val)` | List membership test (method form) |
+| `map.has(key)` | Map key existence test (method form) |
