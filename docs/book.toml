@@ -17,7 +17,7 @@ git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/metdxt/urd/edit/main/docs/{path}"
 site-url = "/urd/"
 no-section-label = false
-additional-js = ["highlight-urd.js"]
+additional-js = ["highlight-urd.js", "highlight-ftl.js"]
 
 [output.html.fold]
 enable = true
