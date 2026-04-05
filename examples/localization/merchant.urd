@@ -1,82 +1,29 @@
-# merchant.urd — Localization showcase for urd
+# merchant.urd — Merchant stall (imported by bazaar.urd)
 #
-# Features demonstrated:
-#   @fluent                  injects a global into the Fluent context for every message
-#   @fluent("alias")         renames a variable in the FTL files (urd: item → $item)
-#   @fluent let (scoped)     a label-local binding, visible only in its label's messages
-#   string interpolation     {gold} / {price} in urd strings are also auto-injected
-#   item ID pattern          pass slugs ("health_potion"), never raw display strings;
-#                            each FTL locale maps the ID to its grammatically correct form
+# This file contains the shop interaction labels: browse, haggle, and buy.
+# It is imported by bazaar.urd and does NOT run standalone.
 #
-# Workflow:
-#   # 1. Generate the FTL stub (source-language scaffold for translators):
-#   quest gen-l10n examples/localization/merchant.urd \
-#         --output examples/localization/i18n/en-US/
+# Because bazaar.urd is the entry point, `quest gen-l10n bazaar.urd` will
+# produce a separate merchant.ftl containing only the labels defined here —
+# no duplication with bazaar.ftl.
 #
-#   # 2. Translate: copy i18n/en-US/merchant.ftl → i18n/pl-PL/merchant.ftl, edit.
-#
-#   # 3. Run with localization (auto-loads i18n/en-US/merchant.ftl if present):
-#   quest run examples/localization/merchant.urd
+# Circular import: we import bazaar.urd back so we can:
+#   - use narrator/elara as speakers without redeclaring them
+#   - reference the shared globals (gold, price, has_potion, haggled)
+#   - jump bazaar.farewell to exit the shop
 
-# ── Characters ────────────────────────────────────────────────────────────────
+import "bazaar.urd" as bazaar
+import (narrator, elara, gold, price, has_potion, haggled) from "bazaar.urd"
 
-const narrator = :{ name: "Narrator",  name_color: "white"  }
-const elara    = :{ name: "Elara",     name_color: "yellow" }
-
-# ── Global state ──────────────────────────────────────────────────────────────
-
-# @fluent injects these into the Fluent context for every message in this script.
-# Translators can use $gold for pluralization ("1 gold coin" vs "50 gold coins"),
-# use $has_potion for conditional endings, and $price for dynamic item costs —
-# all without changing a single line of urd code.
-@fluent
-global gold       = 50
-@fluent
-global price      = 30
-@fluent
-global has_potion = false
-
-# Internal bookkeeping — deliberately NOT @fluent; translators do not need it.
-global haggled = false
-
-# ── Story ─────────────────────────────────────────────────────────────────────
-
-@entry
-label start {
-    narrator: {
-        "You step into the Wandering Bazaar."
-        "Canvas stalls stretch in every direction, lit by swaying lanterns."
-    }
-
-    elara: {
-        "Welcome! I am Elara, purveyor of fine curiosities."
-        "Might I interest you in a Health Potion today?"
-    }
-
-    menu {
-        "Browse the wares" {
-            jump browse
-        }
-        "Ask about the bazaar" {
-            elara: {
-                "The Wandering Bazaar follows the ancient trade routes."
-                "We appear where weary travelers need us most."
-            }
-            jump browse
-        }
-        "Walk away" {
-            jump farewell
-        }
-    }
-}
+# ── Browse ────────────────────────────────────────────────────────────────────
 
 label browse {
     # ── Item ID — pass a slug, NEVER a raw display string. ───────────────────
     # The FTL selector in each locale maps this ID to the grammatically correct
-    # form for that language.  Polish needs "mikstura zdrowia" (nominative) in
-    # "Oto: X" but "miksturę zdrowia" (accusative) in "Kup X za…" — the same
-    # slug produces different surface forms depending on sentence position.
-    # Adding a new item only requires updating the .ftl files; urd stays the same.
+    # form for that language.  Polish needs "mikstura zdrowia" (nominative) vs
+    # "miksturę zdrowia" (accusative); Russian needs "зелье здоровья" (nom.)
+    # vs "зелья здоровья" (gen.) — the same slug produces different surface
+    # forms depending on sentence position.
     #
     # @fluent("item") renames the urd variable to $item in the FTL context.
     # This binding is scope-bound: it lives only while browse is on the stack.
@@ -95,10 +42,12 @@ label browse {
             jump haggle
         }
         "Never mind" {
-            jump farewell
+            jump bazaar.farewell
         }
     }
 }
+
+# ── Haggle ────────────────────────────────────────────────────────────────────
 
 label haggle {
     haggled = true
@@ -115,34 +64,21 @@ label haggle {
         }
         "Too rich for my blood" {
             elara: "Another time, friend. Safe roads to you."
-            jump farewell
+            jump bazaar.farewell
         }
     }
 }
 
+# ── Buy ───────────────────────────────────────────────────────────────────────
+
 label buy {
     if gold >= price {
-        gold      = gold - price
+        gold       = gold - price
         has_potion = true
         elara: "Splendid! The potion is yours. You now have {gold} gold."
-        jump farewell
+        jump bazaar.farewell
     } else {
         elara: "You only have {gold} gold — not quite {price}. Come back when fortune smiles."
-        jump farewell
+        jump bazaar.farewell
     }
-}
-
-label farewell {
-    if has_potion {
-        narrator: "You leave with a potion in your pack and {gold} gold."
-        elara: "That potion has saved many a life. May it save yours too."
-    } else {
-        narrator: "You leave the Wandering Bazaar with {gold} gold and your curiosity intact."
-        elara: "Return whenever you need something. I will be here."
-    }
-    jump _end
-}
-
-label _end {
-    end!()
 }

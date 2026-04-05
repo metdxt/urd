@@ -2,24 +2,7 @@
 ### Run `quest gen-l10n merchant.urd` to regenerate.
 ### Source: merchant.urd
 
-## label: start
-# @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold)
-
-merchant-start-menu_1-line_1 = The Wandering Bazaar follows the ancient trade routes.
-    We appear where weary travelers need us most.
-
-# menu: merchant-start-menu_1
-merchant-start-menu_1-browse_the_wares = Browse the wares
-merchant-start-menu_1-ask_about_the_bazaar = Ask about the bazaar
-merchant-start-menu_1-walk_away = Walk away
-
-merchant-start-line_2 = Welcome! I am Elara, purveyor of fine curiosities.
-    Might I interest you in a Health Potion today?
-
-merchant-start-line_1 = You step into the Wandering Bazaar.
-    Canvas stalls stretch in every direction, lit by swaying lanterns.
-
-## label: browse
+## label: merchant::browse
 # @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold), $item (urd: item)
 
 # menu: merchant-browse-menu_1
@@ -30,7 +13,7 @@ merchant-browse-menu_1-never_mind = Never mind
 # interpolation: $price
 merchant-browse-line_1 = Behold: the Health Potion! I ask { $price } gold — a true bargain.
 
-## label: haggle
+## label: merchant::haggle
 # @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold)
 
 merchant-haggle-menu_1-line_1 = Another time, friend. Safe roads to you.
@@ -42,7 +25,7 @@ merchant-haggle-menu_1-too_rich_for_my_blood = Too rich for my blood
 merchant-haggle-line_1 = You drive a hard bargain.
     Twenty-five gold — that is my absolute lowest. Take it or leave it.
 
-## label: buy
+## label: merchant::buy
 # @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold)
 
 # interpolation: $gold
@@ -50,20 +33,4 @@ merchant-buy-if_1-line_1 = Splendid! The potion is yours. You now have { $gold }
 
 # interpolation: $gold, $price
 merchant-buy-if_1-line_2 = You only have { $gold } gold — not quite { $price }. Come back when fortune smiles.
-
-## label: farewell
-# @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold)
-
-merchant-farewell-if_1-line_2 = That potion has saved many a life. May it save yours too.
-
-# interpolation: $gold
-merchant-farewell-if_1-line_1 = You leave with a potion in your pack and { $gold } gold.
-
-merchant-farewell-if_1-line_4 = Return whenever you need something. I will be here.
-
-# interpolation: $gold
-merchant-farewell-if_1-line_3 = You leave the Wandering Bazaar with { $gold } gold and your curiosity intact.
-
-## label: _end
-# @fluent variables: $has_potion (urd: has_potion), $price (urd: price), $gold (urd: gold)
 

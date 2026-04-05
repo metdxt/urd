@@ -1,0 +1,93 @@
+# bazaar.urd — Localization multi-file example (entry point)
+#
+# This is the entry point for the Wandering Bazaar encounter.  It defines
+# shared characters and global state, then imports merchant.urd for the
+# actual shop interaction.
+#
+# Multi-file localization:
+#   `quest gen-l10n bazaar.urd` now produces one .ftl per source module:
+#     - bazaar.ftl    (start, farewell — this file's labels)
+#     - merchant.ftl  (browse, haggle, buy — the imported module's labels)
+#   Shared imports are never duplicated across .ftl files.
+#
+# Workflow:
+#   # 1. Generate FTL stubs (one per source module):
+#   quest gen-l10n examples/localization/bazaar.urd \
+#         --output examples/localization/i18n/en-US/
+#
+#   # 2. Translate: copy i18n/en-US/*.ftl → i18n/<locale>/*.ftl, edit.
+#
+#   # 3. Run with localization:
+#   quest run examples/localization/bazaar.urd
+
+# ── Characters ────────────────────────────────────────────────────────────────
+
+const narrator = :{ name: "Narrator",  name_color: "white"  }
+const elara    = :{ name: "Elara",     name_color: "yellow" }
+
+# ── Global state ──────────────────────────────────────────────────────────────
+
+# @fluent injects these into the Fluent context for every message in the
+# entire script (including imported modules).  Translators can use $gold
+# for pluralization, $has_potion for conditional endings, and $price for
+# dynamic item costs — all without changing a single line of urd code.
+@fluent
+global gold       = 50
+@fluent
+global price      = 30
+@fluent
+global has_potion = false
+
+# Internal bookkeeping — deliberately NOT @fluent; translators do not need it.
+global haggled = false
+
+# ── Imports ───────────────────────────────────────────────────────────────────
+
+# The merchant stall lives in its own file.  `quest gen-l10n` will produce
+# a separate merchant.ftl containing only the merchant's labels — no
+# duplication with bazaar.ftl.
+import "merchant.urd" as merchant
+
+# ── Story: arrival ────────────────────────────────────────────────────────────
+
+@entry
+label start {
+    narrator: {
+        "You step into the Wandering Bazaar."
+        "Canvas stalls stretch in every direction, lit by swaying lanterns."
+    }
+
+    elara: {
+        "Welcome! I am Elara, purveyor of fine curiosities."
+        "Might I interest you in a Health Potion today?"
+    }
+
+    menu {
+        "Browse the wares" {
+            jump merchant.browse
+        }
+        "Ask about the bazaar" {
+            elara: {
+                "The Wandering Bazaar follows the ancient trade routes."
+                "We appear where weary travelers need us most."
+            }
+            jump merchant.browse
+        }
+        "Walk away" {
+            jump farewell
+        }
+    }
+}
+
+# ── Story: exit ───────────────────────────────────────────────────────────────
+
+label farewell {
+    if has_potion {
+        narrator: "You leave with a potion in your pack and {gold} gold."
+        elara: "That potion has saved many a life. May it save yours too."
+    } else {
+        narrator: "You leave the Wandering Bazaar with {gold} gold and your curiosity intact."
+        elara: "Return whenever you need something. I will be here."
+    }
+    end!()
+}
