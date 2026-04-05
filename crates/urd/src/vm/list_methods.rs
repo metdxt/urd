@@ -471,14 +471,26 @@ pub(super) fn dispatch(
             if list.is_empty() {
                 return Ok(RuntimeValue::Null);
             }
-            let mut min_val = coerce_to_i64(&list[0], "min")?;
-            for el in &list[1..] {
-                let v = coerce_to_i64(el, "min")?;
-                if v < min_val {
-                    min_val = v;
+            let has_float = list.iter().any(|el| matches!(el, RuntimeValue::Float(_)));
+            if has_float {
+                let mut result: f64 = f64::INFINITY;
+                for el in &list {
+                    let v = coerce_to_f64(el, "min")?;
+                    if v < result {
+                        result = v;
+                    }
                 }
+                Ok(RuntimeValue::Float(result))
+            } else {
+                let mut min_val = coerce_to_i64(&list[0], "min")?;
+                for el in &list[1..] {
+                    let v = coerce_to_i64(el, "min")?;
+                    if v < min_val {
+                        min_val = v;
+                    }
+                }
+                Ok(RuntimeValue::Int(min_val))
             }
-            Ok(RuntimeValue::Int(min_val))
         }
 
         "max" => {
@@ -486,14 +498,26 @@ pub(super) fn dispatch(
             if list.is_empty() {
                 return Ok(RuntimeValue::Null);
             }
-            let mut max_val = coerce_to_i64(&list[0], "max")?;
-            for el in &list[1..] {
-                let v = coerce_to_i64(el, "max")?;
-                if v > max_val {
-                    max_val = v;
+            let has_float = list.iter().any(|el| matches!(el, RuntimeValue::Float(_)));
+            if has_float {
+                let mut result: f64 = f64::NEG_INFINITY;
+                for el in &list {
+                    let v = coerce_to_f64(el, "max")?;
+                    if v > result {
+                        result = v;
+                    }
                 }
+                Ok(RuntimeValue::Float(result))
+            } else {
+                let mut max_val = coerce_to_i64(&list[0], "max")?;
+                for el in &list[1..] {
+                    let v = coerce_to_i64(el, "max")?;
+                    if v > max_val {
+                        max_val = v;
+                    }
+                }
+                Ok(RuntimeValue::Int(max_val))
             }
-            Ok(RuntimeValue::Int(max_val))
         }
 
         "sum" => {
@@ -501,11 +525,69 @@ pub(super) fn dispatch(
             if list.is_empty() {
                 return Ok(RuntimeValue::Int(0));
             }
-            let mut total: i64 = 0;
-            for el in &list {
-                total += coerce_to_i64(el, "sum")?;
+            // Single-pass: start accumulating as i64, widen to f64 on first Float.
+            enum Acc {
+                Int(i64),
+                Float(f64),
             }
-            Ok(RuntimeValue::Int(total))
+            let mut acc = Acc::Int(0);
+            for el in &list {
+                match (&mut acc, el) {
+                    (Acc::Int(total), RuntimeValue::Int(i)) => {
+                        *total = total.checked_add(*i).ok_or_else(|| {
+                            super::VmError::TypeError("list.sum(): integer overflow".into())
+                        })?;
+                    }
+                    (Acc::Int(total), RuntimeValue::Float(f)) => {
+                        if !f.is_finite() {
+                            return Err(super::VmError::TypeError(format!(
+                                "list.sum(): element is {}, expected a finite number",
+                                if f.is_nan() { "NaN" } else { "Infinity" }
+                            )));
+                        }
+                        // Widen: convert running i64 total to f64 and add the float.
+                        let widened = *total as f64 + f;
+                        if !widened.is_finite() {
+                            return Err(super::VmError::TypeError(
+                                "list.sum(): float overflow (result is not finite)".into(),
+                            ));
+                        }
+                        acc = Acc::Float(widened);
+                    }
+                    (Acc::Float(total), RuntimeValue::Int(i)) => {
+                        *total += *i as f64;
+                        if !total.is_finite() {
+                            return Err(super::VmError::TypeError(
+                                "list.sum(): float overflow (result is not finite)".into(),
+                            ));
+                        }
+                    }
+                    (Acc::Float(total), RuntimeValue::Float(f)) => {
+                        if !f.is_finite() {
+                            return Err(super::VmError::TypeError(format!(
+                                "list.sum(): element is {}, expected a finite number",
+                                if f.is_nan() { "NaN" } else { "Infinity" }
+                            )));
+                        }
+                        *total += f;
+                        if !total.is_finite() {
+                            return Err(super::VmError::TypeError(
+                                "list.sum(): float overflow (result is not finite)".into(),
+                            ));
+                        }
+                    }
+                    (_, other) => {
+                        return Err(super::VmError::TypeError(format!(
+                            "list.sum() expected a numeric element (Int or Float), got {:?}",
+                            other
+                        )));
+                    }
+                }
+            }
+            match acc {
+                Acc::Int(total) => Ok(RuntimeValue::Int(total)),
+                Acc::Float(total) => Ok(RuntimeValue::Float(total)),
+            }
         }
 
         // ── Unknown ───────────────────────────────────────────────────────────
@@ -583,6 +665,29 @@ fn coerce_to_i64(val: &RuntimeValue, method: &str) -> Result<i64, super::VmError
     match val {
         RuntimeValue::Int(i) => Ok(*i),
         RuntimeValue::Float(f) => Ok(*f as i64),
+        other => Err(super::VmError::TypeError(format!(
+            "list.{method}() expected a numeric element (Int or Float), got {:?}",
+            other
+        ))),
+    }
+}
+
+/// Coerce a [`RuntimeValue`] to `f64` for numeric aggregate operations.
+///
+/// Accepts `Int` (promoted) and `Float` directly. Rejects NaN and Infinity.
+/// All other variants are rejected with a [`super::VmError::TypeError`].
+fn coerce_to_f64(val: &RuntimeValue, method: &str) -> Result<f64, super::VmError> {
+    match val {
+        RuntimeValue::Int(i) => Ok(*i as f64),
+        RuntimeValue::Float(f) => {
+            if !f.is_finite() {
+                return Err(super::VmError::TypeError(format!(
+                    "list.{method}(): element is {}, expected a finite number",
+                    if f.is_nan() { "NaN" } else { "Infinity" }
+                )));
+            }
+            Ok(*f)
+        }
         other => Err(super::VmError::TypeError(format!(
             "list.{method}() expected a numeric element (Int or Float), got {:?}",
             other
@@ -1289,5 +1394,86 @@ mod tests {
                 "error message should name the unknown method, got: {msg}"
             );
         }
+    }
+
+    // ── sum ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sum_empty() {
+        assert_eq!(call(vec![], "sum", vec![]).unwrap(), int(0));
+    }
+
+    #[test]
+    fn test_sum_ints() {
+        assert_eq!(
+            call(vec![int(1), int(2), int(3)], "sum", vec![]).unwrap(),
+            int(6)
+        );
+    }
+
+    #[test]
+    fn test_sum_floats() {
+        let result = call(
+            vec![RuntimeValue::Float(1.5), RuntimeValue::Float(2.5)],
+            "sum",
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(result, RuntimeValue::Float(4.0));
+    }
+
+    #[test]
+    fn test_sum_mixed_int_and_float() {
+        // When a float is present, the result should be Float.
+        let result = call(vec![int(1), RuntimeValue::Float(2.5)], "sum", vec![]).unwrap();
+        assert_eq!(result, RuntimeValue::Float(3.5));
+    }
+
+    #[test]
+    fn test_sum_int_overflow_errors() {
+        let result = call(vec![int(i64::MAX), int(1)], "sum", vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sum_nan_element_errors() {
+        let result = call(vec![RuntimeValue::Float(f64::NAN)], "sum", vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sum_infinity_element_errors() {
+        let result = call(vec![RuntimeValue::Float(f64::INFINITY)], "sum", vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sum_float_overflow_errors() {
+        let result = call(
+            vec![RuntimeValue::Float(f64::MAX), RuntimeValue::Float(f64::MAX)],
+            "sum",
+            vec![],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sum_non_numeric_element_errors() {
+        let result = call(vec![int(1), str_val("oops")], "sum", vec![]);
+        assert!(result.is_err());
+    }
+
+    // ── min/max with floats ─────────────────────────────────────────
+
+    #[test]
+    fn test_min_with_floats() {
+        let result = call(vec![int(5), RuntimeValue::Float(2.3)], "min", vec![]).unwrap();
+        assert_eq!(result, RuntimeValue::Float(2.3));
+    }
+
+    #[test]
+    fn test_max_with_floats() {
+        let result = call(vec![int(1), RuntimeValue::Float(3.7)], "max", vec![]).unwrap();
+        assert_eq!(result, RuntimeValue::Float(3.7));
     }
 }

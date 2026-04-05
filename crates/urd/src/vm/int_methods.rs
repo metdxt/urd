@@ -99,13 +99,41 @@ pub(super) fn dispatch(
                 )));
             }
             let exp_u32 = exp as u32;
+
+            // Fast-paths for trivial bases — O(1) instead of O(exp).
+            match n {
+                0 => return Ok(RuntimeValue::Int(if exp_u32 == 0 { 1 } else { 0 })),
+                1 => return Ok(RuntimeValue::Int(1)),
+                -1 => {
+                    return Ok(RuntimeValue::Int(if exp_u32.is_multiple_of(2) {
+                        1
+                    } else {
+                        -1
+                    }));
+                }
+                _ => {}
+            }
+
+            // Exponentiation by squaring — O(log exp).
+            let mut base = n;
+            let mut exp_rem = exp_u32;
             let mut result: i64 = 1;
-            for _ in 0..exp_u32 {
-                result = result.checked_mul(n).ok_or_else(|| {
-                    super::VmError::TypeError(format!(
-                        "int.pow(): result overflows i64 (base={n}, exp={exp})"
-                    ))
-                })?;
+            while exp_rem > 0 {
+                if exp_rem % 2 == 1 {
+                    result = result.checked_mul(base).ok_or_else(|| {
+                        super::VmError::TypeError(format!(
+                            "int.pow(): result overflows i64 (base={n}, exp={exp})"
+                        ))
+                    })?;
+                }
+                exp_rem /= 2;
+                if exp_rem > 0 {
+                    base = base.checked_mul(base).ok_or_else(|| {
+                        super::VmError::TypeError(format!(
+                            "int.pow(): result overflows i64 (base={n}, exp={exp})"
+                        ))
+                    })?;
+                }
             }
             Ok(RuntimeValue::Int(result))
         }

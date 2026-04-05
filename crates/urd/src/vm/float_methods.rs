@@ -44,6 +44,7 @@ pub(super) fn dispatch(
         // Truncates toward zero and returns an `Int`.
         "to_int" => {
             require_args("to_int", args, 0)?;
+            require_finite(n, "to_int")?;
             Ok(RuntimeValue::Int(n as i64))
         }
 
@@ -57,24 +58,32 @@ pub(super) fn dispatch(
         // Rounds down to the nearest integer, returned as `Int`.
         "floor" => {
             require_args("floor", args, 0)?;
+            require_finite(n, "floor")?;
             Ok(RuntimeValue::Int(n.floor() as i64))
         }
 
         // Rounds up to the nearest integer, returned as `Int`.
         "ceil" => {
             require_args("ceil", args, 0)?;
+            require_finite(n, "ceil")?;
             Ok(RuntimeValue::Int(n.ceil() as i64))
         }
 
         // Rounds to the nearest integer (half-away-from-zero), returned as `Int`.
         "round" => {
             require_args("round", args, 0)?;
+            require_finite(n, "round")?;
             Ok(RuntimeValue::Int(n.round() as i64))
         }
 
         // Returns the square root as a `Float`.
         "sqrt" => {
             require_args("sqrt", args, 0)?;
+            if n < 0.0 {
+                return Err(super::VmError::TypeError(
+                    "float.sqrt(): cannot take square root of a negative number".into(),
+                ));
+            }
             Ok(RuntimeValue::Float(n.sqrt()))
         }
 
@@ -149,6 +158,17 @@ pub(super) fn dispatch(
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
+
+/// Guard that rejects NaN and ±Infinity before a float-to-integer cast.
+fn require_finite(n: f64, method: &str) -> Result<(), super::VmError> {
+    if !n.is_finite() {
+        return Err(super::VmError::TypeError(format!(
+            "float.{method}(): cannot convert {} to integer",
+            if n.is_nan() { "NaN" } else { "Infinity" }
+        )));
+    }
+    Ok(())
+}
 
 /// Assert that exactly `expected` arguments were supplied, returning a
 /// descriptive [`super::VmError::TypeError`] if not.
@@ -285,11 +305,11 @@ mod tests {
     }
 
     #[test]
-    fn test_sqrt_negative_produces_nan() {
-        match call(-1.0, "sqrt", &[]) {
-            Ok(RuntimeValue::Float(f)) => assert!(f.is_nan()),
-            other => panic!("expected NaN Float, got {:?}", other),
-        }
+    fn test_sqrt_negative_errors() {
+        assert!(matches!(
+            call(-1.0, "sqrt", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
     }
 
     // ── min / max ─────────────────────────────────────────────────────────────
@@ -471,6 +491,88 @@ mod tests {
     fn test_clamp_too_few_args_errors() {
         assert!(matches!(
             call(1.0, "clamp", &[float(0.0)]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    // ── NaN / ±Infinity rejection ─────────────────────────────────────────────
+
+    #[test]
+    fn test_to_int_nan_errors() {
+        assert!(matches!(
+            call(f64::NAN, "to_int", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_to_int_infinity_errors() {
+        assert!(matches!(
+            call(f64::INFINITY, "to_int", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+        assert!(matches!(
+            call(f64::NEG_INFINITY, "to_int", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_floor_nan_errors() {
+        assert!(matches!(
+            call(f64::NAN, "floor", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_floor_infinity_errors() {
+        assert!(matches!(
+            call(f64::INFINITY, "floor", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+        assert!(matches!(
+            call(f64::NEG_INFINITY, "floor", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_ceil_nan_errors() {
+        assert!(matches!(
+            call(f64::NAN, "ceil", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_ceil_infinity_errors() {
+        assert!(matches!(
+            call(f64::INFINITY, "ceil", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+        assert!(matches!(
+            call(f64::NEG_INFINITY, "ceil", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_round_nan_errors() {
+        assert!(matches!(
+            call(f64::NAN, "round", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_round_infinity_errors() {
+        assert!(matches!(
+            call(f64::INFINITY, "round", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+        assert!(matches!(
+            call(f64::NEG_INFINITY, "round", &[]).unwrap_err(),
             super::super::VmError::TypeError(_)
         ));
     }

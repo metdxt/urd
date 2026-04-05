@@ -89,13 +89,17 @@ where
 
     let mut string_lexer = lex.clone().morph::<StringPart>();
     let mut tokens = vec![];
+    let mut terminated = false;
 
     for token_or_error in string_lexer.by_ref() {
         match token_or_error {
             Ok(tok) => {
                 use StringPart::*;
                 match tok {
-                    ExitString => break,
+                    ExitString => {
+                        terminated = true;
+                        break;
+                    }
                     x => tokens.push(x),
                 }
             }
@@ -103,6 +107,10 @@ where
                 return Err(e);
             }
         }
+    }
+
+    if !terminated {
+        return Err(LexerError::UnterminatedString);
     }
 
     // Do NOT overwrite `lex` via morph — that would set token_start to the

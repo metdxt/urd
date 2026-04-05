@@ -1175,12 +1175,227 @@ impl Ast {
     }
 }
 
-/// Recursively walks the AST tree depth-first, calling `visitor` on each node.
+/// Walks the AST tree depth-first (pre-order), calling `visitor` on each node.
 ///
-/// The visitor is called on the node *before* recursing into its children (pre-order).
+/// Uses an explicit stack instead of recursion to avoid stack overflow on
+/// deeply nested AST trees.
 pub fn walk_ast<F: FnMut(&Ast)>(node: &Ast, visitor: &mut F) {
-    visitor(node);
-    for child in node.children() {
-        walk_ast(child, visitor);
+    let mut stack: Vec<&Ast> = vec![node];
+    while let Some(current) = stack.pop() {
+        visitor(current);
+        // Push children in reverse order so that the first child is processed first
+        // (since we pop from the end of the stack).
+        let children = current.children();
+        for child in children.iter().rev() {
+            stack.push(child);
+        }
+    }
+}
+
+/// Returns the maximum nesting depth of the AST tree.
+///
+/// Used for post-parse validation to reject inputs that would
+/// cause stack overflows in the compiler.
+pub fn ast_depth(node: &Ast) -> usize {
+    let mut max_depth: usize = 0;
+    let mut stack: Vec<(&Ast, usize)> = vec![(node, 1)];
+    while let Some((current, depth)) = stack.pop() {
+        if depth > max_depth {
+            max_depth = depth;
+        }
+        for child in current.children().iter().rev() {
+            stack.push((child, depth + 1));
+        }
+    }
+    max_depth
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::value::RuntimeValue;
+
+    /// Helper: the simplest possible leaf node (no children).
+    fn leaf() -> Ast {
+        Ast::value(RuntimeValue::Null)
+    }
+
+    // ── walk_ast ─────────────────────────────────────────────────────
+
+    #[test]
+    fn walk_ast_single_leaf() {
+        let node = leaf();
+        let mut count = 0;
+        walk_ast(&node, &mut |_| count += 1);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn walk_ast_block_visits_all_children() {
+        let block = Ast::block(vec![leaf(), leaf(), leaf()]);
+        let mut count = 0;
+        walk_ast(&block, &mut |_| count += 1);
+        // block itself + 3 children = 4
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn walk_ast_nested_blocks() {
+        // outer -> [inner -> [leaf]]
+        let inner = Ast::block(vec![leaf()]);
+        let outer = Ast::block(vec![inner]);
+        let mut count = 0;
+        walk_ast(&outer, &mut |_| count += 1);
+        // outer + inner + leaf = 3
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn walk_ast_pre_order_visits_parent_first() {
+        let child = leaf();
+        let block = Ast::block(vec![child]);
+        let mut order = vec![];
+        walk_ast(&block, &mut |node| {
+            order.push(matches!(node.content(), AstContent::Block(_)));
+        });
+        // Parent (Block=true) should come before child (Block=false)
+        assert_eq!(order, vec![true, false]);
+    }
+
+    #[test]
+    fn walk_ast_if_stmt_visits_all_branches() {
+        let cond = leaf();
+        let then_block = Ast::block(vec![leaf()]);
+        let else_block = Ast::block(vec![leaf()]);
+        let if_node = Ast::if_stmt(cond, then_block, Some(else_block));
+
+        let mut count = 0;
+        walk_ast(&if_node, &mut |_| count += 1);
+        // if_node + cond + then_block + then_child + else_block + else_child = 6
+        assert_eq!(count, 6);
+    }
+
+    #[test]
+    fn walk_ast_if_stmt_without_else() {
+        let cond = leaf();
+        let then_block = Ast::block(vec![leaf()]);
+        let if_node = Ast::if_stmt(cond, then_block, None);
+
+        let mut count = 0;
+        walk_ast(&if_node, &mut |_| count += 1);
+        // if_node + cond + then_block + then_child = 4
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn walk_ast_binop() {
+        let binop = Ast::add_op(leaf(), leaf());
+        let mut count = 0;
+        walk_ast(&binop, &mut |_| count += 1);
+        // binop + left + right = 3
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn walk_ast_unary_op() {
+        let unary = Ast::negate_op(leaf());
+        let mut count = 0;
+        walk_ast(&unary, &mut |_| count += 1);
+        // unary + operand = 2
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn walk_ast_empty_block() {
+        let block = Ast::block(vec![]);
+        let mut count = 0;
+        walk_ast(&block, &mut |_| count += 1);
+        // Only the block itself
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn walk_ast_children_visited_left_to_right() {
+        let a = Ast::value(RuntimeValue::Int(1));
+        let b = Ast::value(RuntimeValue::Int(2));
+        let c = Ast::value(RuntimeValue::Int(3));
+        let block = Ast::block(vec![a, b, c]);
+
+        let mut values = vec![];
+        walk_ast(&block, &mut |node| {
+            if let AstContent::Value(RuntimeValue::Int(n)) = node.content() {
+                values.push(*n);
+            }
+        });
+        assert_eq!(values, vec![1, 2, 3]);
+    }
+
+    // ── ast_depth ────────────────────────────────────────────────────
+
+    #[test]
+    fn ast_depth_single_leaf() {
+        assert_eq!(ast_depth(&leaf()), 1);
+    }
+
+    #[test]
+    fn ast_depth_flat_block() {
+        let block = Ast::block(vec![leaf(), leaf(), leaf()]);
+        // block (depth 1) -> each child (depth 2)
+        assert_eq!(ast_depth(&block), 2);
+    }
+
+    #[test]
+    fn ast_depth_nested_blocks() {
+        // inner block at depth 3
+        let inner = Ast::block(vec![leaf()]);
+        let middle = Ast::block(vec![inner]);
+        let outer = Ast::block(vec![middle]);
+        // outer(1) -> middle(2) -> inner(3) -> leaf(4)
+        assert_eq!(ast_depth(&outer), 4);
+    }
+
+    #[test]
+    fn ast_depth_asymmetric_tree() {
+        // Left branch is deeper than right
+        let deep = Ast::block(vec![Ast::block(vec![leaf()])]);
+        let shallow = leaf();
+        let root = Ast::block(vec![deep, shallow]);
+        // root(1) -> deep(2) -> inner(3) -> leaf(4) is the deepest path
+        assert_eq!(ast_depth(&root), 4);
+    }
+
+    #[test]
+    fn ast_depth_empty_block() {
+        let block = Ast::block(vec![]);
+        // Just the block itself
+        assert_eq!(ast_depth(&block), 1);
+    }
+
+    #[test]
+    fn ast_depth_binop() {
+        let binop = Ast::add_op(leaf(), leaf());
+        // binop(1) -> operand(2)
+        assert_eq!(ast_depth(&binop), 2);
+    }
+
+    #[test]
+    fn ast_depth_if_stmt_with_else() {
+        // condition is a leaf, then/else each wrap a leaf in a block
+        let cond = leaf();
+        let then_block = Ast::block(vec![leaf()]);
+        let else_block = Ast::block(vec![Ast::block(vec![leaf()])]);
+        let if_node = Ast::if_stmt(cond, then_block, Some(else_block));
+        // if(1) -> else_block(2) -> inner_block(3) -> leaf(4)
+        assert_eq!(ast_depth(&if_node), 4);
+    }
+
+    #[test]
+    fn ast_depth_deeply_nested() {
+        // Build a chain: block -> block -> ... -> leaf  (10 levels of blocks + 1 leaf)
+        let mut node = leaf();
+        for _ in 0..10 {
+            node = Ast::block(vec![node]);
+        }
+        assert_eq!(ast_depth(&node), 11);
     }
 }

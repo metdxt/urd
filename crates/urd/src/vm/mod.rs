@@ -213,10 +213,18 @@ pub trait DiceRoller: Send + Sync {
 
     /// Roll and return the total (sum of all individual results).
     ///
-    /// Provided as a convenience; defaults to
-    /// `self.roll_individual(count, sides).iter().sum()`.
+    /// # Overflow behaviour
+    ///
+    /// The default implementation uses checked addition and saturates to
+    /// `i64::MAX` on overflow.  This is a limitation of the `i64` return
+    /// type — callers that need proper error propagation should use
+    /// [`Self::roll_individual`] and sum the results with
+    /// [`crate::vm::eval::checked_sum_rolls`] instead.
     fn roll(&self, count: u32, sides: u32) -> i64 {
-        self.roll_individual(count, sides).iter().sum()
+        self.roll_individual(count, sides)
+            .iter()
+            .try_fold(0i64, |acc, &x| acc.checked_add(x))
+            .unwrap_or(i64::MAX)
     }
 }
 
@@ -227,9 +235,21 @@ pub struct DefaultDiceRoller;
 
 impl DiceRoller for DefaultDiceRoller {
     fn roll_individual(&self, count: u32, sides: u32) -> Vec<i64> {
+        /// Maximum number of dice the default roller will allocate.
+        const MAX_DICE: u32 = 255;
+
+        if count == 0 {
+            return vec![];
+        }
+        if sides == 0 {
+            // Should be unreachable: eval_runtime_value guards `sides >= 1`.
+            // Return zeros defensively rather than panicking in random_range.
+            return vec![0; count.min(MAX_DICE) as usize];
+        }
+        let capped = count.min(MAX_DICE);
         use rand::RngExt;
         let mut rng = rand::rng();
-        (0..count)
+        (0..capped)
             .map(|_| rng.random_range(1..=sides) as i64)
             .collect()
     }
@@ -522,7 +542,10 @@ impl Vm {
                     let (scalar_val, roll_individuals): (RuntimeValue, Option<Vec<i64>>) =
                         match &scrutinee_val {
                             RuntimeValue::Roll(dice) => {
-                                let sum: i64 = dice.iter().sum();
+                                let sum = match eval::checked_sum_rolls(dice) {
+                                    Ok(s) => s,
+                                    Err(e) => return VmStep::Error(e),
+                                };
                                 (RuntimeValue::Int(sum), Some(dice.clone()))
                             }
                             other => (other.clone(), None),
@@ -669,7 +692,9 @@ impl Vm {
                         .map(|f| f.scope_depth + 1)
                         .unwrap_or(1);
                     while state.env.depth() > target_depth {
-                        state.env.pop_scope();
+                        if let Err(e) = state.env.pop_scope() {
+                            return VmStep::Error(e);
+                        }
                     }
                     let target = graph
                         .graph
@@ -695,7 +720,9 @@ impl Vm {
                         Some(frame) => {
                             // Unwind any extra scopes pushed since the call.
                             while state.env.depth() > frame.scope_depth {
-                                state.env.pop_scope();
+                                if let Err(e) = state.env.pop_scope() {
+                                    return VmStep::Error(e);
+                                }
                             }
                             // Store return value if the call frame has a binding.
                             if let (Some(var_name), Some(val)) = (&frame.assign_to_var, return_val)
@@ -776,7 +803,9 @@ impl Vm {
 
                 // ── Exit labeled-block scope ─────────────────────────────────
                 IrNodeKind::ExitScope { label } => {
-                    state.env.pop_scope();
+                    if let Err(e) = state.env.pop_scope() {
+                        return VmStep::Error(e);
+                    }
                     // After pop_scope(), current depth equals the depth at which LetCall
                     // pushed its scope.  If the top frame's scope_depth matches, this
                     // ExitScope is the fall-through exit of a subroutine; pop the frame
@@ -804,7 +833,9 @@ impl Vm {
 
                 // ── Block-scope pop (if/match branches) ──────────────────
                 IrNodeKind::PopScope => {
-                    state.env.pop_scope();
+                    if let Err(e) = state.env.pop_scope() {
+                        return VmStep::Error(e);
+                    }
                     state.cursor = next_of(graph, node_idx);
                 }
 

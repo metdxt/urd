@@ -37,7 +37,7 @@ pub(super) fn dispatch(
     match method {
         "len" => {
             require_args("len", args, 0)?;
-            let len = range_len(start, end, inclusive);
+            let len = range_len(start, end, inclusive)?;
             Ok(RuntimeValue::Int(len))
         }
 
@@ -63,11 +63,20 @@ pub(super) fn dispatch(
 /// Computes the number of integers in the range.
 ///
 /// Returns 0 for empty/inverted ranges.
-fn range_len(start: i64, end: i64, inclusive: bool) -> i64 {
-    if inclusive {
-        (end - start + 1).max(0)
+///
+/// # Errors
+///
+/// Returns [`super::VmError::TypeError`] if the range length exceeds `i64::MAX`.
+fn range_len(start: i64, end: i64, inclusive: bool) -> Result<i64, super::VmError> {
+    let raw = (end as i128) - (start as i128) + if inclusive { 1 } else { 0 };
+    if raw < 0 {
+        Ok(0)
+    } else if raw > i64::MAX as i128 {
+        Err(super::VmError::TypeError(
+            "range length exceeds i64::MAX".into(),
+        ))
     } else {
-        (end - start).max(0)
+        Ok(raw as i64)
     }
 }
 

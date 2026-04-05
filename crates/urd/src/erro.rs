@@ -22,6 +22,10 @@ pub enum LexerError {
     #[error("Invalid interpolation")]
     Interpolation,
 
+    /// String literal that was never closed with a matching `"`
+    #[error("Unterminated string literal")]
+    UnterminatedString,
+
     /// Integer parsing failures
     #[error("Invalid integer literal. {0}")]
     Int(#[from] ParseIntError),

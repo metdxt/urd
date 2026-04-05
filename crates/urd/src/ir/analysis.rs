@@ -249,7 +249,9 @@ pub fn entry_cluster_name(graph: &IrGraph) -> Option<String> {
                 | IrNodeKind::Nop
                 | IrNodeKind::DefineEnum { .. }
                 | IrNodeKind::DefineScriptDecorator { .. }
-                | IrNodeKind::DefineFunction { .. },
+                | IrNodeKind::DefineFunction { .. }
+                | IrNodeKind::DefineStruct { .. }
+                | IrNodeKind::ExternDecl { .. },
             ) => {
                 // Preamble node: follow its single Next edge.
                 let next = graph

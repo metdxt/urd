@@ -102,27 +102,32 @@ impl Environment {
 
     /// Pops the innermost local scope, discarding all variables in it.
     ///
-    /// # Panics (debug only)
-    /// Panics in debug builds if called when only the root scope is present
-    /// (`scopes.len() == 1`).  This indicates an `EnterScope`/`ExitScope`
-    /// imbalance in the compiler output.
-    pub fn pop_scope(&mut self) {
-        debug_assert!(
-            self.scopes.len() > 1
-                && self.scopes.len() == self.fluent_bindings.len()
-                && self.scopes.len() == self.constant_frames.len(),
-            "pop_scope invariant violated: scopes.len()={} fluent_bindings.len()={} \
-             constant_frames.len()={} — EnterScope/ExitScope are unbalanced or scope vecs \
-             have drifted",
-            self.scopes.len(),
-            self.fluent_bindings.len(),
-            self.constant_frames.len()
-        );
-        if self.scopes.len() > 1 {
-            self.scopes.pop();
-            self.fluent_bindings.pop();
-            self.constant_frames.pop();
+    /// # Errors
+    /// Returns [`VmError::TypeError`](super::VmError::TypeError) if called
+    /// when only the root scope is present (`scopes.len() == 1`) — indicating
+    /// an `EnterScope`/`ExitScope` imbalance — or if the internal scope
+    /// vectors have drifted out of sync.
+    pub fn pop_scope(&mut self) -> Result<(), super::VmError> {
+        if self.scopes.len() <= 1 {
+            return Err(super::VmError::TypeError(
+                "pop_scope: already at root scope (EnterScope/ExitScope imbalance)".into(),
+            ));
         }
+        if self.scopes.len() != self.fluent_bindings.len()
+            || self.scopes.len() != self.constant_frames.len()
+        {
+            return Err(super::VmError::TypeError(format!(
+                "pop_scope invariant violated: scopes.len()={} fluent_bindings.len()={} \
+                 constant_frames.len()={} — scope vecs have drifted",
+                self.scopes.len(),
+                self.fluent_bindings.len(),
+                self.constant_frames.len()
+            )));
+        }
+        self.scopes.pop();
+        self.fluent_bindings.pop();
+        self.constant_frames.pop();
+        Ok(())
     }
 
     /// Registers a Fluent variable binding in the innermost scope.
@@ -436,7 +441,7 @@ mod tests {
             assert_eq!(b.get("outer"), Some(&RuntimeValue::Int(1)));
             assert_eq!(b.get("inner"), Some(&RuntimeValue::Int(2)));
         }
-        env.pop_scope();
+        env.pop_scope().unwrap();
         let b = env.collect_fluent_bindings();
         assert_eq!(b.get("outer"), Some(&RuntimeValue::Int(1)));
         assert_eq!(
@@ -466,22 +471,15 @@ mod tests {
         assert!(env.collect_fluent_bindings().is_empty());
     }
 
-    /// In debug builds the `debug_assert!` fires, so we expect a panic.
+    /// Popping past the root scope must return an error (both debug and release).
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "EnterScope/ExitScope are unbalanced")]
-    fn pop_scope_underflow_panics_in_debug() {
+    fn pop_scope_underflow_returns_error() {
         let mut env = Environment::new();
-        env.pop_scope(); // debug_assert! must fire
-    }
-
-    /// In release builds the `debug_assert!` is compiled out; the `if` guard
-    /// silently keeps the root scope alive.
-    #[test]
-    #[cfg(not(debug_assertions))]
-    fn pop_scope_underflow_is_noop_in_release() {
-        let mut env = Environment::new();
-        env.pop_scope(); // guarded by `if` — must be a silent no-op
+        let err = env.pop_scope().unwrap_err();
+        assert!(
+            err.to_string().contains("already at root scope"),
+            "expected root-scope error, got: {err}"
+        );
         assert_eq!(env.depth(), 1, "root scope must survive underflow attempt");
     }
 
@@ -493,9 +491,9 @@ mod tests {
         assert_eq!(env.depth(), 2);
         env.push_scope();
         assert_eq!(env.depth(), 3);
-        env.pop_scope();
+        env.pop_scope().unwrap();
         assert_eq!(env.depth(), 2);
-        env.pop_scope();
+        env.pop_scope().unwrap();
         assert_eq!(env.depth(), 1);
     }
 }

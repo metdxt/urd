@@ -319,7 +319,7 @@ fn pre_allocate_labels(
         if let Some(ast) = all.asts.get(path) {
             let mut labels: HashMap<String, NodeIndex> = HashMap::new();
             let mut entry_labels: HashSet<String> = HashSet::new();
-            scan_label_nops(ast, graph, &mut labels, &mut entry_labels)?;
+            scan_label_nops(ast, graph, &mut labels, &mut entry_labels, 0)?;
             result.insert(path.clone(), labels);
             entry_map.insert(path.clone(), entry_labels);
         }
@@ -335,7 +335,13 @@ fn scan_label_nops(
     graph: &mut IrGraph,
     labels: &mut HashMap<String, NodeIndex>,
     entry_labels: &mut HashSet<String>,
+    depth: usize,
 ) -> Result<(), CompilerError> {
+    if depth > 512 {
+        return Err(CompilerError::Internal(
+            "maximum nesting depth exceeded during label scan".into(),
+        ));
+    }
     match ast.content() {
         AstContent::LabeledBlock { label, block, .. } => {
             if labels.contains_key(label) {
@@ -346,11 +352,11 @@ fn scan_label_nops(
             if ast.decorators().iter().any(|d| d.name() == "entry") {
                 entry_labels.insert(label.clone());
             }
-            scan_label_nops(block, graph, labels, entry_labels)?;
+            scan_label_nops(block, graph, labels, entry_labels, depth + 1)?;
         }
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                scan_label_nops(stmt, graph, labels, entry_labels)?;
+                scan_label_nops(stmt, graph, labels, entry_labels, depth + 1)?;
             }
         }
         AstContent::If {
@@ -358,21 +364,21 @@ fn scan_label_nops(
             else_block,
             ..
         } => {
-            scan_label_nops(then_block, graph, labels, entry_labels)?;
+            scan_label_nops(then_block, graph, labels, entry_labels, depth + 1)?;
             if let Some(eb) = else_block {
-                scan_label_nops(eb, graph, labels, entry_labels)?;
+                scan_label_nops(eb, graph, labels, entry_labels, depth + 1)?;
             }
         }
         AstContent::Menu { options } => {
             for opt in options {
                 if let AstContent::MenuOption { content, .. } = opt.content() {
-                    scan_label_nops(content, graph, labels, entry_labels)?;
+                    scan_label_nops(content, graph, labels, entry_labels, depth + 1)?;
                 }
             }
         }
         AstContent::Match { arms, .. } => {
             for arm in arms {
-                scan_label_nops(&arm.body, graph, labels, entry_labels)?;
+                scan_label_nops(&arm.body, graph, labels, entry_labels, depth + 1)?;
             }
         }
         // DecoratorDef bodies are stored as raw Ast for lazy apply-time
@@ -636,6 +642,8 @@ fn patch_prologue_tail(graph: &mut IrGraph, from: NodeIndex, new_next: NodeIndex
                     | IrNodeKind::DefineEnum { .. }
                     | IrNodeKind::DefineScriptDecorator { .. }
                     | IrNodeKind::DefineFunction { .. }
+                    | IrNodeKind::DefineStruct { .. }
+                    | IrNodeKind::ExternDecl { .. }
                     | IrNodeKind::Nop
             )
         );
@@ -688,10 +696,43 @@ fn patch_prologue_tail(graph: &mut IrGraph, from: NodeIndex, new_next: NodeIndex
 
 // ─── Source parsing ───────────────────────────────────────────────────────────
 
+/// Pre-parse nesting depth check on the raw token stream.
+///
+/// Scans for `{`/`}`/`(`/`)` nesting to reject excessively deep input
+/// *before* chumsky's recursive parser can stack-overflow.
+fn check_token_nesting_depth(src: &str, limit: usize) -> Result<(), String> {
+    use crate::lexer::{Token, lex_src};
+
+    let mut depth: usize = 0;
+    for tok_result in lex_src(src) {
+        let tok = match tok_result {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        match tok {
+            Token::LeftCurly | Token::LeftParen | Token::LeftBracket => {
+                depth += 1;
+                if depth > limit {
+                    return Err(format!(
+                        "source exceeds maximum nesting depth ({depth} > {limit})"
+                    ));
+                }
+            }
+            Token::RightCurly | Token::RightParen | Token::RightBracket => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Parse a raw Urd source string into an [`Ast`].
 ///
 /// Returns `Err(message)` on parse failure, with all errors joined by `"; "`.
 pub fn parse_source(src: &str) -> Result<Ast, String> {
+    check_token_nesting_depth(src, 256)?;
+
     use chumsky::{input::Stream, prelude::*};
 
     use crate::lexer::{Token, lex_src};
@@ -714,7 +755,17 @@ pub fn parse_source(src: &str) -> Result<Ast, String> {
             .join("; "));
     }
 
-    ast.ok_or_else(|| "parser produced no output".to_string())
+    let ast = ast.ok_or_else(|| "parser produced no output".to_string())?;
+
+    const MAX_AST_DEPTH: usize = 256;
+    let depth = crate::parser::ast::ast_depth(&ast);
+    if depth > MAX_AST_DEPTH {
+        return Err(format!(
+            "source exceeds maximum nesting depth ({depth} > {MAX_AST_DEPTH})"
+        ));
+    }
+
+    Ok(ast)
 }
 
 /// Parse a raw Urd source string, returning both the (possibly partial)
@@ -734,6 +785,10 @@ pub fn parse_source(src: &str) -> Result<Ast, String> {
 /// use the tuple directly: prefer the fresh AST when present, fall back to a
 /// stale cached AST only when `Option<Ast>` is `None`.
 pub fn parse_source_spanned(src: &str) -> (Option<Ast>, Vec<(String, SimpleSpan)>) {
+    if let Err(msg) = check_token_nesting_depth(src, 256) {
+        return (None, vec![(msg, (0..src.len()).into())]);
+    }
+
     use chumsky::{input::Stream, prelude::*};
 
     use crate::lexer::{Token, lex_src};
@@ -748,10 +803,23 @@ pub fn parse_source_spanned(src: &str) -> (Option<Ast>, Vec<(String, SimpleSpan)
 
     let (ast, errors) = script().parse(stream).into_output_errors();
 
-    let spanned_errors = errors
-        .iter()
-        .map(|e| (e.to_string(), *e.span()))
-        .collect::<Vec<_>>();
+    let mut spanned_errors: Vec<(String, SimpleSpan)> =
+        errors.iter().map(|e| (e.to_string(), *e.span())).collect();
 
-    (ast, spanned_errors)
+    // Reject excessively nested ASTs to protect downstream passes.
+    let validated_ast = ast.and_then(|a| {
+        const MAX_AST_DEPTH: usize = 256;
+        let depth = crate::parser::ast::ast_depth(&a);
+        if depth > MAX_AST_DEPTH {
+            spanned_errors.push((
+                format!("source exceeds maximum nesting depth ({depth} > {MAX_AST_DEPTH})"),
+                (0..src.len()).into(),
+            ));
+            None
+        } else {
+            Some(a)
+        }
+    });
+
+    (validated_ast, spanned_errors)
 }

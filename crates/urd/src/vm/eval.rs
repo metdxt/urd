@@ -777,11 +777,22 @@ pub(super) fn eval_unary(op: &UnaryOperator, val: RuntimeValue) -> Result<Runtim
 
 // ── Arithmetic helpers ────────────────────────────────────────────────────────
 
+/// Compute the checked sum of a roll's individual dice results.
+///
+/// Returns `Err(VmError::TypeError)` on integer overflow instead of panicking
+/// or silently wrapping/saturating.
+pub(super) fn checked_sum_rolls(rolls: &[i64]) -> Result<i64, VmError> {
+    rolls.iter().try_fold(0i64, |acc, &x| {
+        acc.checked_add(x)
+            .ok_or_else(|| VmError::TypeError("dice roll sum overflows i64".into()))
+    })
+}
+
 pub(super) fn to_float(v: &RuntimeValue) -> Option<f64> {
     match v {
         RuntimeValue::Float(f) => Some(*f),
         RuntimeValue::Int(i) => Some(*i as f64),
-        RuntimeValue::Roll(rolls) => Some(rolls.iter().sum::<i64>() as f64),
+        RuntimeValue::Roll(rolls) => checked_sum_rolls(rolls).ok().map(|s| s as f64),
         _ => None,
     }
 }
@@ -987,7 +998,16 @@ pub(super) fn safe_int_shiftop(
 
             let shift_u32 = *shift as u32;
             let out = match direction {
-                ShiftDirection::Left => *a << shift_u32,
+                ShiftDirection::Left => {
+                    let result = *a << shift_u32;
+                    // Verify no bits were lost: shifting back must recover the original value
+                    if (result >> shift_u32) != *a {
+                        return Err(VmError::TypeError(format!(
+                            "left shift overflow: {a} << {shift}"
+                        )));
+                    }
+                    result
+                }
                 ShiftDirection::Right => *a >> shift_u32,
             };
             Ok(RuntimeValue::Int(out))
@@ -1293,7 +1313,7 @@ fn exec_fn_stmt(
             let (scalar_val, roll_individuals): (RuntimeValue, Option<Vec<i64>>) =
                 match &scrutinee_val {
                     RuntimeValue::Roll(dice) => {
-                        let sum: i64 = dice.iter().sum();
+                        let sum = checked_sum_rolls(dice)?;
                         (RuntimeValue::Int(sum), Some(dice.clone()))
                     }
                     other => (other.clone(), None),

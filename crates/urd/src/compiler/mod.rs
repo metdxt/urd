@@ -61,7 +61,14 @@ pub enum CompilerError {
     /// A circular import was detected.
     #[error("circular import detected for '{0}'")]
     CircularImport(String),
+
+    /// An internal compiler invariant was violated (indicates a compiler bug).
+    #[error("internal compiler error: {0}")]
+    Internal(String),
 }
+
+/// Maximum allowed compiler recursion depth.
+const MAX_COMPILER_DEPTH: usize = 512;
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -132,6 +139,7 @@ impl Compiler {
             id_ctx: Some(IdContext::new(file_stem)),
             preassign_ids: None,
             exported_labels: None,
+            depth: 0,
         };
         state.scan_labels(ast)?;
         let entry = state.compile_top_level(ast)?;
@@ -198,6 +206,8 @@ pub(super) struct CompilerState {
     /// `None` for single-file compilation (no restriction).
     /// `Some(set)` for multi-file compilation (enforce restriction).
     pub(super) exported_labels: Option<HashSet<String>>,
+    /// Current recursion depth for stack-overflow protection.
+    depth: usize,
 }
 
 impl CompilerState {
@@ -208,6 +218,7 @@ impl CompilerState {
             id_ctx: None,
             preassign_ids: None,
             exported_labels: None,
+            depth: 0,
         }
     }
 
@@ -220,6 +231,19 @@ impl CompilerState {
     /// Returns [`CompilerError::DuplicateLabel`] if the same label name is
     /// encountered more than once.
     pub(super) fn scan_labels(&mut self, ast: &Ast) -> Result<(), CompilerError> {
+        self.depth += 1;
+        if self.depth > MAX_COMPILER_DEPTH {
+            self.depth -= 1;
+            return Err(CompilerError::Internal(
+                "maximum nesting depth exceeded during label scan".into(),
+            ));
+        }
+        let result = self.scan_labels_impl(ast);
+        self.depth -= 1;
+        result
+    }
+
+    fn scan_labels_impl(&mut self, ast: &Ast) -> Result<(), CompilerError> {
         match ast.content() {
             AstContent::LabeledBlock { label, block, .. } => {
                 if self.label_placeholders.contains_key(label) {
@@ -387,6 +411,23 @@ impl CompilerState {
         ast: &Ast,
         next: Option<NodeIndex>,
     ) -> Result<Option<NodeIndex>, CompilerError> {
+        self.depth += 1;
+        if self.depth > MAX_COMPILER_DEPTH {
+            self.depth -= 1;
+            return Err(CompilerError::Internal(
+                "maximum nesting depth exceeded during compilation".into(),
+            ));
+        }
+        let result = self.compile_node_impl(ast, next);
+        self.depth -= 1;
+        result
+    }
+
+    fn compile_node_impl(
+        &mut self,
+        ast: &Ast,
+        next: Option<NodeIndex>,
+    ) -> Result<Option<NodeIndex>, CompilerError> {
         match ast.content() {
             // ── Block ────────────────────────────────────────────────────────
             AstContent::Block(stmts) => {
@@ -423,10 +464,13 @@ impl CompilerState {
 
                 if was_outermost {
                     // Exit replay mode; queue must be exhausted at this point.
-                    debug_assert!(
-                        self.preassign_ids.as_ref().is_none_or(|q| q.is_empty()),
-                        "preassign_ids should be exhausted after block compilation"
-                    );
+                    if let Some(ref q) = self.preassign_ids
+                        && !q.is_empty()
+                    {
+                        return Err(CompilerError::Internal(
+                            "preassign_ids queue not exhausted after block compilation".into(),
+                        ));
+                    }
                     self.preassign_ids = None;
                 }
 

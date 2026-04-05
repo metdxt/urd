@@ -192,7 +192,10 @@ fn display_value(val: &RuntimeValue) -> String {
         RuntimeValue::Dice(count, sides) => format!("{}d{}", count, sides),
 
         RuntimeValue::Roll(rolls) => {
-            let sum: i64 = rolls.iter().sum();
+            let sum: i64 = rolls
+                .iter()
+                .try_fold(0i64, |acc, &x| acc.checked_add(x))
+                .unwrap_or(i64::MAX);
             let parts = rolls
                 .iter()
                 .map(|r| r.to_string())

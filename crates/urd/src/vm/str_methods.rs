@@ -215,8 +215,18 @@ pub(super) fn dispatch(
                     n
                 )));
             }
+            const MAX_REPEAT_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
+            let n_usize = n as usize;
+            let total = raw.len().checked_mul(n_usize).ok_or_else(|| {
+                super::VmError::TypeError("str.repeat(): result size overflows usize".into())
+            })?;
+            if total > MAX_REPEAT_BYTES {
+                return Err(super::VmError::TypeError(format!(
+                    "str.repeat(): result would be {total} bytes (limit: {MAX_REPEAT_BYTES})"
+                )));
+            }
             Ok(RuntimeValue::Str(ParsedString::new_plain(
-                &raw.repeat(n as usize),
+                &raw.repeat(n_usize),
             )))
         }
 

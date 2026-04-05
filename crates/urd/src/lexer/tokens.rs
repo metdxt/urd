@@ -18,7 +18,7 @@ use crate::erro::LexerError;
 #[allow(missing_docs)] // most tokens are self-explanatory
 #[derive(Logos, Display, Debug, Clone, PartialEq)]
 #[logos(error = LexerError)]
-#[logos(skip r"[ \t\r]+")] // Skip whitespace
+#[logos(skip r"[\u{FEFF} \t\r]+")] // Skip whitespace (including BOM)
 #[logos(skip(r"#[^\n]*", allow_greedy = true))] // Skip # line comments (## doc comments are matched first as tokens)
 pub enum Token {
     /// Documentation comment token (`## some doc text`).
