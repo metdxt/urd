@@ -69,6 +69,7 @@ label start {
 # tavern.urd's `leave_tavern` label jumps back to this label, which is
 # why tavern.urd needs to import this file.
 # =============================================================================
+@entry
 label hub {
     if visited_tavern > 0 {
         narrator: {

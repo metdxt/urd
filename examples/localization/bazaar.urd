@@ -81,6 +81,7 @@ label start {
 
 # ── Story: exit ───────────────────────────────────────────────────────────────
 
+@entry
 label farewell {
     if has_potion {
         narrator: "You leave with a potion in your pack and {gold} gold."

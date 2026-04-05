@@ -1,7 +1,8 @@
 # Entry Points
 
-Every Urd script needs a place to begin execution. The `@entry` decorator marks
-exactly which label the VM should start from when the script runs.
+The `@entry` decorator marks labels as public entry points. A script may contain
+multiple `@entry` labels; the VM uses the first one (or a host-specified one) to
+begin execution.
 
 ---
 
@@ -23,28 +24,26 @@ When the VM loads this script, it begins execution at the `start` label. Without
 
 ---
 
-## One Entry Per Script
+## Multiple Entry Points
 
-Each script file must contain **exactly one** `@entry` decorator. If you
-accidentally mark two labels with `@entry`, the compiler emits a
-`DuplicateEntry` diagnostic:
+A script file may contain any number of `@entry` decorators. Each decorated
+label is treated as a public entry point — a place the host or VM can begin
+execution from:
 
 ```urd
-# ✗ DuplicateEntry — only one @entry is allowed per file
-
 @entry
 label intro {
     narrator: "This is the intro."
 }
 
 @entry
-label also_intro {
-    narrator: "This is another intro."
+label tutorial {
+    narrator: "Let me show you around."
 }
 ```
 
-The compiler flags the second `@entry` as the duplicate, pointing back to the
-first one.
+When no specific label is requested, the VM starts at the first `@entry` label
+it encounters.
 
 ---
 

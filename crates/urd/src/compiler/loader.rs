@@ -100,7 +100,8 @@ fn compile_flat(
 
     // Phase 2 — allocate one Nop stub per label per module in one shared graph.
     let mut shared_graph = IrGraph::new();
-    let mut local_labels = pre_allocate_labels(&all, &mut shared_graph)?;
+    let (mut local_labels, mut entry_labels_per_module) =
+        pre_allocate_labels(&all, &mut shared_graph)?;
 
     // If the root has a known on-disk filename, register its label map under
     // that filename too.  Without this, phase 3's `build_global_labels` cannot
@@ -108,18 +109,24 @@ fn compile_flat(
     // that was loaded as a dependency — it would look for
     // `local_labels.get("main.urd")` and find nothing, so `main.hub` etc.
     // would never be added to `graph.labels`.
-    if let Some(rp) = root_path
-        && let Some(root_map) = local_labels.get("").cloned()
-    {
-        local_labels.entry(rp.to_string()).or_insert(root_map);
+    if let Some(rp) = root_path {
+        if let Some(root_map) = local_labels.get("").cloned() {
+            local_labels.entry(rp.to_string()).or_insert(root_map);
+        }
+        if let Some(root_entries) = entry_labels_per_module.get("").cloned() {
+            entry_labels_per_module
+                .entry(rp.to_string())
+                .or_insert(root_entries);
+        }
     }
 
     // Phase 3 — build the cross-module label map from every import statement.
-    let global_labels = build_global_labels(&all, &local_labels);
+    let (global_labels, exported_labels) =
+        build_global_labels(&all, &local_labels, &entry_labels_per_module);
     shared_graph.labels = global_labels;
 
     // Phase 4 — emit IR for every module into the shared graph.
-    emit_all(&all, local_labels, shared_graph, root_path)
+    emit_all(&all, local_labels, shared_graph, root_path, exported_labels)
 }
 
 // ─── Phase 1 · Load ───────────────────────────────────────────────────────────
@@ -285,10 +292,17 @@ fn collect_import_refs_from_ast(ast: &Ast, out: &mut Vec<ImportRef>) {
 
 // ─── Phase 2 · Pre-allocate ───────────────────────────────────────────────────
 
+/// Per-module label placeholders and entry-label sets returned by [`pre_allocate_labels`].
+type PreAllocResult = (
+    HashMap<String, HashMap<String, NodeIndex>>,
+    HashMap<String, HashSet<String>>,
+);
+
 /// For every label in every module push one [`IrNodeKind::Nop`] placeholder
 /// into `graph` and record its [`NodeIndex`].
 ///
-/// Returns `module_path → (bare_label_name → NodeIndex)`.  The `NodeIndex`
+/// Returns `module_path → (bare_label_name → NodeIndex)` alongside a map of
+/// which labels in each module are decorated with `@entry`.  The `NodeIndex`
 /// values are valid in `graph` and serve two roles later:
 ///
 /// - As `label_placeholders` during each module's emit phase so that
@@ -297,18 +311,21 @@ fn collect_import_refs_from_ast(ast: &Ast, out: &mut Vec<ImportRef>) {
 fn pre_allocate_labels(
     all: &AllModules,
     graph: &mut IrGraph,
-) -> Result<HashMap<String, HashMap<String, NodeIndex>>, CompilerError> {
+) -> Result<PreAllocResult, CompilerError> {
     let mut result: HashMap<String, HashMap<String, NodeIndex>> = HashMap::new();
+    let mut entry_map: HashMap<String, HashSet<String>> = HashMap::new();
 
     for path in &all.order {
         if let Some(ast) = all.asts.get(path) {
             let mut labels: HashMap<String, NodeIndex> = HashMap::new();
-            scan_label_nops(ast, graph, &mut labels)?;
+            let mut entry_labels: HashSet<String> = HashSet::new();
+            scan_label_nops(ast, graph, &mut labels, &mut entry_labels)?;
             result.insert(path.clone(), labels);
+            entry_map.insert(path.clone(), entry_labels);
         }
     }
 
-    Ok(result)
+    Ok((result, entry_map))
 }
 
 /// Walk `ast` and push one [`IrNodeKind::Nop`] into `graph` for each
@@ -317,6 +334,7 @@ fn scan_label_nops(
     ast: &Ast,
     graph: &mut IrGraph,
     labels: &mut HashMap<String, NodeIndex>,
+    entry_labels: &mut HashSet<String>,
 ) -> Result<(), CompilerError> {
     match ast.content() {
         AstContent::LabeledBlock { label, block, .. } => {
@@ -324,11 +342,15 @@ fn scan_label_nops(
                 return Err(CompilerError::DuplicateLabel(label.clone()));
             }
             labels.insert(label.clone(), graph.push(IrNodeKind::Nop));
-            scan_label_nops(block, graph, labels)?;
+            // Track labels decorated with @entry.
+            if ast.decorators().iter().any(|d| d.name() == "entry") {
+                entry_labels.insert(label.clone());
+            }
+            scan_label_nops(block, graph, labels, entry_labels)?;
         }
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                scan_label_nops(stmt, graph, labels)?;
+                scan_label_nops(stmt, graph, labels, entry_labels)?;
             }
         }
         AstContent::If {
@@ -336,21 +358,21 @@ fn scan_label_nops(
             else_block,
             ..
         } => {
-            scan_label_nops(then_block, graph, labels)?;
+            scan_label_nops(then_block, graph, labels, entry_labels)?;
             if let Some(eb) = else_block {
-                scan_label_nops(eb, graph, labels)?;
+                scan_label_nops(eb, graph, labels, entry_labels)?;
             }
         }
         AstContent::Menu { options } => {
             for opt in options {
                 if let AstContent::MenuOption { content, .. } = opt.content() {
-                    scan_label_nops(content, graph, labels)?;
+                    scan_label_nops(content, graph, labels, entry_labels)?;
                 }
             }
         }
         AstContent::Match { arms, .. } => {
             for arm in arms {
-                scan_label_nops(&arm.body, graph, labels)?;
+                scan_label_nops(&arm.body, graph, labels, entry_labels)?;
             }
         }
         // DecoratorDef bodies are stored as raw Ast for lazy apply-time
@@ -373,8 +395,10 @@ fn scan_label_nops(
 fn build_global_labels(
     all: &AllModules,
     local_labels: &HashMap<String, HashMap<String, NodeIndex>>,
-) -> HashMap<String, NodeIndex> {
+    entry_labels_per_module: &HashMap<String, HashSet<String>>,
+) -> (HashMap<String, NodeIndex>, HashSet<String>) {
     let mut global: HashMap<String, NodeIndex> = HashMap::new();
+    let mut exported: HashSet<String> = HashSet::new();
 
     for refs in all.import_refs.values() {
         for iref in refs {
@@ -382,16 +406,27 @@ fn build_global_labels(
                 continue;
             };
 
+            let module_entries = entry_labels_per_module.get(&iref.imported_path);
+
             match &iref.style {
                 ImportStyle::WholeModule { alias } => {
                     for (label_name, &idx) in imported_locals {
-                        global.insert(namespace(alias, label_name), idx);
+                        let key = namespace(alias, label_name);
+                        global.insert(key.clone(), idx);
+                        // Only @entry labels are valid cross-module jump targets.
+                        if module_entries
+                            .is_some_and(|entries| entries.contains(label_name.as_str()))
+                        {
+                            exported.insert(key);
+                        }
                     }
                 }
                 ImportStyle::Symbols { symbols } => {
                     for (orig, alias) in symbols {
                         if let Some(&idx) = imported_locals.get(orig.as_str()) {
                             global.insert(alias.clone(), idx);
+                            // Symbol imports are explicit opt-in; always exported.
+                            exported.insert(alias.clone());
                         } else {
                             log::warn!(
                                 "symbol import: label '{}' not found in '{}'",
@@ -405,7 +440,7 @@ fn build_global_labels(
         }
     }
 
-    global
+    (global, exported)
 }
 
 // ─── Phase 4 · Emit ───────────────────────────────────────────────────────────
@@ -428,10 +463,12 @@ fn emit_all(
     local_labels: HashMap<String, HashMap<String, NodeIndex>>,
     shared_graph: IrGraph,
     root_path: Option<&str>,
+    exported_labels: HashSet<String>,
 ) -> Result<IrGraph, CompilerError> {
     let mut state = CompilerState::new();
     // Install the pre-populated shared graph (Nop stubs + global label map).
     state.graph = shared_graph;
+    state.exported_labels = Some(exported_labels);
 
     let mut preamble_entries: Vec<NodeIndex> = Vec::new();
 

@@ -5,9 +5,7 @@
 //! assignments, and bare expressions are rejected with a [`AnalysisError::TopLevelFlow`]
 //! diagnostic.
 //!
-//! Additionally, the pass checks that at most one `LabeledBlock` carries the
-//! `@entry` decorator.  A second (or subsequent) `@entry` label produces a
-//! [`AnalysisError::DuplicateEntry`] error.
+//! `@entry` decorators mark labels as public entry points; multiple are allowed.
 
 use crate::parser::ast::{Ast, AstContent, Operator};
 use crate::runtime::value::RuntimeValue;
@@ -18,8 +16,7 @@ use super::AnalysisError;
 ///
 /// If the root node is a [`AstContent::Block`], each direct child is inspected.
 /// Children whose content is not one of the allowed definition kinds produce a
-/// [`AnalysisError::TopLevelFlow`] error.  Any duplicate `@entry` decorators
-/// produce a [`AnalysisError::DuplicateEntry`] error.
+/// [`AnalysisError::TopLevelFlow`] error.
 ///
 /// If the root node is *not* a `Block`, the function returns an empty `Vec`
 /// (nothing to check).
@@ -40,28 +37,6 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
                 description,
                 span: child.span(),
             });
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 2. Enforce at most one @entry decorator
-    // ------------------------------------------------------------------
-    let mut first_entry_seen = false;
-
-    for child in children {
-        if let AstContent::LabeledBlock { label, .. } = child.content() {
-            let has_entry = child.decorators().iter().any(|d| d.name() == "entry");
-
-            if has_entry {
-                if first_entry_seen {
-                    errors.push(AnalysisError::DuplicateEntry {
-                        label: label.clone(),
-                        span: child.span(),
-                    });
-                } else {
-                    first_entry_seen = true;
-                }
-            }
         }
     }
 
@@ -386,55 +361,6 @@ mod tests {
         let ast = root_block(vec![label]);
         let errors = check(&ast);
         assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-    }
-
-    #[test]
-    fn duplicate_entry_is_reported() {
-        let label1 = Ast::labeled_block("first".into(), Ast::block(vec![]))
-            .with_decorators(vec![Decorator::bare("entry".into())])
-            .with_span(SimpleSpan::new((), 0..20));
-
-        let label2 = Ast::labeled_block("second".into(), Ast::block(vec![]))
-            .with_decorators(vec![Decorator::bare("entry".into())])
-            .with_span(SimpleSpan::new((), 21..40));
-
-        let ast = root_block(vec![label1, label2]);
-        let errors = check(&ast);
-
-        let dup_errors: Vec<_> = errors
-            .iter()
-            .filter(|e| matches!(e, AnalysisError::DuplicateEntry { .. }))
-            .collect();
-        assert_eq!(dup_errors.len(), 1);
-
-        match &dup_errors[0] {
-            AnalysisError::DuplicateEntry { label, .. } => {
-                assert_eq!(label, "second");
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn three_entries_produce_two_errors() {
-        let make_entry = |name: &str, start: usize, end: usize| {
-            Ast::labeled_block(name.into(), Ast::block(vec![]))
-                .with_decorators(vec![Decorator::bare("entry".into())])
-                .with_span(SimpleSpan::new((), start..end))
-        };
-
-        let ast = root_block(vec![
-            make_entry("a", 0, 10),
-            make_entry("b", 11, 20),
-            make_entry("c", 21, 30),
-        ]);
-        let errors = check(&ast);
-
-        let dup_errors: Vec<_> = errors
-            .iter()
-            .filter(|e| matches!(e, AnalysisError::DuplicateEntry { .. }))
-            .collect();
-        assert_eq!(dup_errors.len(), 2);
     }
 
     #[test]

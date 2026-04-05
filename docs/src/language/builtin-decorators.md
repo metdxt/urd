@@ -20,8 +20,8 @@ label start {
 
 **Rules:**
 
-- Exactly one `@entry` per script file. A second `@entry` produces a
-  `DuplicateEntry` diagnostic.
+- Multiple `@entry` decorators are allowed per file; each marks a label as a
+  public entry point.
 - Can only be applied to labels.
 - In multi-file projects, only the root script's `@entry` is used to start
   execution. Imported files may have their own `@entry` for standalone testing.

@@ -9,7 +9,6 @@
 #   TypeMismatch          — wrong primitive type in a typed declaration
 #   StructMismatch        — missing or wrongly-typed struct fields
 #   TopLevelFlow          — flow statement at the top level
-#   DuplicateEntry        — two labels decorated with @entry
 #   ConstReassignment     — assignment to a const binding
 #   EmptyMenu             — menu block with zero options
 #   NonExhaustiveMatch    — match missing one or more enum variants
@@ -129,18 +128,6 @@ label start {
         jump briefing
     }
 }
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ── ERROR: DuplicateEntry ─────────────────────────────────────────────────────
-# Only one label may carry the @entry decorator.
-# ══════════════════════════════════════════════════════════════════════════════
-
-@entry
-label emergency_start {
-    ai_core: "Backup entry point engaged. Station is in lockdown."
-    end!()
-}
-# error: DuplicateEntry — label 'emergency_start' carries a duplicate @entry
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ── WARNING: UnreachableLabel ─────────────────────────────────────────────────

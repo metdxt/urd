@@ -833,6 +833,7 @@ mod tests {
         loader.add(
             "common.urd",
             r#"
+@entry
 label greet {
     narrator: "Hello from common!"
 }
@@ -945,6 +946,7 @@ label start {
         loader.add(
             "common.urd",
             r#"
+@entry
 label shared {
     narrator: "Shared content."
 }
@@ -955,6 +957,7 @@ label shared {
             r#"
 import "common.urd" as common
 
+@entry
 label branch_a {
     narrator: "Branch A."
     jump common.shared
@@ -966,6 +969,7 @@ label branch_a {
             r#"
 import "common.urd" as common
 
+@entry
 label branch_b {
     narrator: "Branch B."
     jump common.shared

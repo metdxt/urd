@@ -86,38 +86,6 @@ The `gold = gold + 10` line is an assignment at the top level. Move it inside a 
 
 ---
 
-## `DuplicateEntry`
-
-**What it catches:** Two or more labels decorated with `@entry` in the same compilation unit.
-
-**Why it's an error:** The VM needs exactly one entry point to begin execution. Multiple `@entry` decorators create an ambiguous starting point.
-
-**Example:**
-
-```urd
-@entry
-label intro {
-    narrator: "Welcome."
-    end!()
-}
-
-@entry
-label tutorial {
-    narrator: "Let me show you around."
-    end!()
-}
-```
-
-**Diagnostic:**
-
-```text
-Duplicate @entry decorator on label 'tutorial'
-```
-
-Remove `@entry` from all but one label, or restructure your script so only one label is the true entry point.
-
----
-
 ## `ConstReassignment`
 
 **What it catches:** An assignment statement that targets a `const`-declared binding.
@@ -401,7 +369,6 @@ The analyzer walks the scope stack (globals, label-local `let` bindings, functio
 | `TypeMismatch` | Error | Wrong primitive type in a typed declaration |
 | `StructMismatch` | Error | Missing or wrongly-typed struct fields |
 | `TopLevelFlow` | Error | Flow statement outside any label |
-| `DuplicateEntry` | Error | Two labels with `@entry` |
 | `ConstReassignment` | Error | Assigning to a `const` binding |
 | `EmptyMenu` | Error | Menu block with zero options |
 | `MultipleMenuDefaults` | Error | More than one `_` wildcard option in a menu |

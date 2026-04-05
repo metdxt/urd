@@ -17,6 +17,7 @@ import (narrator, elara, gold, price, has_potion, haggled) from "bazaar.urd"
 
 # ── Browse ────────────────────────────────────────────────────────────────────
 
+@entry
 label browse {
     # ── Item ID — pass a slug, NEVER a raw display string. ───────────────────
     # The FTL selector in each locale maps this ID to the grammatically correct

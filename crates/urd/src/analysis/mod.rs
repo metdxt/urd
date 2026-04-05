@@ -243,14 +243,6 @@ pub enum AnalysisError {
         span: SimpleSpan,
     },
 
-    /// More than one label is decorated with `@entry`.
-    DuplicateEntry {
-        /// Name of the second (or subsequent) `@entry` label.
-        label: String,
-        /// Source span of the duplicate `@entry` label.
-        span: SimpleSpan,
-    },
-
     /// A `const` variable was assigned a new value after its initial declaration.
     ConstReassignment {
         /// The name of the constant.
@@ -491,7 +483,6 @@ impl AnalysisError {
             AnalysisError::UndefinedLabel { span, .. } => *span,
             AnalysisError::DeadEnd { span, .. } => *span,
             AnalysisError::TopLevelFlow { span, .. } => *span,
-            AnalysisError::DuplicateEntry { span, .. } => *span,
             AnalysisError::ConstReassignment { span, .. } => *span,
             AnalysisError::EmptyMenu { span, .. } => *span,
             AnalysisError::UnreachableLabel { span, .. } => *span,
@@ -628,10 +619,6 @@ impl AnalysisError {
                      only definitions (let/const/global, enum, struct, decorator, import, label) \
                      may appear at the top level"
                 )
-            }
-
-            AnalysisError::DuplicateEntry { label, .. } => {
-                format!("Duplicate @entry decorator on label '{label}'")
             }
 
             AnalysisError::ConstReassignment { name, .. } => {
@@ -826,10 +813,6 @@ impl AnalysisError {
 
             AnalysisError::TopLevelFlow { description, .. } => {
                 format!("{description} not allowed at top level")
-            }
-
-            AnalysisError::DuplicateEntry { label, .. } => {
-                format!("label '{label}' is a duplicate @entry")
             }
 
             AnalysisError::ConstReassignment { name, .. } => {

@@ -27,7 +27,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use urd::{
     Event, RuntimeValue, VmError, VmStep,
-    analysis::{AnalysisError, analyze},
     compiler::{Compiler, CompilerError, loader::parse_source},
     vm::{Vm, registry::DecoratorRegistry},
 };
@@ -1048,48 +1047,6 @@ label start {
         "current behaviour: empty string is truthy (all Str fall to `_ => true` in \
          is_truthy). Update this assertion if the design intentionally changes."
     );
-}
-
-/// ## CANARY — Analysis reports `DuplicateEntry` for two `@entry` labels.
-///
-/// This ensures the `top_level::check` pass remains correct as a regression
-/// guard.
-#[test]
-fn test_analysis_flags_duplicate_entry_decorator() {
-    let src = r#"
-@entry
-label first {
-    end!()
-}
-
-@entry
-label second {
-    end!()
-}
-"#;
-    let ast = parse_source(src).expect("parse");
-    let errors = analyze(&ast);
-
-    let dups: Vec<_> = errors
-        .iter()
-        .filter(|e| matches!(e, AnalysisError::DuplicateEntry { .. }))
-        .collect();
-
-    assert_eq!(
-        dups.len(),
-        1,
-        "expected exactly one DuplicateEntry error; got: {errors:?}"
-    );
-    match dups[0] {
-        AnalysisError::DuplicateEntry { label, .. } => {
-            assert_eq!(
-                label.as_str(),
-                "second",
-                "DuplicateEntry must name the second offending label"
-            );
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
 }
 
 /// ## CANARY — Duplicate label names are rejected by the compiler itself.

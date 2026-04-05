@@ -33,18 +33,6 @@ A statement that is not a definition appeared at the top level. Only `const`, `g
 jump start  # error: flow statement at top level
 ```
 
-### DuplicateEntry
-
-More than one label is decorated with `@entry`. Only a single entry point is allowed per script.
-
-```urd
-@entry
-label start { ... }
-
-@entry
-label also_start { ... }  # error: duplicate @entry
-```
-
 ### ConstReassignment
 
 A `const` variable was assigned a new value after its initial declaration.

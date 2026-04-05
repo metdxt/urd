@@ -37,6 +37,10 @@ pub enum CompilerError {
     #[error("jump to unknown label `{0}`")]
     UnknownLabel(String),
 
+    /// A cross-module jump targeted a label that exists but is not `@entry`.
+    #[error("label `{0}` is not marked `@entry` and cannot be reached from another module")]
+    PrivateLabel(String),
+
     /// Two labels with the same name were declared in the same compilation unit.
     #[error("duplicate label definition `{0}`")]
     DuplicateLabel(String),
@@ -127,6 +131,7 @@ impl Compiler {
             label_placeholders: HashMap::new(),
             id_ctx: Some(IdContext::new(file_stem)),
             preassign_ids: None,
+            exported_labels: None,
         };
         state.scan_labels(ast)?;
         let entry = state.compile_top_level(ast)?;
@@ -188,6 +193,11 @@ pub(super) struct CompilerState {
     /// [`IdContext`] methods directly, keeping counters stable.  `None` at all
     /// other times.
     pub(super) preassign_ids: Option<VecDeque<Option<String>>>,
+    /// Namespaced keys of labels that are valid cross-module jump targets.
+    /// Contains `@entry` labels from whole-module imports and all symbol-imported labels.
+    /// `None` for single-file compilation (no restriction).
+    /// `Some(set)` for multi-file compilation (enforce restriction).
+    pub(super) exported_labels: Option<HashSet<String>>,
 }
 
 impl CompilerState {
@@ -197,6 +207,7 @@ impl CompilerState {
             label_placeholders: HashMap::new(),
             id_ctx: None,
             preassign_ids: None,
+            exported_labels: None,
         }
     }
 
@@ -626,7 +637,12 @@ impl CompilerState {
                 ..
             } => {
                 // Check for cross-module dot-notation: "alias.label_name"
-                let target = resolve_label(label, &self.label_placeholders, &self.graph.labels)?;
+                let target = resolve_label(
+                    label,
+                    &self.label_placeholders,
+                    &self.graph.labels,
+                    &self.exported_labels,
+                )?;
 
                 if *expects_return {
                     // `jump label and return` — subroutine call without a binding.
@@ -648,8 +664,12 @@ impl CompilerState {
             // ── LetCall ───────────────────────────────────────────────────────
             AstContent::LetCall { name, target, .. } => {
                 // Check for cross-module dot-notation: "alias.label_name"
-                let target_id =
-                    resolve_label(target, &self.label_placeholders, &self.graph.labels)?;
+                let target_id = resolve_label(
+                    target,
+                    &self.label_placeholders,
+                    &self.graph.labels,
+                    &self.exported_labels,
+                )?;
 
                 let id = self.graph.push(IrNodeKind::LetCall { var: name.clone() });
                 self.graph.add_edge(id, target_id, IrEdge::Call);
@@ -1172,15 +1192,24 @@ fn resolve_label(
     label: &str,
     label_placeholders: &HashMap<String, NodeIndex>,
     graph_labels: &HashMap<String, NodeIndex>,
+    exported_labels: &Option<HashSet<String>>,
 ) -> Result<NodeIndex, CompilerError> {
     if let Some(dot_pos) = label.find('.') {
         let alias = &label[..dot_pos];
         let label_name = &label[dot_pos + 1..];
         let namespaced = crate::ir::namespace(alias, label_name);
-        graph_labels
-            .get(&namespaced)
-            .copied()
-            .ok_or_else(|| CompilerError::UnknownLabel(label.to_owned()))
+        match graph_labels.get(&namespaced) {
+            Some(&idx) => {
+                // If exported_labels is Some (multi-file), enforce the restriction.
+                if let Some(exported) = exported_labels
+                    && !exported.contains(&namespaced)
+                {
+                    return Err(CompilerError::PrivateLabel(label.to_owned()));
+                }
+                Ok(idx)
+            }
+            None => Err(CompilerError::UnknownLabel(label.to_owned())),
+        }
     } else {
         // Try locally-defined labels first, then directly-imported labels.
         label_placeholders
@@ -1761,7 +1790,7 @@ mod tests {
     #[test]
     fn test_cross_module_jump_resolves_to_merged_node_id() {
         let mut loader = MemLoader::new();
-        loader.add("scenes.urd", "label intro { let x = 1 }");
+        loader.add("scenes.urd", "@entry\nlabel intro { let x = 1 }");
 
         let import_node = Ast::import_module("scenes.urd".to_string(), "scenes".to_string());
         // jump scenes.intro  → stored as Jump { label: "scenes.intro" }
@@ -1803,11 +1832,11 @@ mod tests {
         let mut loader = MemLoader::new();
         loader.add(
             "a.urd",
-            "import \"b.urd\" as b\nlabel a_label {\n  jump b.b_label\n}\n",
+            "import \"b.urd\" as b\n@entry\nlabel a_label {\n  jump b.b_label\n}\n",
         );
         loader.add(
             "b.urd",
-            "import \"a.urd\" as a\nlabel b_label {\n  jump a.a_label\n}\n",
+            "import \"a.urd\" as a\n@entry\nlabel b_label {\n  jump a.a_label\n}\n",
         );
 
         let main_ast = Ast::block(vec![Ast::import_module(
@@ -2240,6 +2269,61 @@ mod tests {
             .collect();
         choice_ids.sort();
         assert_eq!(choice_ids, vec!["file-start-menu_1", "file-start-menu_2"]);
+    }
+
+    // ── @entry restriction tests ─────────────────────────────────────────
+
+    /// A whole-module import of a label without `@entry` must fail with
+    /// `PrivateLabel` when a cross-module jump targets it.
+    #[test]
+    fn test_cross_module_jump_to_non_entry_label_fails() {
+        let mut loader = MemLoader::new();
+        loader.add("lib.urd", "label secret { let x = 1 }");
+
+        let main_src = "import \"lib.urd\" as lib\nlabel start {\n  jump lib.secret\n}\n";
+        let ast = crate::compiler::loader::parse_source(main_src).expect("parse");
+        let result = Compiler::compile_with_loader(&ast, &loader);
+
+        assert!(
+            matches!(result, Err(CompilerError::PrivateLabel(ref l)) if l == "lib.secret"),
+            "expected PrivateLabel('lib.secret'), got: {:?}",
+            result,
+        );
+    }
+
+    /// A whole-module import of a label decorated with `@entry` must succeed.
+    #[test]
+    fn test_cross_module_jump_to_entry_label_succeeds() {
+        let mut loader = MemLoader::new();
+        loader.add("lib.urd", "@entry\nlabel public_api { let x = 1 }");
+
+        let main_src = "import \"lib.urd\" as lib\nlabel start {\n  jump lib.public_api\n}\n";
+        let ast = crate::compiler::loader::parse_source(main_src).expect("parse");
+        let result = Compiler::compile_with_loader(&ast, &loader);
+
+        assert!(
+            result.is_ok(),
+            "jump to @entry label should succeed, got: {:?}",
+            result,
+        );
+    }
+
+    /// Symbol imports (`import (label) from "..."`) bypass the `@entry`
+    /// restriction — the explicit opt-in is sufficient.
+    #[test]
+    fn test_symbol_import_bypasses_entry_restriction() {
+        let mut loader = MemLoader::new();
+        loader.add("lib.urd", "label secret { let x = 1 }");
+
+        let main_src = "import (secret) from \"lib.urd\"\nlabel start {\n  jump secret\n}\n";
+        let ast = crate::compiler::loader::parse_source(main_src).expect("parse");
+        let result = Compiler::compile_with_loader(&ast, &loader);
+
+        assert!(
+            result.is_ok(),
+            "symbol import should bypass @entry restriction, got: {:?}",
+            result,
+        );
     }
 
     /// Two dialogues in the same labeled block must receive loc IDs in **source
