@@ -24,8 +24,8 @@
 //! ## Exclusions
 //!
 //! - `global` declarations (may be read cross-file).
+//! - `@fluent`-decorated variables (consumed by the localizer at runtime, not by urd code).
 //! - `LetCall` targets (`let x = jump label and return`) — the jump is the effect.
-
 use std::collections::HashMap;
 
 use chumsky::span::SimpleSpan;
@@ -172,8 +172,12 @@ fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
                     // previously declared variable).
                     scan_reads(decl_defs, unread);
 
+                    // @fluent-decorated variables are consumed by the localizer
+                    // at runtime — they should not be flagged as unused.
+                    let is_fluent = node.decorators().iter().any(|d| d.name() == "fluent");
+
                     // Then register the declaration.
-                    if let Some(name) = extract_decl_name(decl_name) {
+                    if !is_fluent && let Some(name) = extract_decl_name(decl_name) {
                         // If the same name was already in `unread` (re-declaration
                         // / shadowing), the old entry is replaced — the old one was
                         // already covered by the previous declaration's check or
@@ -611,6 +615,59 @@ label inner {
         assert!(
             names.contains(&"y"),
             "y in inner is unused — should be flagged, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn fluent_decorated_variable_not_flagged() {
+        let src = r#"
+label scene {
+    @fluent("item")
+    let item = "health_potion"
+    narrator: "Hello"
+}
+"#;
+        let ast = parse(src);
+        let errors = check(&ast);
+        assert!(
+            unused_names(&errors).is_empty(),
+            "@fluent variable should not be flagged as unused, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn fluent_bare_decorated_variable_not_flagged() {
+        let src = r#"
+label scene {
+    @fluent
+    let gold = 50
+    narrator: "Hello"
+}
+"#;
+        let ast = parse(src);
+        let errors = check(&ast);
+        assert!(
+            unused_names(&errors).is_empty(),
+            "@fluent (bare) variable should not be flagged as unused, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn non_fluent_unused_variable_still_flagged() {
+        let src = r#"
+label scene {
+    @fluent("item")
+    let item = "health_potion"
+    let unused = 42
+    narrator: "Hello"
+}
+"#;
+        let errors = check(&parse(src));
+        let names = unused_names(&errors);
+        assert_eq!(
+            names,
+            vec!["unused"],
+            "only the non-@fluent variable should be flagged"
         );
     }
 
