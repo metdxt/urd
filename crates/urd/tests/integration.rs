@@ -32,3 +32,6 @@ mod adversarial;
 
 #[path = "integration/adversarial_new.rs"]
 mod adversarial_new;
+
+#[path = "integration/adversarial_round2.rs"]
+mod adversarial_round2;
