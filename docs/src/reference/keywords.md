@@ -6,51 +6,42 @@ This page lists every reserved keyword in the Urd language, its purpose, and a b
 
 | Keyword | Purpose | Example |
 |---------|---------|---------|
-| `const` | Immutable binding — value cannot be reassigned after declaration | `const narrator = :{ name: "Narrator" }` |
-| `let` | Mutable local variable — scoped to the enclosing label or block | `let gold = 100` |
-| `global` | Mutable persistent variable — survives across label jumps | `global health = 100` |
-| `extern` | Host-provided value declaration — must be injected by the game engine before execution | `extern player_name: str` |
+| `const` | Immutable binding | `const MAX_HP: int = 100` |
+| `let` | Mutable local variable | `let gold = 100` |
+| `global` | Mutable persistent variable | `global health = 100` |
+| `extern` | Host-provided value declaration | `extern player_name: str` |
 
 ### `const`
 
-Constants are the right choice for values that never change: speaker definitions, fixed thresholds, configuration data.
+Immutable binding — reassignment is a compile-time error. See [Constants](../language/constants.md).
 
 ```urd
 const narrator = :{ name: "Narrator", name_color: "white" }
-const MAX_HEALTH: int = 100
 ```
-
-Attempting to reassign a `const` produces a compile-time error (`ConstReassignment`).
 
 ### `let`
 
-Local variables are scoped to the enclosing label. They do not persist across `jump` transitions.
+Mutable local variable — scoped to the enclosing block or label. See [Variables & Types](../language/variables-and-types.md).
 
 ```urd
-label shop {
-    let total = 0
-    total = total + 30
-    narrator: "Your total is {total} gold."
-    end!()
-}
+let total = 0
+total = total + 30
 ```
 
 ### `global`
 
-Globals persist across the entire script execution. Use them for game state that must survive label transitions.
+Mutable variable that persists across label jumps. See [Globals](../language/globals.md).
 
 ```urd
 global gold = 50
-global has_key = false
 ```
 
 ### `extern`
 
-Extern declarations tell the compiler that a value will be provided by the host runtime. The script can read it like any other variable, but it must be injected before execution begins.
+Value provided by the host runtime — not defined in the script. See [Extern Values](../language/extern-values.md).
 
 ```urd
 extern player_name: str
-extern difficulty: int
 ```
 
 ---
@@ -251,9 +242,11 @@ import Item as GameItem from "items.urd"
 | `and` | Logical AND (short-circuiting) | `if alive and healthy { ... }` |
 | `or` | Logical OR (short-circuiting) | `if has_key or has_lockpick { ... }` |
 | `not` | Logical NOT (unary) | `if not game_over { ... }` |
-| `in` | Membership / iteration test | `if 5 in 1..10 { ... }` |
+| `in` | Range membership test (`Int in Range`) | `if 5 in 1..10 { ... }` |
 
-These keyword operators are equivalent to their symbolic counterparts (`&&`, `||`, `!`) but read more naturally in dialogue-heavy scripts.
+The `and`, `or`, and `not` operators are equivalent to their symbolic counterparts (`&&`, `||`, `!`) but read more naturally in dialogue-heavy scripts.
+
+> **Note:** The `in` operator **only** works with ranges (`Int in Range`). It does not support lists, maps, or strings.
 
 ---
 

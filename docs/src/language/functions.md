@@ -232,19 +232,30 @@ narrator: "You have {format_gold(gold)}."
 
 ## Scope
 
-Functions execute in their own isolated scope. They have access to their
-parameters but not to local variables from the calling context. Global
-variables and constants are accessible from within functions.
+Functions are **pure** — they execute in a fully isolated environment that
+contains only their parameters. They have no access to outer-scope variables,
+globals, externs, or constants at runtime. This is the purity guarantee:
+function bodies cannot read or write ambient state.
 
 ```urd
 global difficulty = 3
 
-fn adjusted_roll() -> int {
+fn add_bonus(roll: int, bonus: int) -> int {
+    # Only 'roll' and 'bonus' are visible here.
+    # 'difficulty' is NOT accessible — it would produce an UndefinedVariable error.
+    return roll + bonus
+}
+
+label check {
     let roll = 1d20
-    # 'difficulty' is a global — accessible here
-    return roll + difficulty
+    let result = add_bonus(roll, difficulty)
+    narrator: "You rolled {result}."
 }
 ```
+
+If a function needs external data, pass it explicitly as a parameter. This
+keeps functions predictable and testable — their output depends only on their
+inputs.
 
 ---
 

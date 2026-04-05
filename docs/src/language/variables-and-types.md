@@ -20,28 +20,25 @@ x = x + 1
 
 ### `const` — Immutable Binding
 
-`const` creates a binding that cannot be reassigned after its initial declaration. The compiler
-emits a `ConstReassignment` diagnostic if you try.
+`const` creates a binding that cannot be reassigned after its initial declaration.
 
 ```urd
 const max_health = 100
-const narrator = :{ name: "Narrator", name_color: "white" }
 ```
 
-See [Constants](./constants.md) for full details.
+See [Constants](./constants.md) for full details on usage patterns, character
+definitions, and compile-time enforcement.
 
 ### `global` — Mutable, Persistent State
 
-`global` creates a mutable binding that persists across label boundaries. Use it
-for game state that must survive jumps between labels.
+`global` creates a mutable binding that persists across label boundaries.
 
 ```urd
 global gold = 0
-global health = 100
-global has_torch = false
 ```
 
-See [Globals](./globals.md) for full details.
+See [Globals](./globals.md) for full details on persistence, the `@fluent`
+decorator, and common use cases.
 
 ### `extern` — Host-Provided Value
 
@@ -53,8 +50,7 @@ extern player_name
 extern difficulty: int
 ```
 
-The host is responsible for injecting these values into the VM environment before
-execution begins. See [Extern Values](./extern-values.md) for integration details.
+See [Extern Values](./extern-values.md) for integration details.
 
 ---
 
@@ -175,19 +171,7 @@ let sword: Item = :{ name: "Sword", value: 10 }
 
 ---
 
-## Type Annotations
-
-Type annotations are optional but, when present, are enforced at compile time.
-Use `: Type` after the variable name.
-
-```urd
-let x: int = 42
-let name: str = "Urd"
-const pi: float = 3.14159
-global health: int = 100
-```
-
-See [Type Annotations](./type-annotations.md) for the full annotation reference.
+For the full annotation reference, see [Type Annotations](./type-annotations.md).
 
 ---
 

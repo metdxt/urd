@@ -2,6 +2,8 @@
 
 Urd provides two built-in collection types: **lists** (ordered, indexed sequences) and **maps** (key-value dictionaries). Both are first-class values that can be stored in variables, passed to functions, and nested inside each other.
 
+> **Immutable by design.** All list and map methods are **pure** — they return new values without mutating the receiver. To update a variable, reassign the result: `items = items.append("bow")`.
+
 ---
 
 ## Lists
@@ -37,50 +39,32 @@ narrator: "You swapped your sword for an {items[0]}."
 # → "You swapped your sword for an axe."
 ```
 
-### List Methods
+### Working with Lists
 
-Lists support a rich set of built-in methods:
-
-| Method | Description |
-|--------|-------------|
-| `.len()` | Returns the number of elements |
-| `.push(val)` | Appends `val` to the end of the list |
-| `.pop()` | Removes and returns the last element |
-| `.contains(val)` | Returns `true` if `val` is in the list |
-| `.remove(index)` | Removes the element at `index` and returns it |
-| `.reverse()` | Reverses the list in place |
-| `.sort()` | Sorts the list in place (elements must be comparable) |
-| `.map(fn)` | Returns a new list with `fn` applied to each element |
-| `.filter(fn)` | Returns a new list with only elements where `fn` returns `true` |
-| `.fold(init, fn)` | Reduces the list to a single value using `fn(accumulator, element)` |
-
-#### Examples
+Since all methods are pure, you reassign the result to update a variable:
 
 ```urd
 let inventory = ["sword", "shield"]
 
-# Adding and removing items
-inventory.push("potion")
+# Adding items (returns a new list)
+inventory = inventory.append("potion")
 narrator: "You now carry {inventory.len()} items."
 # → "You now carry 3 items."
 
-let last = inventory.pop()
-narrator: "You dropped the {last}."
-# → "You dropped the potion."
+# Removing the last element (returns a new list without it)
+inventory = inventory.pop()
+narrator: "You dropped the last item. Now carrying {inventory.len()}."
+# → "You dropped the last item. Now carrying 2."
 
 # Checking membership
 if inventory.contains("shield") {
     narrator: "Your shield is ready."
 }
-
-# Removing by index
-inventory.remove(0)
-narrator: "You discarded the {inventory[0]}."
 ```
 
-#### Functional Methods
+### Functional Methods
 
-The `.map()`, `.filter()`, and `.fold()` methods accept function values, enabling a functional programming style:
+The `.map()`, `.filter()`, and `.reduce()` methods accept function values, enabling a functional programming style:
 
 ```urd
 let prices = [10, 25, 50, 5, 100]
@@ -92,9 +76,11 @@ let inflated = prices.map(fn(p: int) -> int { return p * 2 })
 let affordable = prices.filter(fn(p: int) -> bool { return p <= 30 })
 
 # Sum all prices
-let total = prices.fold(0, fn(acc: int, p: int) -> int { return acc + p })
+let total = prices.reduce(0, fn(acc: int, p: int) -> int { return acc + p })
 narrator: "Total cost: {total} gold."
 ```
+
+For the complete list of list methods, see the [Built-in Methods Reference](../reference/builtin-methods.md#list-methods).
 
 ---
 
@@ -134,65 +120,72 @@ stats["health"] = 80
 stats["armor"] = 25
 ```
 
-### Map Methods
+### Working with Maps
 
-Maps provide the following built-in methods:
-
-| Method | Description |
-|--------|-------------|
-| `.len()` | Returns the number of key-value pairs |
-| `.keys()` | Returns a list of all keys (as strings) |
-| `.values()` | Returns a list of all values |
-| `.contains_key(key)` | Returns `true` if the map has the given key |
-| `.remove(key)` | Removes the entry for `key` and returns the value |
-| `.insert(key, val)` | Inserts or updates a key-value pair |
-
-#### Examples
+Like lists, all map methods are pure and return new maps:
 
 ```urd
 let config = :{ difficulty: "hard", volume: 80, subtitles: true }
 
 narrator: "Settings count: {config.len()}"
 
-if config.contains_key("subtitles") {
+if config.has("subtitles") {
     narrator: "Subtitles are enabled."
 }
 
 let all_keys = config.keys()
-# all_keys is ["difficulty", "volume", "subtitles"]
+# all_keys is ["difficulty", "subtitles", "volume"] (sorted)
 
-config.insert("brightness", 70)
-config.remove("volume")
+config = config.set("brightness", 70)
+config = config.remove("volume")
 ```
+
+For the complete list of map methods, see the [Built-in Methods Reference](../reference/builtin-methods.md#map-methods).
 
 ---
 
-## The `in` Operator
+## Membership Testing
 
-The `in` operator tests membership in both lists and maps:
+### The `in` Operator (Ranges Only)
 
-### Lists — Value Membership
+The `in` operator tests whether an integer falls within a range. It does **not** work with lists or maps:
+
+```urd
+let level = 5
+
+if level in 1..10 {
+    narrator: "You are in the beginner zone."
+}
+
+if level in 1..=5 {
+    narrator: "You qualify for the tutorial."
+}
+```
+
+### Lists — Use `.contains()`
+
+To check whether a value exists in a list, use the `.contains()` method:
 
 ```urd
 let inventory = ["sword", "shield", "potion"]
 
-if "sword" in inventory {
+if inventory.contains("sword") {
     narrator: "You draw your sword."
 }
 
-if not "bow" in inventory {
+if not inventory.contains("bow") {
     narrator: "You don't have a ranged weapon."
 }
 ```
 
-### Maps — Key Membership
+### Maps — Use `.has()`
 
-For maps, `in` checks whether a **key** exists:
+To check whether a key exists in a map, use the `.has()` method:
 
 ```urd
 let stats = :{ health: 100, mana: 50 }
 
-if "mana" in stats {
+if stats.has("mana") {
     narrator: "You channel your magical energy."
 }
 ```
@@ -254,5 +247,6 @@ narrator: "Active quests: {quest_log["active"].len()}"
 | `map.key` | Dot access (map) |
 | `list[i] = val` | Subscript assign (list) |
 | `map["key"] = val` | Subscript assign (map) |
-| `val in list` | List membership test |
-| `key in map` | Map key existence test |
+| `n in range` | Range membership (`Int` on the left, `Range` on the right) |
+| `list.contains(val)` | List membership test |
+| `map.has(key)` | Map key existence test |

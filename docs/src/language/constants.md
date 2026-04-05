@@ -84,14 +84,7 @@ label start {
 }
 ```
 
-## Constants vs. Globals
-
-| Feature | `const` | `global` |
-|---|---|---|
-| Mutable | No | Yes |
-| Persists across labels | Yes (immutable, always available) | Yes (mutable, always available) |
-| Typical use | Speakers, config, fixed data | Game state, counters, flags |
-| Reassignment | Compile-time error | Allowed |
+For a comparison of all variable kinds, see [Variables & Types — Quick Reference](./variables-and-types.md#quick-reference).
 
 If you need a value that changes over time — gold, health, quest flags — use [`global`](./globals.md) instead.
 

@@ -78,15 +78,18 @@ if not (gold > 100 and reputation > 50) {
 
 ### The `in` Operator
 
-Test membership in a list:
+Test whether an integer falls within a range:
 
 ```urd
-let inventory = ["sword", "shield", "potion"]
+let roll = 1d20
 
-if "potion" in inventory {
-    narrator: "You drink the potion and feel restored."
+if roll in 10..=20 {
+    narrator: "A solid roll — you succeed!"
 }
 ```
+
+The `in` operator works **only** with ranges (`Int in Range`). It does not
+support lists, maps, or strings.
 
 ### Function Calls
 

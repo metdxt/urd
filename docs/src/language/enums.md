@@ -86,16 +86,16 @@ enum QuestState {
 }
 
 match quest_state {
-    QuestState.NotStarted => {
+    QuestState.NotStarted {
         narrator: "You haven't begun this quest yet."
     }
-    QuestState.InProgress => {
+    QuestState.InProgress {
         narrator: "The quest is underway."
     }
-    QuestState.Complete => {
+    QuestState.Complete {
         narrator: "Well done — quest complete!"
     }
-    QuestState.Failed => {
+    QuestState.Failed {
         narrator: "The quest has failed."
     }
 }
@@ -108,9 +108,9 @@ If you forget a variant, the compiler emits a `NonExhaustiveMatch` diagnostic:
 ```urd
 # ✗ NonExhaustiveMatch: missing variant 'Failed'
 match quest_state {
-    QuestState.NotStarted => { narrator: "Not started." }
-    QuestState.InProgress => { narrator: "In progress." }
-    QuestState.Complete   => { narrator: "Complete." }
+    QuestState.NotStarted { narrator: "Not started." }
+    QuestState.InProgress { narrator: "In progress." }
+    QuestState.Complete   { narrator: "Complete." }
 }
 ```
 
@@ -124,10 +124,10 @@ catches all remaining cases:
 
 ```urd
 match faction {
-    Faction.Guild => {
+    Faction.Guild {
         narrator: "Welcome, Guild member."
     }
-    _ => {
+    _ {
         narrator: "You are not part of the Guild."
     }
 }
@@ -186,7 +186,7 @@ global dragon_quest: QuestState = QuestState.NotStarted
 @entry
 label village {
     match dragon_quest {
-        QuestState.NotStarted => {
+        QuestState.NotStarted {
             quest_giver: "A dragon terrorizes our village. Will you help?"
             menu {
                 "Accept the quest" {
@@ -200,15 +200,15 @@ label village {
                 }
             }
         }
-        QuestState.InProgress => {
+        QuestState.InProgress {
             quest_giver: "Have you slain the beast yet?"
             jump dragon_lair
         }
-        QuestState.Complete => {
+        QuestState.Complete {
             quest_giver: "You saved us all. Thank you, hero!"
             end!()
         }
-        QuestState.Failed => {
+        QuestState.Failed {
             narrator: "The village lies in ruins."
             end!()
         }
@@ -225,6 +225,6 @@ label village {
 | Define an enum | `enum Name { Variant1, Variant2 }` |
 | Access a variant | `Name.Variant` |
 | Type annotation | `let x: Name = Name.Variant` |
-| Match on enum | `match x { Name.A => { ... } Name.B => { ... } }` |
-| Wildcard arm | `_ => { ... }` |
+| Match on enum | `match x { Name.A { ... } Name.B { ... } }` |
+| Wildcard arm | `_ { ... }` |
 | Import an enum | `import (Name) from "file.urd"` |

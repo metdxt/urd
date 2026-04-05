@@ -97,13 +97,13 @@ using range patterns:
 let roll = 2d6
 
 match roll {
-    2..=4 => {
+    2..=4 {
         narrator: "Critical failure!"
     }
-    5..=9 => {
+    5..=9 {
         narrator: "Moderate success."
     }
-    10..=12 => {
+    10..=12 {
         narrator: "Critical hit!"
     }
 }
@@ -121,24 +121,25 @@ For fine-grained control over individual die results, use array patterns:
 let roll = 2d6
 
 match roll {
-    [1, 1] => {
+    [1, 1] {
         narrator: "Snake eyes! Double ones!"
     }
-    [6, 6] => {
+    [6, 6] {
         narrator: "Boxcars! Double sixes!"
     }
-    [1, _] => {
-        narrator: "Your first die came up 1..."
+    [3, 3] {
+        narrator: "Double threes — an omen of balance."
     }
-    _ => {
+    _ {
         narrator: "An ordinary roll."
     }
 }
 ```
 
-Array patterns match against the individual die results in order. The wildcard
-`_` matches any single die value. A top-level `_` arm acts as the default
-catch-all.
+Array patterns match against the individual die results in order. Each element
+in the array must be an integer literal — wildcards (`_`) are **not** valid
+inside array brackets. Use the top-level `_` arm as the default catch-all for
+any combination not explicitly listed.
 
 > **Note:** When array patterns are present, the compiler requires a wildcard
 > `_` arm because exhaustiveness analysis over individual die combinations is
@@ -238,6 +239,6 @@ details.
 - Count and sides capped at 255 each
 - Dice literals are **immediately evaluated** into `Roll(Vec<i64>)` at runtime — there is no `Dice` runtime type
 - `match` with range patterns for sum-based branching
-- `match` with array patterns (`[1, _]`) for individual die inspection
+- `match` with array patterns (`[1, 1]`, `[6, 6]`) for individual die inspection
 - Pluggable `DiceRoller` trait enables deterministic testing
 - First-class language support — no imports or libraries needed

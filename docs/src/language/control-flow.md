@@ -32,9 +32,9 @@ Use `match` when you need to branch on a value against multiple possible cases â
 
 ```urd
 match faction {
-    Faction.Guild  => { narrator: "The Guild welcomes you." }
-    Faction.Empire => { narrator: "For the Empire!" }
-    Faction.Rebel  => { narrator: "Freedom or death." }
+    Faction.Guild  { narrator: "The Guild welcomes you." }
+    Faction.Empire { narrator: "For the Empire!" }
+    Faction.Rebel  { narrator: "Freedom or death." }
 }
 ```
 

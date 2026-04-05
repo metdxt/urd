@@ -121,14 +121,7 @@ global gold = 50
 global haggled = false
 ```
 
-## Globals vs. Other Variable Kinds
-
-| Feature | `let` | `const` | `global` | `extern` |
-|---|---|---|---|---|
-| Mutable | ✓ | ✗ | ✓ | ✗ |
-| Persists across labels | ✗ | ✓ (top-level) | ✓ | ✓ |
-| Defined in script | ✓ | ✓ | ✓ | ✗ |
-| Supports `@fluent` | ✗ | ✗ | ✓ | ✗ |
+For a comparison of all variable kinds, see [Variables & Types — Quick Reference](./variables-and-types.md#quick-reference).
 
 ## Placement
 

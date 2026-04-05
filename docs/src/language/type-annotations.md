@@ -27,30 +27,10 @@ always hold an `int`"*, enabling earlier error detection.
 
 ## Available Types
 
-The following built-in type names are recognised in annotations:
-
-| Annotation | Runtime type            | Example value              |
-|------------|-------------------------|----------------------------|
-| `int`      | 64-bit signed integer   | `42`, `-7`                 |
-| `float`    | 64-bit floating point   | `3.14`, `-0.5`             |
-| `bool`     | Boolean                 | `true`, `false`            |
-| `str`      | String                  | `"hello"`                  |
-| `null`     | Null                    | `null`                     |
-| `list`     | Ordered list            | `[1, 2, 3]`               |
-| `map`      | Key-value map           | `:{name: "Ada"}`           |
-| `dice`     | Dice expression (evaluates to `roll` at runtime) | `2d6` |
-| `range`    | Integer range           | `0..10`, `1..=5`           |
-
-```urd
-let damage: int = 15
-let ratio: float = 0.75
-let alive: bool = true
-let greeting: str = "Hello, traveler"
-let items: list = ["sword", "shield"]
-let stats: map = :{str: 10, dex: 14}
-let attack: dice = 2d6   # at runtime, holds a Roll value (e.g. [3, 5])
-let span: range = 1..=10
-```
+The built-in type names recognised in annotations are: `int`, `float`, `bool`,
+`str`, `null`, `list`, `map`, `dice`, and `range`. See
+[Runtime Types](./variables-and-types.md#runtime-types) for the complete list of
+types with descriptions and example values.
 
 ## Named Types — Enums
 

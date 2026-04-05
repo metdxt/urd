@@ -1,30 +1,32 @@
 # Operator Reference
 
-This page documents every operator in Urd, grouped by category and listed in order of precedence from highest (tightest binding) to lowest (loosest binding).
+This page documents every operator in Urd, grouped by category and listed in
+order of precedence from highest (tightest binding) to lowest (loosest binding).
 
 ## Precedence Table
 
-| Precedence | Category | Operators | Associativity |
-|:----------:|----------|-----------|---------------|
-| 1 | Unary | `-` `!` `not` | Right |
-| 2 | Multiplicative | `*` `/` `//` `%` | Left |
-| 3 | Additive | `+` `-` | Left |
-| 4 | Shift | `<<` `>>` | Left |
-| 5 | Bitwise AND | `&` | Left |
-| 6 | Bitwise XOR | `^` | Left |
-| 7 | Bitwise OR | `|` | Left |
-| 8 | Comparison | `==` `!=` `<` `>` `<=` `>=` | Left |
-| 9 | Logical AND | `and` `&&` | Left |
-| 10 | Logical OR | `or` `||` | Left |
-| 11 | Range | `..` `..=` | Left |
-| 12 | Membership | `in` | Left |
-| 13 | Assignment | `=` | Right |
+| Precedence | Category                | Operators                       | Associativity |
+|:----------:|-------------------------|---------------------------------|:-------------:|
+| 11         | Unary                   | `!` `not` `-` (negate)          | prefix        |
+| 10         | Multiplicative          | `*` `/` `//` `%`               | left          |
+| 9          | Additive                | `+` `-`                         | left          |
+| 8          | Shift / Range           | `<<` `>>` `..` `..=`           | left          |
+| 7          | Comparison / Membership | `>` `<` `>=` `<=` `in`         | left          |
+| 6          | Equality                | `==` `!=`                       | left          |
+| 5          | Bitwise AND             | `&`                             | left          |
+| 4          | Bitwise XOR             | `^`                             | left          |
+| 3          | Bitwise OR              | `\|`                            | left          |
+| 2          | Logical AND             | `and` / `&&`                    | left          |
+| 1          | Logical OR              | `or` / `\|\|`                   | left          |
+| 0          | Assignment              | `=`                             | right         |
 
-Higher precedence means the operator binds more tightly. For example, `2 + 3 * 4` is parsed as `2 + (3 * 4)` because multiplicative (`*`) has higher precedence than additive (`+`).
+Higher precedence means the operator binds more tightly. For example,
+`2 + 3 * 4` is parsed as `2 + (3 * 4)` because multiplicative (`*`) has higher
+precedence than additive (`+`).
 
 ---
 
-## Unary Operators (Precedence 1)
+## Unary Operators (Precedence 11)
 
 ### `-` (Negation)
 
@@ -35,23 +37,38 @@ let x = -42
 let y = -3.14
 ```
 
-Operand must be `Int` or `Float`. Applying `-` to any other type is a runtime `TypeError`.
+Operand must be `Int` or `Float`. Applying `-` to any other type is a runtime
+`TypeError`.
 
-### `!` / `not` (Logical NOT)
+### `not` (Logical NOT)
 
-Inverts a boolean value. `!` and `not` are interchangeable — use whichever reads better in context.
+Inverts the [truthiness](#truthiness) of a value.
 
 ```urd
 let alive = true
 let dead = not alive        # false
-let also_dead = !alive      # false
 ```
 
-Operand must be `Bool`.
+`not` does **not** require a `Bool` operand — any value is accepted and
+evaluated for truthiness (see [Truthiness](#truthiness) below).
+
+### `!` (Bitwise NOT)
+
+Flips every bit of an integer value.
+
+```urd
+let mask = !0xFF            # inverts all bits
+```
+
+Operand must be `Int`. Applying `!` to any other type is a runtime `TypeError`.
+
+> **Important:** `!` and `not` are **different operators** with different
+> tokens. `!` always performs bitwise NOT on integers. `not` always performs
+> logical NOT using truthiness. They are **not** interchangeable.
 
 ---
 
-## Multiplicative Operators (Precedence 2)
+## Multiplicative Operators (Precedence 10)
 
 ### `*` (Multiplication)
 
@@ -62,29 +79,39 @@ let damage = 3 * 10        # 30
 let scaled = 1.5 * 2.0     # 3.0
 ```
 
-Both operands must be the same numeric type (`Int * Int → Int`, `Float * Float → Float`). There is no implicit coercion between `Int` and `Float`.
+`Int * Int → Int`, `Float * Float → Float`. When one operand is `Int` and the
+other is `Float`, both are coerced to `Float`. `Roll` values are coerced to
+`Float` via summation.
 
 ### `/` (Division)
 
-Divides the left operand by the right.
+Divides the left operand by the right. **Integer division truncates toward
+zero** (not toward negative infinity).
 
 ```urd
-let share = 100 / 3        # 33 (integer division, truncates toward zero)
+let share = 7 / 2          # 3  (truncated toward zero)
+let neg   = -7 / 2         # -3 (truncated toward zero, NOT -4)
 let ratio = 10.0 / 3.0     # 3.3333...
 ```
 
-Integer division truncates toward zero (not floor division). Division by zero is a runtime `TypeError`.
+`Int / Int → Int` (truncated toward zero). `Float / Float → Float`. Mixed
+`Int`/`Float` operands are coerced to `Float`. Division by zero is a runtime
+error.
 
 ### `//` (Floor Division)
 
-Divides and floors the result toward negative infinity.
+Divides and **floors the result toward negative infinity**. This is the key
+difference from `/`.
 
 ```urd
 let floored = 7 // 2       # 3
 let neg = -7 // 2          # -4 (floors toward negative infinity)
 ```
 
-This differs from `/` for negative operands: `-7 / 2` gives `-3` (truncation toward zero), while `-7 // 2` gives `-4` (floor toward negative infinity).
+`Int // Int → Int` (floored). `Float // Float → Float` (floored). Mixed types
+are coerced to `Float`. For positive operands `/` and `//` give the same result;
+they diverge for negative operands: `-7 / 2` gives `-3` (truncation toward
+zero) while `-7 // 2` gives `-4` (floor toward negative infinity).
 
 ### `%` (Modulo)
 
@@ -95,11 +122,13 @@ let remainder = 10 % 3     # 1
 let even_check = 42 % 2    # 0
 ```
 
-The sign of the result follows the dividend (left operand), consistent with Rust's `%` operator.
+Both operands must be `Int`. Applying `%` to `Float` values is a `TypeError`.
+The sign of the result follows the dividend (left operand), consistent with
+Rust's `%` operator.
 
 ---
 
-## Additive Operators (Precedence 3)
+## Additive Operators (Precedence 9)
 
 ### `+` (Addition / String Concatenation)
 
@@ -110,7 +139,12 @@ let total = gold + 50
 let full_name = first_name + " " + last_name
 ```
 
-Both operands must be the same type: `Int + Int → Int`, `Float + Float → Float`, `Str + Str → Str`. Cross-type addition (e.g., `Int + Str`) is a `TypeError`.
+`Int + Int → Int`, `Float + Float → Float`, `Str + Str → Str`. When one
+numeric operand is `Int` and the other is `Float`, both are coerced to `Float`.
+`Roll` values are coerced to `Float` via summation.
+
+There is **no** automatic string coercion: `"gold: " + 10` is a `TypeError`.
+Use string interpolation instead: `"gold: {10}"`.
 
 ### `-` (Subtraction)
 
@@ -120,147 +154,28 @@ Subtracts the right operand from the left.
 let remaining = health - damage
 ```
 
+Same type rules as `+` (excluding string concatenation).
+
 ---
 
-## Shift Operators (Precedence 4)
+## Shift / Range Operators (Precedence 8)
 
 ### `<<` (Left Shift)
 
-Shifts bits to the left.
+Shifts bits to the left. Both operands must be `Int`.
 
 ```urd
 let flags = 1 << 3         # 8
 ```
 
-The shift count must be non-negative and less than 64. Out-of-range counts produce a runtime `TypeError`.
-
 ### `>>` (Right Shift)
 
-Shifts bits to the right (arithmetic shift — sign bit is preserved).
+Shifts bits to the right (arithmetic shift — sign bit is preserved). Both
+operands must be `Int`.
 
 ```urd
 let halved = 16 >> 1       # 8
 ```
-
-The shift count must be non-negative and no greater than 63. Out-of-range counts produce a runtime `TypeError`.
-
----
-
-## Bitwise Operators (Precedence 5–7)
-
-### `&` (Bitwise AND) — Precedence 5
-
-```urd
-let masked = flags & 0xFF
-```
-
-### `^` (Bitwise XOR) — Precedence 6
-
-```urd
-let toggled = state ^ mask
-```
-
-### `|` (Bitwise OR) — Precedence 7
-
-```urd
-let combined = flag_a | flag_b
-```
-
-All bitwise operators require `Int` operands and produce `Int` results.
-
----
-
-## Comparison Operators (Precedence 8)
-
-### `==` (Equal)
-
-Returns `true` if both operands are equal.
-
-```urd
-if gold == 0 {
-    narrator: "You are penniless."
-}
-```
-
-Comparison is type-strict: `1 == 1.0` is `false` because `Int` and `Float` are different types. There is no implicit coercion.
-
-### `!=` (Not Equal)
-
-Returns `true` if the operands are not equal.
-
-```urd
-if faction != Faction.Empire {
-    narrator: "You are not aligned with the Empire."
-}
-```
-
-### `<` (Less Than)
-
-```urd
-if health < 20 {
-    narrator: "You are critically wounded."
-}
-```
-
-### `>` (Greater Than)
-
-```urd
-if gold > 100 {
-    narrator: "You are wealthy."
-}
-```
-
-### `<=` (Less Than or Equal)
-
-```urd
-if potions <= 0 {
-    narrator: "You have no potions left."
-}
-```
-
-### `>=` (Greater Than or Equal)
-
-```urd
-if gold >= price {
-    narrator: "You can afford it."
-}
-```
-
-All comparison operators work on `Int`, `Float`, and `Str` (lexicographic ordering for strings). Comparing incompatible types is a `TypeError`.
-
----
-
-## Logical Operators (Precedence 9–10)
-
-### `and` / `&&` (Logical AND) — Precedence 9
-
-Returns `true` if both operands are `true`. Short-circuits: if the left operand is `false`, the right operand is not evaluated.
-
-```urd
-if has_key and gold >= 10 {
-    narrator: "You can open the door."
-}
-```
-
-`and` and `&&` are interchangeable. Use whichever style you prefer.
-
-### `or` / `||` (Logical OR) — Precedence 10
-
-Returns `true` if either operand is `true`. Short-circuits: if the left operand is `true`, the right operand is not evaluated.
-
-```urd
-if has_torch or has_lantern {
-    narrator: "You have a light source."
-}
-```
-
-`or` and `||` are interchangeable.
-
-Both operands must be `Bool`. Urd does not have truthy/falsy values — `0`, `""`, and `null` are **not** implicitly `false`.
-
----
-
-## Range Operators (Precedence 11)
 
 ### `..` (Exclusive Range)
 
@@ -278,39 +193,130 @@ Creates a range from `start` (inclusive) to `end` (inclusive).
 let dice_range = 1..=6      # contains 1, 2, 3, 4, 5, 6
 ```
 
-Ranges are integer-only. See the [RuntimeValue](../api/runtime-value.md) documentation for range semantics (`len`, `contains`).
+Ranges are integer-only and produce a `Range` value.
 
 ---
 
-## Membership Operator (Precedence 12)
+## Comparison / Membership Operators (Precedence 7)
 
-### `in`
+### `>`, `<`, `>=`, `<=` (Ordering)
 
-Tests whether a value is contained in a collection (list, range, map, or string).
+Compare two values and return `Bool`.
 
 ```urd
-if "sword" in inventory {
-    narrator: "You are armed."
+if health < 20 {
+    narrator: "You are critically wounded."
 }
+```
 
+Ordering comparisons work on `Int`, `Float`, and cross-type `Int`/`Float`
+pairs (the integer is carefully compared against the float without precision
+loss). Comparing incompatible types is a `TypeError`.
+
+### `in` (Membership)
+
+Tests whether an integer is contained in a range.
+
+```urd
 if roll in 1..=6 {
     narrator: "Valid die roll."
 }
 ```
 
-The right-hand operand determines the semantics:
-- **List**: checks if the value is an element of the list
-- **Range**: checks if the integer is within the range bounds
-- **Map**: checks if the string is a key in the map
-- **String**: checks if the left string is a substring of the right string
+The `in` operator **only** works with a `Range` on the right-hand side and an
+`Int` on the left-hand side. Using `in` with a `List`, `Map`, or `String` on
+the right-hand side is a `TypeError`.
 
 ---
 
-## Assignment Operator (Precedence 13)
+## Equality Operators (Precedence 6)
+
+### `==` (Equal)
+
+Returns `true` if both operands are equal.
+
+```urd
+if gold == 0 {
+    narrator: "You are penniless."
+}
+```
+
+### `!=` (Not Equal)
+
+Returns `true` if the operands are not equal.
+
+```urd
+if faction != Faction.Empire {
+    narrator: "You are not aligned with the Empire."
+}
+```
+
+---
+
+## Bitwise Operators (Precedence 5–3)
+
+### `&` (Bitwise AND) — Precedence 5
+
+```urd
+let masked = flags & 0xFF
+```
+
+### `^` (Bitwise XOR) — Precedence 4
+
+```urd
+let toggled = state ^ mask
+```
+
+### `|` (Bitwise OR) — Precedence 3
+
+```urd
+let combined = flag_a | flag_b
+```
+
+All bitwise binary operators require `Int` operands and produce `Int` results.
+
+---
+
+## Logical Operators (Precedence 2–1)
+
+### `and` / `&&` (Logical AND) — Precedence 2
+
+Returns `true` if both operands are [truthy](#truthiness). Short-circuits: if
+the left operand is falsy, the right operand is not evaluated.
+
+```urd
+if has_key and gold >= 10 {
+    narrator: "You can open the door."
+}
+```
+
+`and` and `&&` are interchangeable. Use whichever style you prefer.
+
+### `or` / `||` (Logical OR) — Precedence 1
+
+Returns `true` if either operand is [truthy](#truthiness). Short-circuits: if
+the left operand is truthy, the right operand is not evaluated.
+
+```urd
+if has_torch or has_lantern {
+    narrator: "You have a light source."
+}
+```
+
+`or` and `||` are interchangeable.
+
+Logical operators evaluate their operands for [truthiness](#truthiness) — they
+do **not** require strict `Bool` operands.
+
+---
+
+## Assignment Operator (Precedence 0)
 
 ### `=` (Assignment)
 
-Assigns a value to a variable. The variable must have been previously declared with `let`, `global`, or `const` (though assigning to `const` is a compile-time error).
+Assigns a value to a variable. The variable must have been previously declared
+with `let`, `global`, or `const` (though assigning to `const` is a compile-time
+error).
 
 ```urd
 gold = gold + 50
@@ -318,21 +324,65 @@ has_torch = true
 health = health - damage
 ```
 
-Assignment is a statement, not an expression — you cannot use `=` inside another expression. There are no compound assignment operators (`+=`, `-=`, etc.) in Urd; write the expanded form instead.
+Assignment is right-associative and has the lowest precedence of all operators.
+There are no compound assignment operators (`+=`, `-=`, etc.) in Urd; write the
+expanded form instead.
+
+---
+
+## Truthiness
+
+Logical operators (`and`, `or`) and `not` evaluate their operands for
+truthiness rather than requiring strict `Bool` values. The rules are:
+
+| Value                          | Truthy? |
+|--------------------------------|---------|
+| `null`                         | false   |
+| `Bool(b)`                      | `b`     |
+| `Int(0)`                       | false   |
+| `Float(0.0)` or `Float(NaN)`  | false   |
+| Empty `List`                   | false   |
+| Empty `Roll`                   | false   |
+| Empty `Range`                  | false   |
+| Everything else                | true    |
+
+---
+
+## Numeric Type Coercion
+
+Arithmetic operators (`+`, `-`, `*`, `/`, `//`) follow these type rules:
+
+| Left     | Right    | Result                                     |
+|----------|----------|--------------------------------------------|
+| `Int`    | `Int`    | `Int`                                      |
+| `Float`  | `Float`  | `Float`                                    |
+| `Int`    | `Float`  | `Float` (both coerced via `to_float`)      |
+| `Float`  | `Int`    | `Float` (both coerced via `to_float`)      |
+| `Roll`   | *any numeric* | `Float` (`Roll` sums its dice, then coerces) |
+
+`%` (modulo) is an exception: it requires both operands to be `Int`.
+
+Bitwise operators (`&`, `^`, `|`, `<<`, `>>`, `!`) always require `Int`
+operands.
 
 ---
 
 ## Operator Overloading
 
-Urd does **not** support operator overloading. All operators have fixed semantics determined by the operand types. User-defined types (structs, enums) cannot define custom operator behaviour.
+Urd does **not** support operator overloading. All operators have fixed
+semantics determined by the operand types. User-defined types (structs, enums)
+cannot define custom operator behaviour.
 
 ## String Interpolation
 
-While not technically an operator, string interpolation (`{expression}`) is worth noting here because it interacts with the expression system:
+While not technically an operator, string interpolation (`{expression}`) is
+worth noting here because it interacts with the expression system:
 
 ```urd
 narrator: "You have {gold} gold and {health} HP."
 narrator: "Damage dealt: {base_damage * multiplier}"
 ```
 
-Any expression valid in a normal context is valid inside `{}` interpolation braces. The expression is evaluated at runtime, and the result's `Display` representation is substituted into the string.
+Any expression valid in a normal context is valid inside `{}` interpolation
+braces. The expression is evaluated at runtime, and the result's `Display`
+representation is substituted into the string.
