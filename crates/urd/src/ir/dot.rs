@@ -438,6 +438,8 @@ pub fn render_dot(graph: &IrGraph) -> String {
             | IrNodeKind::Eval { .. }
             | IrNodeKind::EnterScope { .. }
             | IrNodeKind::ExitScope { .. }
+            | IrNodeKind::PushScope
+            | IrNodeKind::PopScope
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineStruct { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
@@ -785,6 +787,10 @@ fn node_attrs(
         IrNodeKind::EnterScope { label } => ("cds", "#66bb6a", format!("▶ {label}")),
 
         IrNodeKind::ExitScope { label } => ("cds", "#66bb6a", format!("◀ {label}")),
+
+        IrNodeKind::PushScope => ("box", "#a5d6a7", "PushScope".into()),
+
+        IrNodeKind::PopScope => ("box", "#a5d6a7", "PopScope".into()),
 
         IrNodeKind::DefineEnum { name, variants, .. } => (
             "box",

@@ -364,6 +364,26 @@ pub enum IrNodeKind {
         label: String,
     },
 
+    /// Pushes an anonymous block scope onto the environment stack.
+    ///
+    /// Used to give `if` / `match` branches their own variable scope so that
+    /// `let` bindings inside a branch do not leak into the surrounding label
+    /// scope.  Unlike [`EnterScope`] this node does **not** interact with the
+    /// call stack — it is purely an environment push.
+    ///
+    /// Continues via a single [`IrEdge::Next`] edge.
+    PushScope,
+
+    /// Pops the anonymous block scope pushed by the matching [`PushScope`].
+    ///
+    /// Any variables declared (via `let`) inside the block are discarded when
+    /// this node executes.  If the block is exited early (e.g. via `jump` or
+    /// `return`), the VM's scope-unwinding in those handlers takes care of
+    /// popping instead, so an unreachable `PopScope` is harmless.
+    ///
+    /// Continues via a single [`IrEdge::Next`] edge.
+    PopScope,
+
     /// Declare an enum type.
     ///
     /// Continues via a single [`IrEdge::Next`] edge.

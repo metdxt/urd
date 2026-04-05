@@ -160,10 +160,12 @@ impl Environment {
 
     /// Declares or assigns `name` according to `kind`.
     ///
-    /// - [`DeclKind::Variable`] — update an existing binding (searching
-    ///   outward from the innermost scope, then globals) or create a new one in
-    ///   the innermost scope. Returns [`VmError::TypeError`] if `name` is a
-    ///   constant.
+    /// - [`DeclKind::Variable`] — unconditionally insert into the innermost
+    ///   scope, implementing **shadowing** (even over constants).
+    /// - [`DeclKind::Assignment`] — search outward through the scope chain for
+    ///   an existing binding and mutate it in-place; if not found in scopes,
+    ///   check globals; if not found anywhere, create in the innermost scope.
+    ///   Returns [`VmError::TypeError`] if `name` is a constant.
     /// - [`DeclKind::Global`] — store in the globals map. Returns
     ///   [`VmError::TypeError`] if `name` is a constant.
     /// - [`DeclKind::Constant`] — store in the innermost scope; returns
@@ -174,7 +176,7 @@ impl Environment {
                 "cannot assign to extern '{name}' — extern values are controlled by the runtime"
             )));
         }
-        if !matches!(kind, DeclKind::Constant)
+        if matches!(kind, DeclKind::Assignment | DeclKind::Global)
             && self.constant_frames.iter().any(|f| f.contains(name))
         {
             return Err(VmError::TypeError(format!(
@@ -204,10 +206,19 @@ impl Environment {
                 scope.insert(name.to_string(), value);
             }
             DeclKind::Variable => {
-                // Update an existing binding in-place — search innermost local
-                // scope first, then outward, then globals.  This mirrors the
-                // lookup order used by `get()` so that reads and writes resolve
-                // to the same binding.
+                // `let` declarations always shadow — unconditionally insert
+                // into the innermost scope.
+                let scope = self
+                    .scopes
+                    .last_mut()
+                    .ok_or_else(|| VmError::TypeError("no active scope".to_string()))?;
+                scope.insert(name.to_string(), value);
+            }
+            DeclKind::Assignment => {
+                // Bare assignment — search innermost local scope first, then
+                // outward, then globals.  This mirrors the lookup order used
+                // by `get()` so that reads and writes resolve to the same
+                // binding.
                 for scope in self.scopes.iter_mut().rev() {
                     if scope.contains_key(name) {
                         scope.insert(name.to_string(), value);
@@ -218,7 +229,8 @@ impl Environment {
                     self.globals.insert(name.to_string(), value);
                     return Ok(());
                 }
-                // No existing binding — create in the innermost scope.
+                // No existing binding — create in the innermost scope
+                // (permissive implicit declaration).
                 let scope = self
                     .scopes
                     .last_mut()
@@ -377,7 +389,7 @@ mod tests {
         let mut env = Environment::new();
         env.provide_extern("score", RuntimeValue::Int(0));
         // Scripts cannot overwrite extern values
-        let result = env.set("score", RuntimeValue::Int(42), &DeclKind::Variable);
+        let result = env.set("score", RuntimeValue::Int(42), &DeclKind::Assignment);
         assert!(result.is_err(), "expected error when assigning to extern");
         let err_msg = result.unwrap_err().to_string();
         assert!(

@@ -167,7 +167,7 @@ fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
                     scan_reads(decl_defs, unread);
                 }
 
-                DeclKind::Variable | DeclKind::Constant => {
+                DeclKind::Variable | DeclKind::Constant | DeclKind::Assignment => {
                     // Scan the initialiser for reads first (in case it reads a
                     // previously declared variable).
                     scan_reads(decl_defs, unread);

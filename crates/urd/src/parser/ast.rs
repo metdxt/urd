@@ -168,8 +168,16 @@ pub enum DeclKind {
     Global,
     /// Immutable data
     Constant,
-    /// Scoped variable
+    /// Scoped variable declared with `let`. Always creates a new binding in the
+    /// innermost scope, shadowing any outer variable with the same name.
     Variable,
+    /// Bare assignment (`x = value`). Searches outward through the scope chain
+    /// for an existing binding and mutates it in-place. If no binding is found,
+    /// creates a new one in the innermost scope (implicit declaration).
+    ///
+    /// This variant is **never** produced by the parser — it is synthesised by
+    /// the compiler when lowering `BinOp { op: Assign }` nodes to IR.
+    Assignment,
 }
 
 /// Represents an optional static type annotation on a variable declaration or parameter.

@@ -116,7 +116,7 @@ fn visit_node(
                     // Global variables may be read cross-file; skip tracking.
                     collect_reads(decl_defs, last_write);
                 }
-                DeclKind::Variable | DeclKind::Constant => {
+                DeclKind::Variable | DeclKind::Constant | DeclKind::Assignment => {
                     // Scan rhs first (reads in the initialiser consume pending writes).
                     collect_reads(decl_defs, last_write);
 

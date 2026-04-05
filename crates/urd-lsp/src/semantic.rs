@@ -135,6 +135,7 @@ fn format_decl_kind(kind: &DeclKind) -> &'static str {
         DeclKind::Variable => "let",
         DeclKind::Constant => "const",
         DeclKind::Global => "global",
+        DeclKind::Assignment => "",
     }
 }
 
@@ -328,7 +329,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
         } => {
             if let Some(name) = ident_name_from_ast(decl_name) {
                 let sym_kind = match kind {
-                    DeclKind::Variable => SymbolKind::Variable,
+                    DeclKind::Variable | DeclKind::Assignment => SymbolKind::Variable,
                     DeclKind::Constant => SymbolKind::Constant,
                     DeclKind::Global => SymbolKind::Global,
                 };

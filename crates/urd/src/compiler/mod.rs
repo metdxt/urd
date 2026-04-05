@@ -453,7 +453,7 @@ impl CompilerState {
                     {
                         (crate::ir::namespace(&path[0], &path[1]), DeclKind::Global)
                     }
-                    _ => (extract_name(left)?, DeclKind::Variable),
+                    _ => (extract_name(left)?, DeclKind::Assignment),
                 };
                 let id = self.graph.push(IrNodeKind::Assign {
                     var,
@@ -524,9 +524,26 @@ impl CompilerState {
                     ctx.push_container(EventKind::If, if_override);
                 }
 
-                let then_entry = self.compile_node(then_block, Some(merge))?.unwrap_or(merge);
+                // Then branch: wrap in PushScope/PopScope
+                let then_pop = self.graph.push(IrNodeKind::PopScope);
+                self.graph.add_edge(then_pop, merge, IrEdge::Next);
+                let then_body = self
+                    .compile_node(then_block, Some(then_pop))?
+                    .unwrap_or(then_pop);
+                let then_push = self.graph.push(IrNodeKind::PushScope);
+                self.graph.add_edge(then_push, then_body, IrEdge::Next);
+                let then_entry = then_push;
+
+                // Else branch: wrap in PushScope/PopScope (only if else block exists)
                 let else_entry = match else_block {
-                    Some(eb) => self.compile_node(eb, Some(merge))?.unwrap_or(merge),
+                    Some(eb) => {
+                        let else_pop = self.graph.push(IrNodeKind::PopScope);
+                        self.graph.add_edge(else_pop, merge, IrEdge::Next);
+                        let else_body = self.compile_node(eb, Some(else_pop))?.unwrap_or(else_pop);
+                        let else_push = self.graph.push(IrNodeKind::PushScope);
+                        self.graph.add_edge(else_push, else_body, IrEdge::Next);
+                        else_push
+                    }
                     None => merge,
                 };
 
@@ -789,7 +806,14 @@ impl CompilerState {
                 let mut default_entry: Option<NodeIndex> = None;
 
                 for arm in arms {
-                    let target = self.compile_node(&arm.body, Some(merge))?.unwrap_or(merge);
+                    let arm_pop = self.graph.push(IrNodeKind::PopScope);
+                    self.graph.add_edge(arm_pop, merge, IrEdge::Next);
+                    let arm_body = self
+                        .compile_node(&arm.body, Some(arm_pop))?
+                        .unwrap_or(arm_pop);
+                    let arm_push = self.graph.push(IrNodeKind::PushScope);
+                    self.graph.add_edge(arm_push, arm_body, IrEdge::Next);
+                    let target = arm_push;
                     match &arm.pattern {
                         MatchPattern::Wildcard => {
                             default_entry = Some(target);
@@ -1435,17 +1459,29 @@ mod tests {
                     "then target must differ from the merge Nop else target"
                 );
 
-                // The then-body's last node must link back to the same merge Nop.
+                // The then branch is now wrapped: PushScope → body → PopScope → merge.
                 match node_kind(&graph, then_idx) {
-                    IrNodeKind::Assign { .. } => {
-                        let assign_next = next_of(&graph, then_idx)
-                            .expect("then-body Assign must have a Next edge");
+                    IrNodeKind::PushScope => {
+                        let body_idx = next_of(&graph, then_idx)
+                            .expect("PushScope must have a Next edge to the body");
+                        match node_kind(&graph, body_idx) {
+                            IrNodeKind::Assign { .. } => {}
+                            other => panic!("expected Assign inside PushScope, got {:?}", other),
+                        }
+                        let pop_idx = next_of(&graph, body_idx)
+                            .expect("then-body Assign must have a Next edge to PopScope");
+                        match node_kind(&graph, pop_idx) {
+                            IrNodeKind::PopScope => {}
+                            other => panic!("expected PopScope after then-body, got {:?}", other),
+                        }
+                        let pop_next = next_of(&graph, pop_idx)
+                            .expect("PopScope must have a Next edge to merge");
                         assert_eq!(
-                            assign_next, else_idx,
-                            "then-body's Next must point at the merge Nop"
+                            pop_next, else_idx,
+                            "PopScope's Next must point at the merge Nop"
                         );
                     }
-                    other => panic!("expected Assign as then-body entry, got {:?}", other),
+                    other => panic!("expected PushScope as then-body entry, got {:?}", other),
                 }
             }
             other => panic!("expected Branch, got {:?}", other),

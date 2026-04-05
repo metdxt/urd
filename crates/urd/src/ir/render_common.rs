@@ -131,6 +131,7 @@ pub(super) fn decl_kw(kind: &DeclKind) -> &'static str {
         DeclKind::Global => "global",
         DeclKind::Constant => "const",
         DeclKind::Variable => "let",
+        DeclKind::Assignment => "",
     }
 }
 

@@ -493,6 +493,8 @@ pub fn render_mermaid(graph: &IrGraph) -> String {
             | IrNodeKind::Eval { .. }
             | IrNodeKind::EnterScope { .. }
             | IrNodeKind::ExitScope { .. }
+            | IrNodeKind::PushScope
+            | IrNodeKind::PopScope
             | IrNodeKind::DefineEnum { .. }
             | IrNodeKind::DefineStruct { .. }
             | IrNodeKind::DefineScriptDecorator { .. }
@@ -800,6 +802,17 @@ fn mermaid_node_def(
         IrNodeKind::ExitScope { label } => {
             let text = escape_mermaid(&format!("◀ {label}"));
             format!("{n}{{\"{text}\"}}:::scope")
+        }
+
+        // ── PushScope / PopScope ───────────────────────────────────────────
+        IrNodeKind::PushScope => {
+            let text = escape_mermaid("PushScope");
+            format!("{n}[\"{text}\"]:::scope")
+        }
+
+        IrNodeKind::PopScope => {
+            let text = escape_mermaid("PopScope");
+            format!("{n}[\"{text}\"]:::scope")
         }
 
         // ── DefineEnum ─────────────────────────────────────────────────────

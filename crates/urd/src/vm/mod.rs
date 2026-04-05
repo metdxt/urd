@@ -793,6 +793,18 @@ impl Vm {
                     state.cursor = next_id;
                 }
 
+                // ── Block-scope push (if/match branches) ─────────────────
+                IrNodeKind::PushScope => {
+                    state.env.push_scope();
+                    state.cursor = next_of(graph, node_idx);
+                }
+
+                // ── Block-scope pop (if/match branches) ──────────────────
+                IrNodeKind::PopScope => {
+                    state.env.pop_scope();
+                    state.cursor = next_of(graph, node_idx);
+                }
+
                 // ── Enum declaration ─────────────────────────────────────────
                 IrNodeKind::DefineEnum { name, variants } => {
                     state.env.define_enum(name.clone(), variants.clone());
@@ -1735,14 +1747,16 @@ mod tests {
     #[test]
     fn test_branch_true_follows_then() {
         let condition = Ast::value(RuntimeValue::Bool(true));
-        let then_block = Ast::block(vec![decl("x", int(1))]);
-        let else_block = Ast::block(vec![decl("x", int(2))]);
+        // Declare x before the if so it survives block-scope pop.
+        let pre_decl = decl("x", int(0));
+        let then_block = Ast::block(vec![Ast::assign_op(ident("x"), int(1))]);
+        let else_block = Ast::block(vec![Ast::assign_op(ident("x"), int(2))]);
         let if_ast = Ast::if_stmt(condition, then_block, Some(else_block));
 
         let speakers = Ast::expr_list(vec![str_lit("Bob")]);
         let lines = Ast::expr_list(vec![ident("x")]);
         let dialogue = Ast::dialogue(speakers, lines);
-        let ast = Ast::block(vec![if_ast, dialogue]);
+        let ast = Ast::block(vec![pre_decl, if_ast, dialogue]);
 
         let mut vm = build_vm(ast);
         let ev = match vm.next(None) {
@@ -1766,14 +1780,16 @@ mod tests {
     #[test]
     fn test_branch_false_follows_else() {
         let condition = Ast::value(RuntimeValue::Bool(false));
-        let then_block = Ast::block(vec![decl("result", int(1))]);
-        let else_block = Ast::block(vec![decl("result", int(2))]);
+        // Declare result before the if so it survives block-scope pop.
+        let pre_decl = decl("result", int(0));
+        let then_block = Ast::block(vec![Ast::assign_op(ident("result"), int(1))]);
+        let else_block = Ast::block(vec![Ast::assign_op(ident("result"), int(2))]);
         let if_ast = Ast::if_stmt(condition, then_block, Some(else_block));
 
         let speakers = Ast::expr_list(vec![str_lit("Narrator")]);
         let lines = Ast::expr_list(vec![ident("result")]);
         let dialogue = Ast::dialogue(speakers, lines);
-        let ast = Ast::block(vec![if_ast, dialogue]);
+        let ast = Ast::block(vec![pre_decl, if_ast, dialogue]);
 
         let mut vm = build_vm(ast);
         let ev = match vm.next(None) {
@@ -3602,5 +3618,171 @@ label beta {
                 other => panic!("expected Dialogue from Option B, got {:?}", other),
             }
         }
+    }
+
+    // ── Block-scope / shadowing tests ─────────────────────────────────────────
+
+    /// `let` inside an `if` block creates a new binding that shadows the outer
+    /// one without mutating it. After the block ends the outer value is restored.
+    #[test]
+    fn test_let_shadows_outer_variable() {
+        use crate::compiler::loader::parse_source;
+
+        let src = r#"
+@entry
+label start {
+    let x = 10
+    if true {
+        let x = 42
+        narrator: "inner x is {x}"
+    }
+    narrator: "outer x is {x}"
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile(&ast).expect("compile");
+        let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+        expect_dialogue_line(&mut vm, "inner x is 42");
+        expect_dialogue_line(&mut vm, "outer x is 10");
+        assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
+    }
+
+    /// Bare assignment (`x = 42`) without `let` searches outward and mutates
+    /// the binding found in the enclosing scope.
+    #[test]
+    fn test_bare_assignment_mutates_outer_variable() {
+        use crate::compiler::loader::parse_source;
+
+        let src = r#"
+@entry
+label start {
+    let x = 10
+    if true {
+        x = 42
+    }
+    narrator: "x is {x}"
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile(&ast).expect("compile");
+        let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+        expect_dialogue_line(&mut vm, "x is 42");
+        assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
+    }
+
+    /// Variables declared inside an `if` block don't leak into the outer scope.
+    /// The script continues normally after the block ends.
+    #[test]
+    fn test_block_scope_variables_dont_leak() {
+        use crate::compiler::loader::parse_source;
+
+        let src = r#"
+@entry
+label start {
+    if true {
+        let temp = 99
+    }
+    narrator: "done"
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile(&ast).expect("compile");
+        let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+        expect_dialogue_line(&mut vm, "done");
+        assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
+    }
+
+    /// `let` can shadow a `const` — the constant check is bypassed for
+    /// `DeclKind::Variable`, so the local binding wins.
+    #[test]
+    fn test_let_can_shadow_constant() {
+        use crate::compiler::loader::parse_source;
+
+        let src = r#"
+const MAX = 100
+@entry
+label start {
+    let MAX = 999
+    narrator: "MAX is {MAX}"
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile(&ast).expect("compile");
+        let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+        expect_dialogue_line(&mut vm, "MAX is 999");
+        assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
+    }
+
+    /// Variables declared inside a `match` arm body don't leak to the
+    /// continuation after the match statement.
+    #[test]
+    fn test_match_arm_block_scoping() {
+        use crate::compiler::loader::parse_source;
+
+        let src = r#"
+@entry
+label start {
+    let val = 1
+    match val {
+        1 {
+            let result = "one"
+            narrator: "matched {result}"
+        }
+        _ {
+            let result = "other"
+            narrator: "matched {result}"
+        }
+    }
+    narrator: "done"
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile(&ast).expect("compile");
+        let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+        expect_dialogue_line(&mut vm, "matched one");
+        expect_dialogue_line(&mut vm, "done");
+        assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
+    }
+
+    /// `jump` from inside nested `if` blocks correctly unwinds all block
+    /// scopes (PushScope levels) in addition to the label scope (EnterScope).
+    #[test]
+    fn test_jump_cleans_up_block_scopes() {
+        use crate::compiler::loader::parse_source;
+
+        let src = r#"
+@entry
+label start {
+    if true {
+        let temp = 1
+        if true {
+            let temp2 = 2
+            jump finish
+        }
+    }
+    end!()
+}
+
+label finish {
+    narrator: "arrived"
+    end!()
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile(&ast).expect("compile");
+        let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+        expect_dialogue_line(&mut vm, "arrived");
+        assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
     }
 }

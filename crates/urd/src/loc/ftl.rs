@@ -260,7 +260,7 @@ pub fn generate_ftl(graph: &IrGraph, file_slug: &str) -> String {
                 DeclKind::Global | DeclKind::Constant => {
                     global_fluent_vars.push((alias.clone(), var.clone()));
                 }
-                DeclKind::Variable => {
+                DeclKind::Variable | DeclKind::Assignment => {
                     if let Some(&label_name) = node_to_label.get(&idx) {
                         label_fluent_vars
                             .entry(label_name.to_string())
