@@ -77,15 +77,17 @@ pub enum RuntimeValue {
     /// Unlike `Map` and `ScriptDecorator`, `List` is fully serialisable as
     /// long as all its elements are themselves serialisable.
     ///
-    /// ## Invariant
+    /// ## Invariant (best-effort)
     ///
-    /// A `List` **must never** contain a `ScriptDecorator` (or any other
-    /// non-serialisable) element.  Violating this invariant is safe at
-    /// runtime but will cause a silent field omission (serde `#[serde(skip)]`)
-    /// or a panic when the element is later serialised as part of an
-    /// [`crate::ir::Event`] payload.  Use [`RuntimeValue::list`] to construct
-    /// `List` values from Rust code; it fires a `debug_assert!` in debug
-    /// builds to catch violations early.
+    /// A `List` should not contain non-serialisable elements
+    /// (`ScriptDecorator`, `Function`, `Map`, `Roll`, `Struct`).
+    /// Violating this will cause silent field omission or a panic during
+    /// serialisation.
+    ///
+    /// The [`RuntimeValue::list`] constructor fires a `debug_assert!` in
+    /// debug builds, but this check is compiled out in release builds and
+    /// only covers a subset of non-serialisable variants. Direct
+    /// construction of `List(vec![...])` bypasses the check entirely.
     List(Vec<RuntimeValue>),
 
     /// A user-defined pure function value: `fn(x: int) -> int { x + 1 }`.
@@ -136,22 +138,27 @@ pub enum RuntimeValue {
 impl RuntimeValue {
     /// Constructs a [`RuntimeValue::List`] value.
     ///
-    /// In debug builds this asserts that no element is a
-    /// [`RuntimeValue::ScriptDecorator`].  A `List` that contains a
-    /// `ScriptDecorator` violates the serialisation invariant (see the
-    /// `List` variant doc) and will produce incorrect output when the
-    /// enclosing [`crate::ir::Event`] is serialised.
+    /// In debug builds this asserts that no element is a non-serialisable
+    /// variant (`ScriptDecorator`, `Function`, `Map`, `Roll`, `Struct`).
+    /// A `List` that contains any of these violates the serialisation
+    /// invariant (see the `List` variant doc) and will produce incorrect
+    /// output when the enclosing [`crate::ir::Event`] is serialised.
     ///
     /// # Panics (debug only)
     ///
-    /// Panics in debug builds if any element is `ScriptDecorator`.
+    /// Panics in debug builds if any element is a non-serialisable variant.
     pub fn list(elements: Vec<RuntimeValue>) -> Self {
         debug_assert!(
-            !elements
-                .iter()
-                .any(|e| matches!(e, RuntimeValue::ScriptDecorator { .. })),
-            "List elements must never be ScriptDecorator values \
-             (invariant: ScriptDecorator is not serialisable)"
+            !elements.iter().any(|e| matches!(
+                e,
+                RuntimeValue::ScriptDecorator { .. }
+                    | RuntimeValue::Function { .. }
+                    | RuntimeValue::Map(_)
+                    | RuntimeValue::Roll { .. }
+                    | RuntimeValue::Struct { .. }
+            )),
+            "List elements must not contain non-serialisable values \
+             (ScriptDecorator, Function, Map, Roll, Struct)"
         );
         RuntimeValue::List(elements)
     }

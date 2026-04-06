@@ -11,143 +11,22 @@ use std::process::{Command, Stdio};
 
 use urd::{compiler::Compiler, parse_test, parser::block::script};
 
-// ── Example script ────────────────────────────────────────────────────────────
+use super::fixtures::EXAMPLE_SCRIPT;
 
-/// A showcase Urd script that exercises the full range of language features:
-///
-/// - `global` and `const` declarations
-/// - `enum` declaration
-/// - `label` blocks with decorators (`@scene`)
-/// - `dialogue` lines with decorators (`@voiced`) — single-line and multi-line
-/// - `if` / `elif` / `else` branching
-/// - `menu` with three options and a decorator (`@important`)
-/// - `match` with value patterns and a wildcard arm
-/// - `let` declarations and `=` assignments
-/// - `jump` between labels (fire-and-forget)
-/// - `jump … and return` — subroutine call, discard result
-/// - `let x = jump … and return` — subroutine call, capture return value
-/// - `return` to exit early or yield a value back to the caller
-const EXAMPLE_SCRIPT: &str = r#"
-global reputation = 0
-const max_health = 100
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-enum Action {
-    Attack
-    Flee
-    Talk
-}
-
-decorator timed(duration: float, fallback: label) {
-    event["timed"] = :{duration: duration, next: fallback}
-}
-
-@scene("tavern")
-label start {
-    @voiced("narrator")
-    @timed(3.0, notice_board)
-    Narrator: "You push open the heavy oak door and step inside."
-
-    if reputation > 10 {
-        Innkeeper: "Ah, a friendly face! Welcome back."
-    } elif reputation < 0 {
-        Innkeeper: "I'm watching you, stranger."
-    } else {
-        Innkeeper: "What do you want?"
-    }
-
-    let rank = jump compute_rank and return
-    jump log_visit and return
-
-    @important
-    menu {
-        "Talk to the innkeeper" {
-            jump talk
-        }
-        "Check the notice board" {
-            jump notice_board
-        }
-        "Leave the tavern" {
-            @voiced("narrator")
-            Narrator: "You step back out into the cold night air."
-            return
-        }
-    }
-}
-
-label talk {
-    @voiced("innkeeper")
-    Innkeeper: {
-        "What can I do for you?"
-        "Don't keep me waiting."
-    }
-
-    menu {
-        "Ask about local rumours" {
-            reputation = reputation + 1
-            Innkeeper: "They say the old mill is haunted now."
-            jump start
-        }
-        "Buy a drink" {
-            let cost = 2
-            Innkeeper: "Two gold. Pay up."
-            jump start
-        }
-        "Never mind" {
-            jump start
-        }
-    }
-}
-
-label notice_board {
-    let action = Action.Talk
-
-    match action {
-        Action.Attack {
-            Narrator: "You tear the notices from the board."
-            reputation = reputation - 5
-        }
-        Action.Talk {
-            Narrator: "You study the bounty posters carefully."
-            reputation = reputation + 1
-        }
-        _ {
-            Narrator: "You glance at the board and move on."
-        }
-    }
-
-    jump start
-}
-
-label compute_rank {
-    if reputation > 10 {
-        return "hero"
-    }
-    if reputation < 0 {
-        return "villain"
-    }
-    return "neutral"
-}
-
-label log_visit {
-    Narrator: "Your visit has been recorded in the ledger."
-    return
-}
-"#;
-
-// ── Helper ────────────────────────────────────────────────────────────────────
-
-fn compile_example() -> Result<urd::ir::IrGraph, Box<dyn std::error::Error>> {
-    let ast = parse_test!(script(), EXAMPLE_SCRIPT).map_err(|err| {
-        io::Error::other(format!(
-            "example script should parse without errors: {err:?}"
-        ))
-    })?;
-    let graph = Compiler::compile(&ast).map_err(|err| {
-        io::Error::other(format!(
-            "example script should compile without errors: {err}"
-        ))
-    })?;
+/// Compile an arbitrary fixture string into an [`IrGraph`].
+fn compile_fixture(src: &str) -> Result<urd::ir::IrGraph, Box<dyn std::error::Error>> {
+    let ast = parse_test!(script(), src)
+        .map_err(|err| io::Error::other(format!("fixture should parse without errors: {err:?}")))?;
+    let graph = Compiler::compile(&ast)
+        .map_err(|err| io::Error::other(format!("fixture should compile without errors: {err}")))?;
     Ok(graph)
+}
+
+/// Compile the full [`EXAMPLE_SCRIPT`] showcase fixture.
+fn compile_example() -> Result<urd::ir::IrGraph, Box<dyn std::error::Error>> {
+    compile_fixture(EXAMPLE_SCRIPT)
 }
 
 // ── Parse + compile ───────────────────────────────────────────────────────────
@@ -593,5 +472,75 @@ fn dot_write_artifacts_for_inspection() -> Result<(), Box<dyn std::error::Error>
     }
 
     println!("DOT artifact : {}", dot_path.display());
+    Ok(())
+}
+
+// ── Focused fixture tests ─────────────────────────────────────────────────────
+
+/// Minimal dialogue fixture compiles and renders non-empty DOT output.
+#[test]
+fn test_dot_minimal_dialogue() -> Result<(), Box<dyn std::error::Error>> {
+    let graph = compile_fixture(super::fixtures::FIXTURE_DIALOGUE)?;
+    let dot = graph.to_dot();
+    assert!(
+        !dot.is_empty(),
+        "minimal dialogue fixture must produce DOT output"
+    );
+    assert!(
+        dot.contains("#b8c0cc"),
+        "dialogue fixture must contain a dialogue node (muted slate fill)"
+    );
+    Ok(())
+}
+
+/// Minimal branching fixture renders branch edges.
+#[test]
+fn test_dot_minimal_branching() -> Result<(), Box<dyn std::error::Error>> {
+    let graph = compile_fixture(super::fixtures::FIXTURE_BRANCHING)?;
+    let dot = graph.to_dot();
+    assert!(
+        dot.contains("diamond"),
+        "branching fixture must contain a branch node (diamond shape)"
+    );
+    Ok(())
+}
+
+/// Minimal menu fixture renders choice nodes.
+#[test]
+fn test_dot_minimal_menu() -> Result<(), Box<dyn std::error::Error>> {
+    let graph = compile_fixture(super::fixtures::FIXTURE_MENU)?;
+    let dot = graph.to_dot();
+    assert!(
+        dot.contains("hexagon"),
+        "menu fixture must contain a choice node (hexagon shape)"
+    );
+    Ok(())
+}
+
+/// Minimal match fixture renders switch/match node.
+#[test]
+fn test_dot_minimal_match() -> Result<(), Box<dyn std::error::Error>> {
+    let graph = compile_fixture(super::fixtures::FIXTURE_MATCH)?;
+    let dot = graph.to_dot();
+    assert!(
+        dot.contains("match"),
+        "match fixture must contain a match node"
+    );
+    Ok(())
+}
+
+/// Minimal jump fixture renders jump edges.
+#[test]
+fn test_dot_minimal_jump() -> Result<(), Box<dyn std::error::Error>> {
+    let graph = compile_fixture(super::fixtures::FIXTURE_JUMP)?;
+    let dot = graph.to_dot();
+    assert!(
+        dot.contains("jump"),
+        "jump fixture must contain a jump node"
+    );
+    assert!(
+        dot.contains("style=dashed"),
+        "jump fixture must have dashed edges"
+    );
     Ok(())
 }

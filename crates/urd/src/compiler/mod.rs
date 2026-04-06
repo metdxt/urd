@@ -58,6 +58,19 @@ pub enum CompilerError {
         message: String,
     },
 
+    /// Two whole-module imports used the same alias name.
+    #[error("duplicate module alias `{0}`")]
+    DuplicateAlias(String),
+
+    /// A symbol import requested a label that does not exist in the target module.
+    #[error("symbol `{symbol}` not found in module `{module}`")]
+    MissingImportedSymbol {
+        /// The symbol name that was requested.
+        symbol: String,
+        /// The module path where the symbol was expected.
+        module: String,
+    },
+
     /// A circular import was detected.
     #[error("circular import detected for '{0}'")]
     CircularImport(String),
@@ -139,6 +152,7 @@ impl Compiler {
             id_ctx: Some(IdContext::new(file_stem)),
             preassign_ids: None,
             exported_labels: None,
+            is_imported_module: false,
             depth: 0,
         };
         state.scan_labels(ast)?;
@@ -206,6 +220,11 @@ pub(super) struct CompilerState {
     /// `None` for single-file compilation (no restriction).
     /// `Some(set)` for multi-file compilation (enforce restriction).
     pub(super) exported_labels: Option<HashSet<String>>,
+    /// When `true`, the compiler is emitting nodes for an imported module.
+    /// Bare label names are **not** inserted into `graph.labels` so that
+    /// they cannot be reached without their module-qualified prefix
+    /// (e.g. `jump lib.greeting` instead of `jump greeting`).
+    pub(super) is_imported_module: bool,
     /// Current recursion depth for stack-overflow protection.
     depth: usize,
 }
@@ -218,6 +237,7 @@ impl CompilerState {
             id_ctx: None,
             preassign_ids: None,
             exported_labels: None,
+            is_imported_module: false,
             depth: 0,
         }
     }
@@ -662,7 +682,11 @@ impl CompilerState {
                     .add_edge(placeholder_id, body_entry, IrEdge::Next);
 
                 // Register in the graph's public label map.
-                self.graph.labels.insert(label.clone(), placeholder_id);
+                // Skip bare-name registration for imported modules so that
+                // their labels are only reachable via qualified names.
+                if !self.is_imported_module {
+                    self.graph.labels.insert(label.clone(), placeholder_id);
+                }
 
                 // Pop label scope (skip in replay mode).
                 if self.preassign_ids.is_none()

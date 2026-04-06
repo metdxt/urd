@@ -122,7 +122,7 @@ fn compile_flat(
 
     // Phase 3 — build the cross-module label map from every import statement.
     let (global_labels, exported_labels) =
-        build_global_labels(&all, &local_labels, &entry_labels_per_module);
+        build_global_labels(&all, &local_labels, &entry_labels_per_module)?;
     shared_graph.labels = global_labels;
 
     // Phase 4 — emit IR for every module into the shared graph.
@@ -402,9 +402,13 @@ fn build_global_labels(
     all: &AllModules,
     local_labels: &HashMap<String, HashMap<String, NodeIndex>>,
     entry_labels_per_module: &HashMap<String, HashSet<String>>,
-) -> (HashMap<String, NodeIndex>, HashSet<String>) {
+) -> Result<(HashMap<String, NodeIndex>, HashSet<String>), CompilerError> {
     let mut global: HashMap<String, NodeIndex> = HashMap::new();
     let mut exported: HashSet<String> = HashSet::new();
+    // Maps whole-module alias → imported module path.  Diamond imports
+    // (two modules importing the same file under the same alias) are
+    // permitted; only a true conflict (same alias, different file) errors.
+    let mut seen_aliases: HashMap<String, String> = HashMap::new();
 
     for refs in all.import_refs.values() {
         for iref in refs {
@@ -416,6 +420,20 @@ fn build_global_labels(
 
             match &iref.style {
                 ImportStyle::WholeModule { alias } => {
+                    match seen_aliases.get(alias) {
+                        Some(prev_path) if prev_path != &iref.imported_path => {
+                            return Err(CompilerError::DuplicateAlias(alias.clone()));
+                        }
+                        Some(_) => {
+                            // Diamond import — same alias, same module. Skip
+                            // the duplicate registration; labels are already
+                            // present from the first encounter.
+                            continue;
+                        }
+                        None => {
+                            seen_aliases.insert(alias.clone(), iref.imported_path.clone());
+                        }
+                    }
                     for (label_name, &idx) in imported_locals {
                         let key = namespace(alias, label_name);
                         global.insert(key.clone(), idx);
@@ -430,15 +448,23 @@ fn build_global_labels(
                 ImportStyle::Symbols { symbols } => {
                     for (orig, alias) in symbols {
                         if let Some(&idx) = imported_locals.get(orig.as_str()) {
+                            if let Some(&existing) = global.get(alias) {
+                                // Diamond symbol import — same alias resolving
+                                // to the same node is fine; different node is a
+                                // real collision.
+                                if existing != idx {
+                                    return Err(CompilerError::DuplicateLabel(alias.clone()));
+                                }
+                                continue;
+                            }
                             global.insert(alias.clone(), idx);
                             // Symbol imports are explicit opt-in; always exported.
                             exported.insert(alias.clone());
                         } else {
-                            log::warn!(
-                                "symbol import: label '{}' not found in '{}'",
-                                orig,
-                                iref.imported_path
-                            );
+                            return Err(CompilerError::MissingImportedSymbol {
+                                symbol: orig.clone(),
+                                module: iref.imported_path.clone(),
+                            });
                         }
                     }
                 }
@@ -446,7 +472,7 @@ fn build_global_labels(
         }
     }
 
-    (global, exported)
+    Ok((global, exported))
 }
 
 // ─── Phase 4 · Emit ───────────────────────────────────────────────────────────
@@ -479,6 +505,7 @@ fn emit_all(
     let mut preamble_entries: Vec<NodeIndex> = Vec::new();
 
     // Emit all imported modules in BFS order (skip the root, emitted last).
+    state.is_imported_module = true;
     for path in all.order.iter().skip(1) {
         let Some(ast) = all.asts.get(path) else {
             continue;
@@ -503,6 +530,7 @@ fn emit_all(
     }
 
     // Emit the root module last.
+    state.is_imported_module = false;
     let root_ast = all.asts.get("").ok_or_else(|| {
         CompilerError::InvalidStatement("internal: root AST missing from compilation unit".into())
     })?;

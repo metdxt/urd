@@ -115,8 +115,9 @@ impl AnalysisContext {
     ///                     scope without a qualifier (e.g. `"show_inventory"` from
     ///                     `import (show_inventory) from "items.urd"`).
     ///
-    /// Both qualified (`"chars.Character"`) and unqualified (`"Character"`) keys
-    /// are inserted so the type checker can resolve either form.
+    /// Keys are inserted as-is. The caller is responsible for providing
+    /// both qualified (`"chars.Character"`) and unqualified (`"Character"`)
+    /// forms if both should be resolvable.
     pub fn build_with_imports(
         root: &Ast,
         imported_structs: HashMap<String, Vec<StructField>>,

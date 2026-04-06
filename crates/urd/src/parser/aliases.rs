@@ -16,4 +16,3 @@ where I: UrdInput<'tokens>;
 /// call site, which would otherwise exhaust RAM during test compilation.
 pub type BoxedUrdParser<'tokens, I> =
     Boxed<'tokens, 'tokens, I, Ast, extra::Err<Rich<'tokens, Token, SimpleSpan>>>;
-

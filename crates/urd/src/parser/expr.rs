@@ -257,6 +257,28 @@ fn comma_separated_kv_pairs_internal<'tok, I: UrdInput<'tok>>(
         .map_with(|items, extra| Ast::map(items).with_span(extra.span()))
 }
 
+/// Shared type-name recogniser used by both `: type` annotations and `-> type`
+/// return types. Does **not** consume any prefix token (`Colon` or `Arrow`).
+pub(crate) fn type_name<'tok, I: UrdInput<'tok>>() -> impl Parser<
+    'tok,
+    I,
+    TypeAnnotation,
+    chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
+> + Clone {
+    select! {
+        Token::Null => TypeAnnotation::Null,
+        Token::IdentPath(path) if path == ["int"]   => TypeAnnotation::Int,
+        Token::IdentPath(path) if path == ["float"] => TypeAnnotation::Float,
+        Token::IdentPath(path) if path == ["bool"]  => TypeAnnotation::Bool,
+        Token::IdentPath(path) if path == ["str"]   => TypeAnnotation::Str,
+        Token::IdentPath(path) if path == ["list"]  => TypeAnnotation::List,
+        Token::IdentPath(path) if path == ["map"]   => TypeAnnotation::Map,
+        Token::IdentPath(path) if path == ["dice"]  => TypeAnnotation::Dice,
+        Token::IdentPath(path) if path == ["range"] => TypeAnnotation::Range,
+        Token::IdentPath(path) => TypeAnnotation::Named(path),
+    }
+}
+
 /// Parser for an optional static type annotation: `: TypeName`.
 ///
 /// Recognises the built-in primitive names (`int`, `float`, `bool`, `str`, `null`)
@@ -273,24 +295,7 @@ pub(crate) fn type_annotation<'tok, I: UrdInput<'tok>>() -> impl Parser<
     TypeAnnotation,
     chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
 > + Clone {
-    just(Token::Colon).ignore_then(
-        select! {
-            // `null` is a keyword token in the lexer
-            Token::Null => TypeAnnotation::Null,
-            // Primitive type names arrive as plain IdentPath tokens
-            Token::IdentPath(path) if path == ["int"]   => TypeAnnotation::Int,
-            Token::IdentPath(path) if path == ["float"] => TypeAnnotation::Float,
-            Token::IdentPath(path) if path == ["bool"]  => TypeAnnotation::Bool,
-            Token::IdentPath(path) if path == ["str"]   => TypeAnnotation::Str,
-            Token::IdentPath(path) if path == ["list"]  => TypeAnnotation::List,
-            Token::IdentPath(path) if path == ["map"]   => TypeAnnotation::Map,
-            Token::IdentPath(path) if path == ["dice"]  => TypeAnnotation::Dice,
-            Token::IdentPath(path) if path == ["range"] => TypeAnnotation::Range,
-            // Any other identifier path is a user-defined (named) type
-            Token::IdentPath(path) => TypeAnnotation::Named(path),
-        }
-        .labelled("type name"),
-    )
+    just(Token::Colon).ignore_then(type_name().labelled("type name"))
 }
 
 /// Parser for variable/constant declarations. Parses:

@@ -35,6 +35,7 @@ use urd::{
 
 /// Parse, compile, and drive the VM to completion or the first terminal step.
 /// Capped at 256 steps to prevent infinite loops.
+#[allow(clippy::expect_used)]
 fn run_script(src: &str) -> Vec<VmStep> {
     let ast = parse_source(src).expect("script should parse");
     let graph = Compiler::compile(&ast).expect("script should compile");
@@ -214,7 +215,7 @@ label start {
 }
 "#;
     let ast = parse_source(src).expect("parse");
-    let graph = Compiler::compile(&ast).expect("compile");
+    let _graph = Compiler::compile(&ast).expect("compile");
 
     // This is a regular run — no panic expected.
     let steps = run_script(src);
@@ -1094,6 +1095,7 @@ fn test_same_file_imported_under_two_aliases_resolves_correctly() {
     loader.add(
         "lib.urd",
         r#"
+@entry
 label shared {
     Sys: "from lib"
 }

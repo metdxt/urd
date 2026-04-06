@@ -44,6 +44,8 @@
 //! expressions, function call results) are silently accepted because their
 //! types cannot be determined statically without full type inference.
 
+use std::collections::HashMap;
+
 use crate::parser::ast::{Ast, AstContent, Operator, TypeAnnotation};
 use crate::runtime::value::RuntimeValue;
 
@@ -266,8 +268,19 @@ fn check_node(
         }
 
         // ── FnDef ─────────────────────────────────────────────────────────
-        AstContent::FnDef { body, .. } => {
-            check_node(body, ctx, span, scope, errors);
+        AstContent::FnDef { params, body, .. } => {
+            // Create an isolated scope for the function body.
+            // Pure functions cannot access outer variables at runtime,
+            // so analysis must not inherit ambient typed bindings.
+            let mut fn_scope = ScopeStack::new(&HashMap::new());
+            fn_scope.push();
+            // Declare typed parameters into the function scope.
+            for param in params {
+                if let Some(ref ann) = param.type_annotation {
+                    fn_scope.declare(param.name.clone(), ann.clone());
+                }
+            }
+            check_node(body, ctx, span, &mut fn_scope, errors);
         }
 
         // ── Extern declaration ────────────────────────────────────────────

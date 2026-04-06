@@ -12,7 +12,10 @@ use crate::{
             Ast, DeclKind, Decorator, DecoratorParam, EventConstraint, FnParam, ImportSymbol,
             MatchArm, MatchPattern, StructField, TokSpan, TypeAnnotation,
         },
-        expr::{comma_separated_exprs, declaration, expr, extern_declaration, type_annotation},
+        expr::{
+            comma_separated_exprs, declaration, expr, extern_declaration, type_annotation,
+            type_name,
+        },
     },
     runtime::value::RuntimeValue,
 };
@@ -453,20 +456,7 @@ pub fn return_type_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
     TypeAnnotation,
     chumsky::extra::Err<chumsky::error::Rich<'tok, Token, chumsky::span::SimpleSpan>>,
 > + Clone {
-    just(Token::Arrow).ignore_then(
-        select! {
-            Token::Null                                     => TypeAnnotation::Null,
-            Token::IdentPath(path) if path == ["int"]   => TypeAnnotation::Int,
-            Token::IdentPath(path) if path == ["float"] => TypeAnnotation::Float,
-            Token::IdentPath(path) if path == ["bool"]  => TypeAnnotation::Bool,
-            Token::IdentPath(path) if path == ["str"]   => TypeAnnotation::Str,
-            Token::IdentPath(path) if path == ["list"]  => TypeAnnotation::List,
-            Token::IdentPath(path) if path == ["map"]   => TypeAnnotation::Map,
-            Token::IdentPath(path) if path == ["dice"]  => TypeAnnotation::Dice,
-            Token::IdentPath(path)                      => TypeAnnotation::Named(path),
-        }
-        .labelled("return type"),
-    )
+    just(Token::Arrow).ignore_then(type_name().labelled("return type"))
 }
 
 /// Parses a full function definition:

@@ -32,6 +32,7 @@ use urd::{
 /// Parse, compile, and drive the VM to completion (or the first error/termination),
 /// returning every [`VmStep`] observed.  Capped at 128 steps to prevent infinite
 /// loops in broken scripts.
+#[allow(clippy::expect_used)]
 fn run_script(src: &str) -> Vec<VmStep> {
     let ast = parse_source(src).expect("script should parse");
     let graph = Compiler::compile(&ast).expect("script should compile");

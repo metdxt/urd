@@ -620,7 +620,11 @@ pub enum AstContent {
         key: Box<Ast>,
     },
 
-    /// Subscript assignment: `expr[key] = value`
+    /// Subscript assignment: `ident[key] = value`
+    ///
+    /// The parser restricts the left-hand side to a single-segment identifier
+    /// (e.g. `map["key"] = value`). Multi-segment paths and arbitrary expressions
+    /// are not supported as the subscript base.
     SubscriptAssign {
         /// The object being indexed
         object: Box<Ast>,

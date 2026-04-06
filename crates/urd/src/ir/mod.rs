@@ -208,6 +208,22 @@ impl IrGraph {
             }
         }
 
+        // Preserve cluster_names from `other`, namespaced like labels.
+        for (old_idx, name) in other.cluster_names {
+            if let Some(&new_idx) = index_map.get(&old_idx) {
+                self.cluster_names
+                    .entry(new_idx)
+                    .or_insert_with(|| namespace(alias, &name));
+            }
+        }
+
+        // Preserve label_sources from `other`.
+        for (old_idx, source) in other.label_sources {
+            if let Some(&new_idx) = index_map.get(&old_idx) {
+                self.label_sources.entry(new_idx).or_insert(source);
+            }
+        }
+
         // Return the full old→new index map so callers (e.g. the compiler's
         // loader) can translate any `NodeIndex` that was valid in `other` into
         // the corresponding index valid in the merged graph.
@@ -923,5 +939,38 @@ mod tests {
                 "both branch targets must be End nodes after merge"
             );
         }
+    }
+
+    #[test]
+    fn merge_preserves_cluster_names_and_label_sources() {
+        let mut base = IrGraph::new();
+        let n0 = base.push(IrNodeKind::Nop);
+        base.entry = Some(n0);
+
+        let mut other = IrGraph::new();
+        let n1 = other.push(IrNodeKind::EnterScope {
+            label: "greet".into(),
+        });
+        other.labels.insert("greet".into(), n1);
+        other.cluster_names.insert(n1, "greet".into());
+        other.label_sources.insert(n1, "lib.urd".into());
+        other.entry = Some(n1);
+
+        let index_map = base.merge(other, "lib");
+
+        // Verify cluster_names were preserved with namespacing.
+        let new_idx = index_map[&n1];
+        assert_eq!(
+            base.cluster_names.get(&new_idx),
+            Some(&"lib::greet".to_string()),
+            "cluster_names must be preserved and namespaced after merge"
+        );
+
+        // Verify label_sources were preserved.
+        assert_eq!(
+            base.label_sources.get(&new_idx),
+            Some(&"lib.urd".to_string()),
+            "label_sources must be preserved after merge"
+        );
     }
 }

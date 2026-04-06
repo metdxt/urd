@@ -41,6 +41,7 @@ use urd::{
 
 /// Parse, compile, and drive the VM to completion or the first terminal step.
 /// Capped at 1024 steps to prevent infinite loops.
+#[allow(clippy::expect_used)]
 fn run_script(src: &str) -> Vec<VmStep> {
     let ast = parse_source(src).expect("script should parse");
     let graph = Compiler::compile(&ast).expect("script should compile");
@@ -102,6 +103,7 @@ fn run_script_catching_panic(src: &str) -> Result<Vec<VmStep>, String> {
 /// Returns `Some(output)` to the **parent** process (which should inspect the
 /// result and `return` early).  Returns `None` inside the **subprocess**
 /// (which should execute the dangerous code directly — it is already isolated).
+#[allow(clippy::expect_used)]
 fn subprocess_guard(test_name: &str) -> Option<std::process::Output> {
     if std::env::var("__URD_SUBPROCESS").is_ok() {
         return None; // We are the subprocess — run the test body.
@@ -111,7 +113,7 @@ fn subprocess_guard(test_name: &str) -> Option<std::process::Output> {
     let output = std::process::Command::new(&exe)
         .env("__URD_SUBPROCESS", "1")
         .arg("--exact")
-        .arg(&format!("adversarial_round2::{test_name}"))
+        .arg(format!("adversarial_round2::{test_name}"))
         .arg("--test-threads=1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -124,6 +126,7 @@ fn subprocess_guard(test_name: &str) -> Option<std::process::Output> {
 /// Like [`subprocess_guard`], but kills the subprocess if it exceeds the given
 /// timeout.  Returns `(success, timed_out, stderr)` to the parent.
 /// Returns `None` inside the subprocess.
+#[allow(clippy::expect_used)]
 fn subprocess_guard_timed(test_name: &str, timeout_secs: u64) -> Option<(bool, bool, String)> {
     if std::env::var("__URD_SUBPROCESS").is_ok() {
         return None; // We are the subprocess — run the test body.
@@ -133,7 +136,7 @@ fn subprocess_guard_timed(test_name: &str, timeout_secs: u64) -> Option<(bool, b
     let mut child = std::process::Command::new(&exe)
         .env("__URD_SUBPROCESS", "1")
         .arg("--exact")
-        .arg(&format!("adversarial_round2::{test_name}"))
+        .arg(format!("adversarial_round2::{test_name}"))
         .arg("--test-threads=1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -677,6 +680,7 @@ narrator: "{result}"
 ///
 /// Runs in a subprocess because stack overflow is SIGABRT.
 #[test]
+#[allow(clippy::expect_used)]
 fn test_compiler_deep_nesting_must_not_crash() {
     if let Some(output) = subprocess_guard("test_compiler_deep_nesting_must_not_crash") {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -699,16 +703,12 @@ fn test_compiler_deep_nesting_must_not_crash() {
         src.push_str("}\n");
     }
 
-    match parse_source(&src) {
-        Ok(ast) => match Compiler::compile(&ast) {
-            Ok(graph) => {
-                let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init");
-                let _step = vm.next(None);
-                // Any non-crash result is fine.
-            }
-            Err(_) => {} // Compile error is acceptable.
-        },
-        Err(_) => {} // Parse error is acceptable.
+    if let Ok(ast) = parse_source(&src)
+        && let Ok(graph) = Compiler::compile(&ast)
+    {
+        let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init");
+        let _step = vm.next(None);
+        // Any non-crash result is fine.
     }
 }
 
@@ -739,10 +739,10 @@ narrator: "{result}"
         Ok(steps) => {
             // If we get a NaN value rendered, that's a bug.
             let texts = dialogue_texts(&steps);
-            if let Some(text) = texts.first() {
-                if text == "NaN" || text == "nan" {
-                    panic!("float modulo by zero silently produced NaN — should return an error");
-                }
+            if let Some(text) = texts.first()
+                && (text == "NaN" || text == "nan")
+            {
+                panic!("float modulo by zero silently produced NaN — should return an error");
             }
             // An error (TypeError) is the correct behaviour.
         }
@@ -766,10 +766,10 @@ narrator: "{result}"
         }
         Ok(steps) => {
             let texts = dialogue_texts(&steps);
-            if let Some(text) = texts.first() {
-                if text == "NaN" || text == "nan" {
-                    panic!("0.0 %% 0.0 silently produced NaN — should return an error");
-                }
+            if let Some(text) = texts.first()
+                && (text == "NaN" || text == "nan")
+            {
+                panic!("0.0 %% 0.0 silently produced NaN — should return an error");
             }
         }
     }
@@ -932,15 +932,16 @@ narrator: "{result}"
             let texts = dialogue_texts(&steps);
             // Document whatever the current behaviour is.
             // If it's "0", that's the silent bit-loss bug.
-            if let Some(text) = texts.first() {
-                if text == "0" && first_error(&steps).is_none() {
-                    // This is technically correct Rust behaviour but
-                    // unexpected in a scripting language. Document it.
-                    eprintln!(
-                        "NOTE: i64::MIN << 1 silently produces 0 (sign bit lost). \
-                         Consider making this an overflow error for consistency."
-                    );
-                }
+            if let Some(text) = texts.first()
+                && text == "0"
+                && first_error(&steps).is_none()
+            {
+                // This is technically correct Rust behaviour but
+                // unexpected in a scripting language. Document it.
+                eprintln!(
+                    "NOTE: i64::MIN << 1 silently produces 0 (sign bit lost). \
+                     Consider making this an overflow error for consistency."
+                );
             }
             // Not asserting failure here — this is a documentation/consistency issue.
         }
@@ -1094,6 +1095,7 @@ fn test_unterminated_string_must_be_rejected() {
 
 /// `"hello\"` — escaped quote at end, no real closing quote.
 #[test]
+#[allow(clippy::expect_used)]
 fn test_escaped_quote_at_eof_must_be_rejected() {
     // Use a raw string so Rust doesn't interpret the escapes
     let src = r#"const narrator = :{ name: "N", name_color: "white" }
@@ -1105,22 +1107,22 @@ narrator: "hello\""#;
 
     // Getting a parse error is correct.
     // Getting Ok but the string eating the rest of the file is the bug.
-    if let Ok(ast) = parse_result {
-        if let Ok(graph) = Compiler::compile(&ast) {
-            let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init");
-            let step = vm.next(None);
-            if let VmStep::Event(Event::Dialogue { lines, .. }) = &step {
-                for line in lines {
-                    if let RuntimeValue::Str(ps) = line {
-                        let s = ps.to_string();
-                        // If the string contains everything after the opening quote
-                        // (including what should be separate code), it ate the file.
-                        if s.len() > 20 {
-                            panic!(
-                                "Escaped quote at EOF caused the string to eat the rest of \
-                                 the file: {s:?}"
-                            );
-                        }
+    if let Ok(ast) = parse_result
+        && let Ok(graph) = Compiler::compile(&ast)
+    {
+        let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init");
+        let step = vm.next(None);
+        if let VmStep::Event(Event::Dialogue { lines, .. }) = &step {
+            for line in lines {
+                if let RuntimeValue::Str(ps) = line {
+                    let s = ps.to_string();
+                    // If the string contains everything after the opening quote
+                    // (including what should be separate code), it ate the file.
+                    if s.len() > 20 {
+                        panic!(
+                            "Escaped quote at EOF caused the string to eat the rest of \
+                             the file: {s:?}"
+                        );
                     }
                 }
             }
@@ -1138,6 +1140,7 @@ narrator: "hello\""#;
 ///
 /// Runs in a subprocess because stack overflow is SIGABRT, not a catchable panic.
 #[test]
+#[allow(clippy::expect_used)]
 fn test_deeply_nested_parens_must_not_crash() {
     if let Some(output) = subprocess_guard("test_deeply_nested_parens_must_not_crash") {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1164,24 +1167,20 @@ fn test_deeply_nested_parens_must_not_crash() {
     src.push_str("\nnarrator: \"{x}\"\n");
 
     // If we crash here the parent detects it.
-    match parse_source(&src) {
-        Ok(ast) => match Compiler::compile(&ast) {
-            Ok(graph) => {
-                let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init");
-                let step = vm.next(None);
-                if let VmStep::Event(Event::Dialogue { lines, .. }) = &step {
-                    if let Some(RuntimeValue::Str(ps)) = lines.first() {
-                        assert_eq!(
-                            ps.to_string(),
-                            "1",
-                            "Deeply nested parens should evaluate to 1"
-                        );
-                    }
-                }
-            }
-            Err(_) => {} // Compile error is acceptable.
-        },
-        Err(_) => {} // Parse error is acceptable.
+    if let Ok(ast) = parse_source(&src)
+        && let Ok(graph) = Compiler::compile(&ast)
+    {
+        let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init");
+        let step = vm.next(None);
+        if let VmStep::Event(Event::Dialogue { lines, .. }) = &step
+            && let Some(RuntimeValue::Str(ps)) = lines.first()
+        {
+            assert_eq!(
+                ps.to_string(),
+                "1",
+                "Deeply nested parens should evaluate to 1"
+            );
+        }
     }
 }
 
@@ -1189,6 +1188,7 @@ fn test_deeply_nested_parens_must_not_crash() {
 ///
 /// Runs in a subprocess because stack overflow is SIGABRT, not a catchable panic.
 #[test]
+#[allow(clippy::expect_used)]
 fn test_deeply_nested_braces_must_not_crash() {
     if let Some(output) = subprocess_guard("test_deeply_nested_braces_must_not_crash") {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1213,17 +1213,13 @@ fn test_deeply_nested_braces_must_not_crash() {
     }
 
     // If we crash here the parent detects it.
-    match parse_source(&src) {
-        Ok(ast) => match Compiler::compile(&ast) {
-            Ok(graph) => {
-                let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init");
-                for _ in 0..2 {
-                    vm.next(None);
-                }
-            }
-            Err(_) => {} // Compile error is acceptable.
-        },
-        Err(_) => {} // Parse error is acceptable.
+    if let Ok(ast) = parse_source(&src)
+        && let Ok(graph) = Compiler::compile(&ast)
+    {
+        let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init");
+        for _ in 0..2 {
+            vm.next(None);
+        }
     }
 }
 

@@ -33,6 +33,7 @@ use urd::{
 /// Parse, compile, and drive the VM to completion (or the first error),
 /// returning every [`VmStep`] observed.  Caps at 64 steps to prevent infinite
 /// loops in broken tests.
+#[allow(clippy::expect_used)]
 fn run_script(src: &str) -> Vec<VmStep> {
     let ast = parse_source(src).expect("script should parse without errors");
     let graph = Compiler::compile(&ast).expect("script should compile without errors");
@@ -231,5 +232,172 @@ Dave: "Parameterised decorator."
             );
         }
         _ => unreachable!(),
+    }
+}
+
+// ── Phase 2: Stale-snapshot & arity regression tests ──────────────────────────
+
+/// A decorator body that writes to `event` and then reads back the same key
+/// in a subsequent statement must see the updated value — not `Null`.
+///
+/// Before the fix, `inner_env["event"]` held a stale snapshot taken before body
+/// execution, so the read would return `Null` even though the write succeeded.
+#[test]
+fn test_decorator_write_then_read_in_same_body() {
+    let src = r#"
+decorator stamp() {
+    event["x"] = 42
+    event["y"] = event["x"]
+}
+
+@stamp
+Alice: "write-then-read"
+"#;
+    let steps = run_script(src);
+
+    assert!(
+        !steps.iter().any(|s| matches!(s, VmStep::Error(_))),
+        "decorator body should not error; got: {steps:?}"
+    );
+
+    let dialogue_step = steps
+        .iter()
+        .find(|s| matches!(s, VmStep::Event(Event::Dialogue { .. })));
+
+    assert!(
+        dialogue_step.is_some(),
+        "expected a Dialogue event; got: {steps:?}"
+    );
+
+    match dialogue_step.unwrap() {
+        VmStep::Event(Event::Dialogue { fields, .. }) => {
+            assert_eq!(
+                fields.get("x"),
+                Some(&RuntimeValue::Int(42)),
+                "'x' should be Int(42)"
+            );
+            assert_eq!(
+                fields.get("y"),
+                Some(&RuntimeValue::Int(42)),
+                "'y' should equal 'x' (Int(42)), not Null — stale snapshot bug"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Two decorators applied to a single node — the second decorator reads a
+/// field written by the first. The final event must contain both fields.
+#[test]
+fn test_two_decorators_second_reads_firsts_mutation() {
+    let src = r#"
+decorator first_dec() {
+    event["marker"] = "first"
+}
+
+decorator second_dec() {
+    event["saw_marker"] = event["marker"]
+}
+
+@first_dec
+@second_dec
+Bob: "chained decorators"
+"#;
+    let steps = run_script(src);
+
+    assert!(
+        !steps.iter().any(|s| matches!(s, VmStep::Error(_))),
+        "chained decorators should not error; got: {steps:?}"
+    );
+
+    let dialogue_step = steps
+        .iter()
+        .find(|s| matches!(s, VmStep::Event(Event::Dialogue { .. })));
+
+    assert!(
+        dialogue_step.is_some(),
+        "expected a Dialogue event; got: {steps:?}"
+    );
+
+    match dialogue_step.unwrap() {
+        VmStep::Event(Event::Dialogue { fields, .. }) => {
+            assert_eq!(
+                fields.get("marker"),
+                Some(&RuntimeValue::Str(
+                    urd::lexer::strings::ParsedString::new_plain("first")
+                )),
+                "'marker' should be Str(\"first\")"
+            );
+            assert_eq!(
+                fields.get("saw_marker"),
+                Some(&RuntimeValue::Str(
+                    urd::lexer::strings::ParsedString::new_plain("first")
+                )),
+                "'saw_marker' should equal 'marker' — second decorator must see first's writes"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Calling a decorator with fewer arguments than it declares parameters must
+/// produce an error — `zip` must not silently truncate.
+#[test]
+fn test_under_arity_decorator_call_fails() {
+    let src = r#"
+decorator need_two(a: int, b: int) {
+    event["sum"] = a
+}
+
+@need_two(1)
+Carol: "under-arity"
+"#;
+    let steps = run_script(src);
+
+    let error_step = steps.iter().find(|s| matches!(s, VmStep::Error(_)));
+    assert!(
+        error_step.is_some(),
+        "calling a 2-param decorator with 1 arg must error; got: {steps:?}"
+    );
+
+    match error_step.unwrap() {
+        VmStep::Error(VmError::TypeError(msg)) => {
+            assert!(
+                msg.contains("expects 2 argument(s), got 1"),
+                "error message should mention the arity mismatch; got: {msg}"
+            );
+        }
+        other => panic!("expected TypeError about arity mismatch, got: {other:?}"),
+    }
+}
+
+/// Calling a decorator with more arguments than it declares parameters must
+/// produce an error — `zip` must not silently truncate.
+#[test]
+fn test_over_arity_decorator_call_fails() {
+    let src = r#"
+decorator need_one(a: int) {
+    event["val"] = a
+}
+
+@need_one(1, 2)
+Dave: "over-arity"
+"#;
+    let steps = run_script(src);
+
+    let error_step = steps.iter().find(|s| matches!(s, VmStep::Error(_)));
+    assert!(
+        error_step.is_some(),
+        "calling a 1-param decorator with 2 args must error; got: {steps:?}"
+    );
+
+    match error_step.unwrap() {
+        VmStep::Error(VmError::TypeError(msg)) => {
+            assert!(
+                msg.contains("expects 1 argument(s), got 2"),
+                "error message should mention the arity mismatch; got: {msg}"
+            );
+        }
+        other => panic!("expected TypeError about arity mismatch, got: {other:?}"),
     }
 }

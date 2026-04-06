@@ -1220,14 +1220,33 @@ fn exec_block_sync(
         AstContent::Block(stmts) => stmts,
         _ => {
             // Single statement.
-            return exec_stmt_sync(block, env, event);
+            exec_stmt_sync(block, env, event)?;
+            refresh_event_snapshot(env, event)?;
+            return Ok(());
         }
     };
 
     for stmt in stmts {
         exec_stmt_sync(stmt, env, event)?;
+        // After each statement, refresh the `event` binding in `env` so that
+        // subsequent reads (e.g. `event["x"]`) see the latest mutations
+        // applied by `exec_stmt_sync` to the canonical `event` map.
+        refresh_event_snapshot(env, event)?;
     }
     Ok(())
+}
+
+/// Re-synchronises the `"event"` variable in `env` with the canonical `event`
+/// map so that expression evaluation sees the most recent mutations.
+fn refresh_event_snapshot(
+    env: &mut Environment,
+    event: &HashMap<String, RuntimeValue>,
+) -> Result<(), VmError> {
+    let snapshot: HashMap<String, Box<RuntimeValue>> = event
+        .iter()
+        .map(|(k, v)| (k.clone(), Box::new(v.clone())))
+        .collect();
+    env.set("event", RuntimeValue::Map(snapshot), &DeclKind::Variable)
 }
 
 /// Executes a single AST statement inside a decorator body.
@@ -1343,6 +1362,17 @@ fn apply_script_decorator(
     // Bind arguments to parameter names in a fresh inner scope.
     let mut inner_env = env.clone();
     inner_env.push_scope();
+
+    // Arity check: parameter count must match argument count exactly.
+    if def.params.len() != args.len() {
+        return Err(VmError::TypeError(format!(
+            "decorator '{}' expects {} argument(s), got {}",
+            def.name,
+            def.params.len(),
+            args.len()
+        )));
+    }
+
     for (param, arg_ast) in def.params.iter().zip(args.iter()) {
         let val = eval_expr(arg_ast, env)?;
         inner_env.set(param.as_str(), val, &DeclKind::Variable)?;
@@ -2278,7 +2308,7 @@ mod tests {
             env.get("score").expect("global visible in inner scope"),
             RuntimeValue::Int(0)
         );
-        env.pop_scope();
+        let _ = env.pop_scope();
     }
 
     /// A complete script with `DefineEnum` + `Switch` reaches the right arm.

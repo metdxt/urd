@@ -1,5 +1,8 @@
 #![allow(missing_docs)]
 
+#[path = "integration/fixtures.rs"]
+mod fixtures;
+
 #[path = "integration/dot_render.rs"]
 mod dot_render;
 
@@ -35,3 +38,6 @@ mod adversarial_new;
 
 #[path = "integration/adversarial_round2.rs"]
 mod adversarial_round2;
+
+#[path = "integration/parser_fn_return_type.rs"]
+mod parser_fn_return_type;

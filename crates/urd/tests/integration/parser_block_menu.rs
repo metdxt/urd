@@ -70,7 +70,7 @@ fn test_id_decorator_on_all_menu_options() {
         opt.decorators().iter().any(|d| {
             d.name() == "id" && {
                 if let AstContent::ExprList(args) = d.args().content() {
-                    args.first().map_or(false, |a| {
+                    args.first().is_some_and(|a| {
                         if let AstContent::Value(RuntimeValue::Str(s)) = a.content() {
                             s.to_string() == expected
                         } else {

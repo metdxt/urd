@@ -6,7 +6,7 @@
 use crate::analysis::AnalysisError;
 use crate::analysis::context::AnalysisContext;
 use crate::analysis::types;
-use crate::parser::ast::{Ast, DeclKind, TypeAnnotation};
+use crate::parser::ast::{Ast, DeclKind, FnParam, TypeAnnotation};
 use crate::runtime::value::RuntimeValue;
 
 // ---------------------------------------------------------------------------
@@ -890,5 +890,86 @@ fn untyped_declaration_any_value_is_ignored() {
     let ctx = make_ctx(&[], &[]);
     // Assigning a bool to an untyped int variable — no annotation, no check.
     let ast = Ast::block(vec![untyped_decl("anything", bool_lit(true))]);
+    assert_no_errors(&types::check(&ast, &ctx));
+}
+
+// ---------------------------------------------------------------------------
+// Function scope isolation — Phase 3
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fn_param_type_mismatch_on_reassignment_is_rejected() {
+    // fn f(x: int) { x = true }  — must report TypeMismatch for "x"
+    let ctx = make_ctx(&[], &[]);
+    let body = Ast::block(vec![Ast::assign_op(ident("x"), bool_lit(true))]);
+    let f = Ast::fn_def(
+        Some("f".to_owned()),
+        vec![FnParam {
+            name: "x".to_owned(),
+            type_annotation: Some(TypeAnnotation::Int),
+        }],
+        None,
+        body,
+    );
+    let ast = Ast::block(vec![f]);
+    assert_type_mismatch(&types::check(&ast, &ctx), "x");
+}
+
+#[test]
+fn fn_param_type_propagates_to_local_decl() {
+    // fn f(x: int) { let y: int = x }  — x is int, y is int → OK
+    let ctx = make_ctx(&[], &[]);
+    let body = Ast::block(vec![typed_decl("y", TypeAnnotation::Int, ident("x"))]);
+    let f = Ast::fn_def(
+        Some("f".to_owned()),
+        vec![FnParam {
+            name: "x".to_owned(),
+            type_annotation: Some(TypeAnnotation::Int),
+        }],
+        None,
+        body,
+    );
+    let ast = Ast::block(vec![f]);
+    assert_no_errors(&types::check(&ast, &ctx));
+}
+
+#[test]
+fn fn_body_does_not_inherit_outer_typed_variables() {
+    // Outer scope has `score: int`. Inside function body, assigning a bool to
+    // `score` must NOT be flagged — the function scope is isolated and does
+    // not know about `score`'s type.
+    let ctx = make_ctx(&[], &[("score", TypeAnnotation::Int)]);
+    let body = Ast::block(vec![Ast::assign_op(ident("score"), bool_lit(true))]);
+    let f = Ast::fn_def(Some("f".to_owned()), vec![], None, body);
+    let ast = Ast::block(vec![f]);
+    assert_no_errors(&types::check(&ast, &ctx));
+}
+
+#[test]
+fn anonymous_fn_param_type_mismatch_is_rejected() {
+    // let f = fn(x: int) { x = "hello" }  — anonymous function, same isolation
+    let ctx = make_ctx(&[], &[]);
+    let body = Ast::block(vec![Ast::assign_op(ident("x"), str_lit("hello"))]);
+    let f = Ast::fn_def(
+        None,
+        vec![FnParam {
+            name: "x".to_owned(),
+            type_annotation: Some(TypeAnnotation::Int),
+        }],
+        None,
+        body,
+    );
+    let ast = Ast::block(vec![untyped_decl("f", f)]);
+    assert_type_mismatch(&types::check(&ast, &ctx), "x");
+}
+
+#[test]
+fn anonymous_fn_body_does_not_inherit_outer_typed_variables() {
+    // Outer scope: score: int. Anonymous fn body assigns bool to score → OK
+    // because function scope is isolated.
+    let ctx = make_ctx(&[], &[("score", TypeAnnotation::Int)]);
+    let body = Ast::block(vec![Ast::assign_op(ident("score"), bool_lit(false))]);
+    let f = Ast::fn_def(None, vec![], None, body);
+    let ast = Ast::block(vec![untyped_decl("f", f)]);
     assert_no_errors(&types::check(&ast, &ctx));
 }
