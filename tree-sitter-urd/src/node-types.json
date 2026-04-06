@@ -1346,11 +1346,11 @@
   },
   {
     "type": "dice",
-    "named": false
+    "named": true
   },
   {
     "type": "dice",
-    "named": true
+    "named": false
   },
   {
     "type": "elif",
@@ -1386,11 +1386,11 @@
   },
   {
     "type": "float",
-    "named": false
+    "named": true
   },
   {
     "type": "float",
-    "named": true
+    "named": false
   },
   {
     "type": "format_spec",
@@ -1442,8 +1442,7 @@
   },
   {
     "type": "line_comment",
-    "named": true,
-    "extra": true
+    "named": true
   },
   {
     "type": "list",
