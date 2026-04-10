@@ -388,6 +388,50 @@ pub fn eval_expr_list(
     }
 }
 
+/// Evaluates one speaker AST node.
+///
+/// Identical to [`eval_expr`] but with one extra rule: if evaluation fails
+/// with [`VmError::UndefinedVariable`] *and* the node is a bare
+/// `Value(IdentPath([name]))`, the identifier name is returned as a plain
+/// `RuntimeValue::Str` instead of propagating the error.
+///
+/// This lets `alice: "Hello"` work without a prior `const alice = ...`
+/// declaration — the speaker becomes the string `"alice"`.  When a variable
+/// *is* defined (e.g. `const alice = :{ name: "Alice", portrait: "…" }`),
+/// that richer value is returned instead.
+pub(super) fn eval_speaker(
+    ast: &crate::parser::ast::Ast,
+    env: &Environment,
+) -> Result<RuntimeValue, VmError> {
+    match eval_expr(ast, env) {
+        Ok(v) => Ok(v),
+        Err(VmError::UndefinedVariable(_)) => {
+            // Only fall back for a bare single-segment identifier.
+            if let AstContent::Value(RuntimeValue::IdentPath(path)) = ast.content() {
+                Ok(RuntimeValue::Str(ParsedString::new_plain(&path.join("."))))
+            } else {
+                // Non-ident expressions (calls, bin-ops …) should still error.
+                eval_expr(ast, env)
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Like [`eval_expr_list`] but evaluates every element through [`eval_speaker`].
+pub(super) fn eval_speakers_list(
+    ast: &crate::parser::ast::Ast,
+    env: &Environment,
+) -> Result<Vec<RuntimeValue>, VmError> {
+    match ast.content() {
+        AstContent::ExprList(items) => items
+            .iter()
+            .map(|item| eval_speaker(item, env))
+            .collect(),
+        _ => Ok(vec![eval_speaker(ast, env)?]),
+    }
+}
+
 // ── Internal expression helpers ───────────────────────────────────────────────
 
 /// Evaluate a [`RuntimeValue`] that may be an [`RuntimeValue::IdentPath`]

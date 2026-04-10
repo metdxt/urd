@@ -73,7 +73,7 @@ pub enum IrEdge {
 /// The VM begins execution at [`IrGraph::entry`] and follows edges until it
 /// reaches a terminal node ([`IrNodeKind::End`], [`IrNodeKind::Todo`], or
 /// [`IrNodeKind::Return`]).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrGraph {
     /// The directed graph of IR nodes and control-flow edges.
     pub graph: StableDiGraph<IrNodeKind, IrEdge>,
@@ -133,6 +133,47 @@ impl IrGraph {
     /// Adds a directed edge from `from` to `to` with semantic label `edge`.
     pub(crate) fn add_edge(&mut self, from: NodeIndex, to: NodeIndex, edge: IrEdge) {
         self.graph.add_edge(from, to, edge);
+    }
+
+    /// Returns the set of decorator names used across all `Dialogue` and `Choice`
+    /// nodes in this graph. Useful for pre-registering passthrough handlers before
+    /// constructing a [`crate::vm::Vm`].
+    pub fn used_decorators(&self) -> std::collections::HashSet<&str> {
+        let mut names = std::collections::HashSet::new();
+        for node in self.graph.node_weights() {
+            match node {
+                IrNodeKind::Dialogue { decorators, .. } => {
+                    for d in decorators {
+                        names.insert(d.name());
+                    }
+                }
+                IrNodeKind::Choice { decorators, options, .. } => {
+                    for d in decorators {
+                        names.insert(d.name());
+                    }
+                    for opt in options {
+                        for d in &opt.decorators {
+                            names.insert(d.name());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// Returns the names of script-defined (`decorator name { ... }`) decorators
+    /// declared in this graph. These are registered at VM init time and should
+    /// not be overridden with passthrough handlers.
+    pub fn script_defined_decorators(&self) -> std::collections::HashSet<&str> {
+        self.graph
+            .node_weights()
+            .filter_map(|k| match k {
+                IrNodeKind::DefineScriptDecorator { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Merges `other` into `self`, remapping all [`NodeIndex`] values via a
@@ -287,7 +328,7 @@ pub struct SwitchArm {
 /// See each variant's documentation for which [`IrEdge`] labels its outgoing
 /// arcs carry.
 #[allow(missing_docs)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IrNodeKind {
     // ── Internal nodes ──────────────────────────────────────────────────────
     /// Declare or assign a variable.

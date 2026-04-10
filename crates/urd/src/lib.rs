@@ -44,8 +44,6 @@
 //! - [`runtime`]: Runtime evaluation and value management
 //! - [`vm`]: Virtual machine and execution
 
-#![feature(trait_alias)]
-
 pub mod analysis;
 pub mod compiler;
 pub mod erro;
@@ -76,6 +74,12 @@ pub use vm::VmError;
 /// The decorator handler registry.
 pub use vm::registry::DecoratorRegistry;
 
+/// Pluggable dice-rolling backend trait and the default `rand`-based implementation.
+pub use vm::{DiceRoller, DefaultDiceRoller};
+
+/// The compiled IR graph — pass to [`Vm::new`] after compiling a script.
+pub use ir::IrGraph;
+
 /// File loader trait and built-in implementations.
 pub use vm::loader::{FileLoader, FsLoader, MemLoader};
 
@@ -89,7 +93,7 @@ pub use compiler::CompilerError;
 /// engine integration typically needs.
 pub mod prelude {
     pub use super::{
-        ChoiceEvent, CompilerError, DecoratorRegistry, Event, FileLoader, FsLoader, Localizer,
-        MemLoader, RuntimeValue, Vm, VmError, VmStep,
+        ChoiceEvent, CompilerError, DefaultDiceRoller, DecoratorRegistry, DiceRoller, Event,
+        FileLoader, FsLoader, IrGraph, Localizer, MemLoader, RuntimeValue, Vm, VmError, VmStep,
     };
 }

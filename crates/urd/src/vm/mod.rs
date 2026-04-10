@@ -51,7 +51,7 @@ use crate::{
     runtime::value::RuntimeValue,
 };
 
-use self::eval::{is_truthy, values_equal};
+use self::eval::{eval_speakers_list, is_truthy, values_equal};
 
 // ─── Graph helpers ────────────────────────────────────────────────────────────
 
@@ -414,6 +414,15 @@ impl Vm {
     /// Call this before the first [`Vm::next`] invocation.
     pub fn with_localizer(mut self, localizer: Arc<dyn Localizer>) -> Self {
         self.localizer = Some(localizer);
+        self
+    }
+
+    /// Attach a custom [`DiceRoller`] to the VM.
+    ///
+    /// Replaces the default [`DefaultDiceRoller`] used for `d6`, `2d8` etc.
+    /// expressions. Call this before the first [`Vm::next`] invocation.
+    pub fn with_dice_roller(mut self, roller: impl DiceRoller + 'static) -> Self {
+        self.state.env.set_dice_roller(Box::new(roller));
         self
     }
 
@@ -906,7 +915,7 @@ impl Vm {
                     decorators,
                     loc_id,
                 } => {
-                    let speakers_vec = match eval_expr_list(speakers, &state.env) {
+                    let speakers_vec = match eval_speakers_list(speakers, &state.env) {
                         Ok(v) => v,
                         Err(e) => return VmStep::Error(e),
                     };
@@ -3905,6 +3914,51 @@ label start {
     /// `jump` from inside nested `if` blocks correctly unwinds all block
     /// scopes (PushScope levels) in addition to the label scope (EnterScope).
     #[test]
+    /// A `const`-declared speaker variable must resolve to its runtime value,
+    /// not fall back to the identifier name string.
+    ///
+    /// Regression for: `const zara = :{ name: "Zara" }` followed by
+    /// `zara: "Hello"` — the speaker should be the Map value, never the
+    /// string `"zara"`.
+    #[test]
+    fn test_const_speaker_resolves_to_value_not_identifier() {
+        use crate::compiler::loader::parse_source;
+        use crate::compiler::Compiler;
+
+        let src = r#"
+const zara = :{ name: "Zara" }
+
+label start {
+    zara: "Hello"
+    end!
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let graph = Compiler::compile_named(&ast, "test").expect("compile");
+        let registry = empty_registry();
+        let mut vm = Vm::new(graph, registry).expect("vm");
+
+        let step = vm.next(None);
+        match step {
+            VmStep::Event(Event::Dialogue { speakers, .. }) => {
+                assert_eq!(speakers.len(), 1, "expected exactly one speaker");
+                // Must NOT be the plain string "zara" (identifier fallback).
+                assert!(
+                    !matches!(&speakers[0], RuntimeValue::Str(ps) if ps.to_string() == "zara"),
+                    "speaker must not be the raw identifier string 'zara'; got {:?}",
+                    speakers[0]
+                );
+                // Must be the Map value defined by `const zara = :{{ name: "Zara" }}`.
+                assert!(
+                    matches!(&speakers[0], RuntimeValue::Map(_)),
+                    "expected speaker to be RuntimeValue::Map (the const value), got {:?}",
+                    speakers[0]
+                );
+            }
+            other => panic!("expected Dialogue event, got {:?}", other),
+        }
+    }
+
     fn test_jump_cleans_up_block_scopes() {
         use crate::compiler::loader::parse_source;
 

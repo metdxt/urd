@@ -76,6 +76,50 @@ impl DecoratorRegistry {
         self.handlers.keys().map(String::as_str)
     }
 
+    /// Registers a passthrough decorator handler under `name`.
+    ///
+    /// The passthrough handler converts the decorator's argument list to a
+    /// `HashMap` with sequential integer string keys (`"0"`, `"1"`, …) mapping
+    /// to the argument [`RuntimeValue`]s. Additionally, the full argument list
+    /// is stored under the `"_args"` key as a `RuntimeValue::List`.
+    ///
+    /// This is useful for engine integrations that want to expose raw decorator
+    /// metadata without writing per-decorator Rust handlers.
+    ///
+    /// If an entry for `name` already exists in the registry it is left
+    /// unchanged (first registration wins).
+    pub fn register_passthrough(&mut self, name: impl Into<String>) {
+        let name_str = name.into();
+        self.handlers.entry(name_str).or_insert_with(|| {
+            Box::new(|args: &[RuntimeValue]| {
+                let mut fields = HashMap::new();
+                // Positional keys "0", "1", …
+                for (i, v) in args.iter().enumerate() {
+                    fields.insert(i.to_string(), v.clone());
+                }
+                // "_args" as a List — replace non-serialisable variants with
+                // their display string so the List invariant is upheld.
+                let safe_args: Vec<RuntimeValue> = args
+                    .iter()
+                    .map(|v| match v {
+                        RuntimeValue::Roll(_)
+                        | RuntimeValue::Function { .. }
+                        | RuntimeValue::ScriptDecorator { .. }
+                        | RuntimeValue::Struct { .. }
+                        | RuntimeValue::Map(_) => {
+                            RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain(
+                                &format!("{:?}", v),
+                            ))
+                        }
+                        other => other.clone(),
+                    })
+                    .collect();
+                fields.insert("_args".to_string(), RuntimeValue::list(safe_args));
+                Ok(fields)
+            })
+        });
+    }
+
     /// Registers a script-defined decorator body as a Rust-side handler.
     ///
     /// When the handler fires, it executes `body` as a **pure** function body

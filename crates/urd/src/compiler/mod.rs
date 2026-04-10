@@ -22,7 +22,7 @@ use thiserror::Error;
 
 use crate::{
     ir::{IrChoiceOption, IrEdge, IrGraph, IrNodeKind, SwitchArm},
-    lexer::strings::ParsedString,
+
     loc::{EventKind, IdContext, extract_id_override},
     parser::ast::{Ast, AstContent, DeclKind, MatchPattern, Operator},
     runtime::value::RuntimeValue,
@@ -160,6 +160,19 @@ impl Compiler {
         state.graph.entry = entry;
         Ok(state.graph)
     }
+
+    /// Compiles a multi-file script (resolving `import` statements via `loader`)
+    /// while also assigning localisation keys based on the given `file_stem`.
+    ///
+    /// Combines the behaviour of [`Compiler::compile_named`] (loc_id generation)
+    /// and [`Compiler::compile_with_loader`] (import resolution).
+    pub fn compile_named_with_loader(
+        ast: &Ast,
+        file_stem: &str,
+        loader: &dyn crate::vm::loader::FileLoader,
+    ) -> Result<IrGraph, CompilerError> {
+        crate::compiler::loader::compile_recursive_with_root_path(ast, file_stem, loader)
+    }
 }
 
 // ─── Speaker normalisation ────────────────────────────────────────────────────
@@ -177,26 +190,7 @@ impl Compiler {
 ///
 /// `Str` nodes (from the old `<"Alice">:` form or any other string literal) are
 /// passed through unchanged.
-fn normalize_speakers(speakers: &Ast) -> Ast {
-    match speakers.content() {
-        AstContent::ExprList(items) => {
-            let normalised: Vec<Ast> = items.iter().map(normalise_speaker_item).collect();
-            Ast::expr_list(normalised)
-        }
-        _ => normalise_speaker_item(speakers),
-    }
-}
 
-/// Normalise a single speaker item: `IdentPath` → `Str`, everything else
-/// unchanged.
-fn normalise_speaker_item(ast: &Ast) -> Ast {
-    if let AstContent::Value(RuntimeValue::IdentPath(path)) = ast.content() {
-        let name = path.join(".");
-        Ast::value(RuntimeValue::Str(ParsedString::new_plain(&name)))
-    } else {
-        ast.clone()
-    }
-}
 
 // ─── Internal compiler state ──────────────────────────────────────────────────
 
@@ -771,7 +765,7 @@ impl CompilerState {
                     None
                 };
                 let id = self.graph.push(IrNodeKind::Dialogue {
-                    speakers: normalize_speakers(speakers),
+                    speakers: *speakers.clone(),
                     lines: *content.clone(),
                     decorators: ast.decorators().to_vec(),
                     loc_id,
