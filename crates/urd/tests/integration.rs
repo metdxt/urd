@@ -41,3 +41,12 @@ mod adversarial_round2;
 
 #[path = "integration/parser_fn_return_type.rs"]
 mod parser_fn_return_type;
+
+#[path = "integration/string_format_and_extern.rs"]
+mod string_format_and_extern;
+
+#[path = "integration/builtin_methods.rs"]
+mod builtin_methods;
+
+#[path = "integration/in_operator_and_functions.rs"]
+mod in_operator_and_functions;

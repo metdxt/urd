@@ -1,0 +1,201 @@
+# extern_demo.urd — Extern Values Showcase
+#
+# Demonstrates how Urd scripts receive values from an external host:
+#   · extern declarations with type annotations (str, int, float, bool)
+#   · Using extern values in string interpolation and dialogue
+#   · Using extern values in arithmetic expressions
+#   · Using extern values in conditionals (if / elif / else)
+#   · Using extern values in match expressions
+#   · Combining extern values with local and global state
+#
+# ⚠ This script CANNOT run standalone. A host application must provide
+#    the extern values before execution begins, e.g.:
+#
+#      vm.provide_extern("player_name",  RuntimeValue::Str("Kael"));
+#      vm.provide_extern("player_class", RuntimeValue::Str("Ranger"));
+#      vm.provide_extern("difficulty",   RuntimeValue::Int(2));
+#      vm.provide_extern("hardcore",     RuntimeValue::Bool(false));
+#      vm.provide_extern("luck_bonus",   RuntimeValue::Float(1.5));
+#
+#    Without all five, the VM will emit an error at the first use of
+#    the missing extern.
+#
+# Theme: A dynamic encounter narration that adapts to host-provided
+#         player identity and difficulty settings.
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXTERN DECLARATIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+## The player's display name, injected by the game engine.
+extern player_name: str
+
+## The player's chosen class — one of "Warrior", "Ranger", "Mage".
+extern player_class: str
+
+## Difficulty tier set by the host: 1 = Easy, 2 = Normal, 3 = Hard.
+extern difficulty: int
+
+## Whether the player opted into hardcore (permadeath) mode.
+extern hardcore: bool
+
+## A floating-point luck modifier applied to loot rolls.
+extern luck_bonus: float
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHARACTERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+const narrator = :{ name: "Narrator",      name_color: "white"  }
+const guide    = :{ name: "Warden Caelum", name_color: "cyan"   }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOCAL STATE (coexists with extern values)
+# ══════════════════════════════════════════════════════════════════════════════
+
+global encounter_xp = 0
+global danger_level = 0
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STORY
+# ══════════════════════════════════════════════════════════════════════════════
+
+@entry
+label start {
+    # ── Extern string used in dialogue and interpolation ──────────────────────
+    narrator: "A figure emerges from the treeline."
+
+    guide: "Ah — {player_name}. I was told to expect you."
+    guide: "A {player_class}, if I'm not mistaken. Good. We need your kind out here."
+
+    # ── Extern bool in a conditional ──────────────────────────────────────────
+    if hardcore {
+        guide: {
+            "I see you carry the iron sigil — a hardcore oath."
+            "There will be no second chances. Steel yourself."
+        }
+        narrator: "The weight of the sigil feels heavier than usual."
+    } else {
+        guide: "The road ahead is dangerous, but not insurmountable."
+    }
+
+    jump difficulty_briefing
+}
+
+label difficulty_briefing {
+    # ── Extern int in a match expression ──────────────────────────────────────
+    narrator: "The Warden studies the horizon and adjusts the briefing."
+
+    match difficulty {
+        1 {
+            guide: {
+                "The beasts in these parts are sluggish this season."
+                "You should manage fine, {player_name}."
+            }
+            danger_level = 3
+            encounter_xp = 50
+        }
+        2 {
+            guide: {
+                "Standard patrols report increased activity."
+                "Stay sharp, {player_class}."
+            }
+            danger_level = 6
+            encounter_xp = 100
+        }
+        3 {
+            guide: {
+                "I won't lie — the woods are feral right now."
+                "Every scouting party we've sent has come back short a member."
+                "Or hasn't come back at all."
+            }
+            danger_level = 10
+            encounter_xp = 200
+        }
+        _ {
+            # Graceful fallback for unexpected host values
+            guide: "Hmm. I can't quite gauge the threat level today. Stay alert."
+            danger_level = 5
+            encounter_xp = 75
+        }
+    }
+
+    narrator: "Danger level set to {danger_level}."
+
+    jump class_advice
+}
+
+label class_advice {
+    # ── Extern string in conditional chains ───────────────────────────────────
+    narrator: "The Warden offers tactical advice."
+
+    if player_class == "Warrior" {
+        guide: {
+            "You'll want to draw their attention and hold the line."
+            "Let the terrain work for you — funnel them through the narrows."
+        }
+    } elif player_class == "Ranger" {
+        guide: {
+            "Use the high ground. Your bow will thin their numbers"
+            "before they even know you're there."
+        }
+    } elif player_class == "Mage" {
+        guide: {
+            "Conserve your mana for the deeper encounters."
+            "A well-placed ward is worth ten fireballs."
+        }
+    } else {
+        guide: "I'm not familiar with the {player_class} discipline, but trust your training."
+    }
+
+    jump loot_preview
+}
+
+label loot_preview {
+    # ── Extern float used in arithmetic ───────────────────────────────────────
+    narrator: "The Warden produces a tattered loot table."
+
+    let base_loot_chance = 40
+    let effective_chance = base_loot_chance + luck_bonus * 10
+
+    guide: "Base loot chance: {base_loot_chance}%"
+    guide: "Your luck bonus:  x{luck_bonus}"
+    guide: "Effective chance:  {effective_chance}%"
+
+    # ── Extern int in arithmetic expression ───────────────────────────────────
+    let xp_multiplier = difficulty * 25
+    let total_xp = encounter_xp + xp_multiplier
+
+    narrator: "Expected XP per encounter: {encounter_xp} base + {xp_multiplier} difficulty bonus = {total_xp}"
+
+    # ── Combining multiple externs in one expression ──────────────────────────
+    if difficulty >= 3 and hardcore {
+        narrator: "⚠ EXTREME MODE: Hardcore + Hard difficulty. No mercy."
+        guide: "The gods themselves look away from what lies ahead, {player_name}."
+    } elif difficulty >= 2 and hardcore {
+        narrator: "⚠ Hardcore on Normal difficulty. One mistake is all it takes."
+    }
+
+    jump farewell
+}
+
+label farewell {
+    # ── Final use: extern values woven throughout closing dialogue ─────────────
+    guide: {
+        "That's everything I can tell you."
+        "The rest is up to you, {player_name}."
+    }
+
+    if hardcore {
+        guide: "Remember your oath. The sigil does not forgive."
+    }
+
+    narrator: {
+        "{player_name} the {player_class} steps past the Warden"
+        "and into the shadows of the Thornwood."
+        "Difficulty: {difficulty}. Danger level: {danger_level}."
+        "The hunt begins."
+    }
+
+    end!()
+}

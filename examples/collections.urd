@@ -1,0 +1,549 @@
+# collections.urd -- Lists, Maps, Strings, and the `in` Operator
+#
+# Demonstrates every built-in collection type and its methods:
+#   · List creation, queries, transformers, and higher-order methods
+#   · Map creation, queries, and pure-functional mutation
+#   · String methods (len, case, trim, contains, split, replace, …)
+#   · Method chaining
+#   · The `in` operator in all four contexts (range, list, map, string)
+#
+# Theme: The quartermaster of a small adventuring guild manages inventory
+#         for an upcoming expedition into the Ashenmire.
+#
+# NOTE: Urd functions are pure -- they cannot access outer scope variables.
+# Named functions are defined at the top level and passed by name to
+# higher-order list methods like .map(), .filter(), .reduce(), etc.
+
+# -- Characters ----------------------------------------------------------------
+const narrator       = :{ name: "Narrator",       name_color: "white"  }
+const quartermaster  = :{ name: "Quartermaster",   name_color: "yellow" }
+const guild_leader   = :{ name: "Commander Sable", name_color: "cyan"   }
+
+# ==============================================================================
+# PURE HELPER FUNCTIONS
+# ==============================================================================
+
+## Formats a single inventory entry: "  Rope (qty: 4, 2 gp each)"
+fn format_entry(name, qty, price) -> str {
+    return "  {name} (qty: {qty}, {price} gp each)"
+}
+
+## Returns a price tier label for a given unit cost.
+fn price_tier(cost) -> str {
+    if cost >= 100 {
+        return "luxury"
+    }
+    if cost >= 30 {
+        return "standard"
+    }
+    return "budget"
+}
+
+# -- Higher-order callback functions -------------------------------------------
+# These are named functions passed to list methods like .map(), .filter(), etc.
+
+## Doubles a price value.
+fn double_price(p) -> int {
+    return p * 2
+}
+
+## Returns true if a price is 30 gp or more.
+fn is_expensive(p) -> bool {
+    return p >= 30
+}
+
+## Accumulates a running sum.
+fn sum_two(acc, val) -> int {
+    return acc + val
+}
+
+## Returns true if a price exceeds 100 gp.
+fn is_over_100(p) -> bool {
+    return p > 100
+}
+
+## Returns true if a price exceeds 1000 gp.
+fn is_over_1000(p) -> bool {
+    return p > 1000
+}
+
+## Returns true if a price is zero.
+fn is_free(p) -> bool {
+    return p == 0
+}
+
+## Returns true if a price is positive.
+fn is_positive(p) -> bool {
+    return p > 0
+}
+
+## Comparator: ascending order (a < b).
+fn ascending(a, b) -> bool {
+    return a < b
+}
+
+## Comparator: descending order (a > b).
+fn descending(a, b) -> bool {
+    return a > b
+}
+
+## Computes the line total for an inventory item map.
+fn item_line_total(item) -> int {
+    return item.qty * item.price
+}
+
+## Returns true if an item's price is 100 gp or more (luxury tier).
+fn is_luxury_item(item) -> bool {
+    return item.price >= 100
+}
+
+## Extracts the name field from an inventory item map.
+fn item_name(item) -> str {
+    return item.name
+}
+
+## Returns true if the item is "Rations" with qty >= 15.
+fn is_enough_rations(item) -> bool {
+    return item.name == "Rations" and item.qty >= 15
+}
+
+## Returns true if an item has at least 1 in stock.
+fn is_in_stock(item) -> bool {
+    return item.qty > 0
+}
+
+# ==============================================================================
+# STORY LABELS
+# ==============================================================================
+
+@entry
+label start {
+    narrator: {
+        "Dawn breaks over the Guild Hall."
+        "The expedition to the Ashenmire leaves at noon."
+        "The quartermaster spreads the supply ledger across the table."
+    }
+
+    quartermaster: "Right. Let's see what we've got and what we still need."
+
+    jump list_basics
+}
+
+# ==============================================================================
+# LISTS -- creation, queries, and transformers
+# ==============================================================================
+
+label list_basics {
+    narrator: "=== LIST BASICS ==="
+
+    # -- Creation --------------------------------------------------------------
+    let supplies = ["Rope", "Torch", "Rations", "Bedroll", "Waterskin"]
+
+    quartermaster: "Current supply list: {supplies}"
+
+    # -- len, first, last ------------------------------------------------------
+    let count = supplies.len()
+    let first_item = supplies.first()
+    let last_item  = supplies.last()
+
+    narrator: "We have {count} supply types."
+    narrator: "First on the list: {first_item}"
+    narrator: "Last on the list:  {last_item}"
+
+    # -- get (positive and negative index) -------------------------------------
+    let third = supplies.get(2)
+    let second_from_end = supplies.get(-2)
+    narrator: "Third item: {third}"
+    narrator: "Second from end: {second_from_end}"
+
+    # -- contains --------------------------------------------------------------
+    let has_torch = supplies.contains("Torch")
+    let has_map   = supplies.contains("Map")
+    quartermaster: "Do we have a Torch?  {has_torch}"
+    quartermaster: "Do we have a Map?    {has_map}"
+
+    # -- append, prepend (pure -- returns new list) -----------------------------
+    let with_map     = supplies.append("Map")
+    let with_compass = with_map.prepend("Compass")
+    narrator: "After adding Map and Compass: {with_compass}"
+    narrator: "Original list unchanged:       {supplies}"
+
+    # -- reversed --------------------------------------------------------------
+    let backwards = supplies.reversed()
+    narrator: "Reversed: {backwards}"
+
+    # -- slice -----------------------------------------------------------------
+    let middle = supplies.slice(1, 4)
+    narrator: "Middle three (index 1..4): {middle}"
+
+    let from_third = supplies.slice(2)
+    narrator: "From index 2 onward: {from_third}"
+
+    # -- join ------------------------------------------------------------------
+    let packed = supplies.join(", ")
+    quartermaster: "Packed: {packed}"
+
+    let dashed = supplies.join(" - ")
+    narrator: "Dashed format: {dashed}"
+
+    # -- concat ----------------------------------------------------------------
+    let extras = ["Antidote", "Flint"]
+    let full_list = supplies.concat(extras)
+    narrator: "Full list after concat: {full_list}"
+
+    jump list_higher_order
+}
+
+# ==============================================================================
+# LISTS -- higher-order methods (map, filter, reduce, find, any, all, sort_by, zip)
+# ==============================================================================
+
+label list_higher_order {
+    narrator: "=== LIST HIGHER-ORDER METHODS ==="
+
+    let prices = [5, 120, 2, 45, 8, 75, 30]
+
+    # -- map: double every price -----------------------------------------------
+    let inflated = prices.map(double_price)
+    narrator: "Original prices: {prices}"
+    narrator: "Inflated (x2):   {inflated}"
+
+    # -- filter: keep only items costing 30+ gp --------------------------------
+    let expensive = prices.filter(is_expensive)
+    quartermaster: "Expensive items (>=30 gp): {expensive}"
+
+    # -- reduce: compute total cost --------------------------------------------
+    let total = prices.reduce(0, sum_two)
+    narrator: "Total cost of all items: {total} gp"
+
+    # -- find: first item over 100 gp -----------------------------------------
+    let first_luxury = prices.find(is_over_100)
+    quartermaster: "First luxury item price: {first_luxury} gp"
+
+    # -- find: no match returns null -------------------------------------------
+    let mythical = prices.find(is_over_1000)
+    narrator: "Price over 1000? {mythical}"
+
+    # -- any / all -------------------------------------------------------------
+    let any_free = prices.any(is_free)
+    let all_positive = prices.all(is_positive)
+    narrator: "Any free items?      {any_free}"
+    narrator: "All prices positive? {all_positive}"
+
+    # -- sort_by: ascending ----------------------------------------------------
+    let cheapest_first = prices.sort_by(ascending)
+    narrator: "Sorted (cheapest first): {cheapest_first}"
+
+    # -- sort_by: descending ---------------------------------------------------
+    let priciest_first = prices.sort_by(descending)
+    narrator: "Sorted (priciest first): {priciest_first}"
+
+    # -- zip: pair items with their prices -------------------------------------
+    let item_names = ["Rope", "Elixir", "Chalk", "Shield", "Rations", "Sword", "Cloak"]
+    let paired = item_names.zip(prices)
+    narrator: "Item-price pairs: {paired}"
+
+    # -- sum, min, max ---------------------------------------------------------
+    let price_sum = prices.sum()
+    let price_min = prices.min()
+    let price_max = prices.max()
+    narrator: "Sum: {price_sum} gp | Min: {price_min} gp | Max: {price_max} gp"
+
+    jump list_chaining
+}
+
+# ==============================================================================
+# LISTS -- method chaining
+# ==============================================================================
+
+label list_chaining {
+    narrator: "=== METHOD CHAINING ==="
+
+    let raw_prices = [5, 120, 2, 45, 8, 75, 30]
+
+    # Chain: filter expensive items, double them, sort ascending.
+    # Each step assigns to a new variable (Urd values are immutable).
+    let step1 = raw_prices.filter(is_expensive)
+    let step2 = step1.map(double_price)
+    let report = step2.sort_by(ascending)
+
+    narrator: "Expensive items, doubled, sorted: {report}"
+
+    # Chain: sort descending, then take first 3
+    let sorted_desc = raw_prices.sort_by(descending)
+    let top_three = sorted_desc.slice(0, 3)
+    narrator: "Top 3 most expensive: {top_three}"
+
+    # Chain: reversed, then first
+    let rev = raw_prices.reversed()
+    let last_via_reverse = rev.first()
+    narrator: "Last element via reversed + first: {last_via_reverse}"
+
+    jump map_basics
+}
+
+# ==============================================================================
+# MAPS -- creation, queries, pure mutation
+# ==============================================================================
+
+label map_basics {
+    narrator: "=== MAP OPERATIONS ==="
+
+    # -- Creation with :{ } syntax ---------------------------------------------
+    let player = :{ name: "Kael", hp: 100, mp: 50, class: "Ranger" }
+
+    quartermaster: "Expedition leader: {player.name}, {player.class}"
+    narrator: "HP: {player.hp} | MP: {player.mp}"
+
+    # -- get: access by key ----------------------------------------------------
+    let hp_val = player.get("hp")
+    narrator: "player.get(\"hp\") = {hp_val}"
+
+    let missing = player.get("xp")
+    narrator: "player.get(\"xp\") = {missing}"
+
+    # -- has: check key existence ----------------------------------------------
+    let has_hp    = player.has("hp")
+    let has_level = player.has("level")
+    narrator: "has 'hp'?    {has_hp}"
+    narrator: "has 'level'? {has_level}"
+
+    # -- keys / values ---------------------------------------------------------
+    let ks = player.keys()
+    let vs = player.values()
+    narrator: "Keys:   {ks}"
+    narrator: "Values: {vs}"
+
+    # -- len / is_empty --------------------------------------------------------
+    let size = player.len()
+    let empty_map = :{}
+    let empty_check = empty_map.is_empty()
+    narrator: "Player map has {size} entries."
+    narrator: "Empty map is_empty? {empty_check}"
+
+    # -- set (pure -- returns new map) ------------------------------------------
+    let leveled_up = player.set("level", 5)
+    let leveled_keys = leveled_up.keys()
+    let original_keys = player.keys()
+    narrator: "After set('level', 5): keys = {leveled_keys}"
+    narrator: "Original player keys still: {original_keys}"
+
+    # -- remove (pure) ---------------------------------------------------------
+    let trimmed = leveled_up.remove("mp")
+    let trimmed_keys = trimmed.keys()
+    narrator: "After remove('mp'): keys = {trimmed_keys}"
+
+    # -- merge (pure -- right-hand side wins on conflict) -----------------------
+    let buffs = :{ hp: 120, shield: 30 }
+    let merged = player.merge(buffs)
+    let merged_hp = merged.get("hp")
+    let merged_shield = merged.get("shield")
+    narrator: "Merged with buffs: hp = {merged_hp}, shield = {merged_shield}"
+    narrator: "Original hp unchanged: {player.hp}"
+
+    jump string_methods
+}
+
+# ==============================================================================
+# STRINGS -- methods
+# ==============================================================================
+
+label string_methods {
+    narrator: "=== STRING METHODS ==="
+
+    let item_name = "  Enchanted Longsword  "
+
+    # -- len -------------------------------------------------------------------
+    let raw_len = item_name.len()
+    narrator: "Raw length with spaces: {raw_len}"
+
+    # -- trim / trim_start / trim_end ------------------------------------------
+    let trimmed = item_name.trim()
+    narrator: "Trimmed: \"{trimmed}\""
+
+    let left_trimmed = item_name.trim_start()
+    narrator: "Trim start: \"{left_trimmed}\""
+
+    let right_trimmed = item_name.trim_end()
+    narrator: "Trim end: \"{right_trimmed}\""
+
+    # -- to_upper / to_lower ---------------------------------------------------
+    let shout = trimmed.to_upper()
+    let whisper = trimmed.to_lower()
+    narrator: "Uppercase: {shout}"
+    narrator: "Lowercase: {whisper}"
+
+    # -- contains / starts_with / ends_with ------------------------------------
+    let has_enchanted = trimmed.contains("Enchanted")
+    let starts_e     = trimmed.starts_with("Ench")
+    let ends_sword   = trimmed.ends_with("sword")
+    narrator: "Contains 'Enchanted'? {has_enchanted}"
+    narrator: "Starts with 'Ench'?   {starts_e}"
+    narrator: "Ends with 'sword'?    {ends_sword}"
+
+    # -- split -----------------------------------------------------------------
+    let csv = "Rope,Torch,Rations,Bedroll"
+    let items = csv.split(",")
+    let items_count = items.len()
+    narrator: "Split CSV: {items}"
+    narrator: "Split count: {items_count}"
+
+    # -- replace ---------------------------------------------------------------
+    let old_label = "Healing Potion (expired)"
+    let new_label = old_label.replace("expired", "fresh")
+    narrator: "Relabeled: {new_label}"
+
+    # -- slice -----------------------------------------------------------------
+    let full = "Quartermaster's Ledger"
+    let prefix = full.slice(0, 13)
+    let suffix = full.slice(16)
+    narrator: "Prefix: {prefix}"
+    narrator: "Suffix: {suffix}"
+
+    # -- to_int / to_float -----------------------------------------------------
+    let qty_str = "42"
+    let qty_num = qty_str.to_int()
+    narrator: "\"{qty_str}\" as int: {qty_num}"
+    let doubled = qty_num * 2
+    narrator: "Doubled: {doubled}"
+
+    # -- chars / repeat --------------------------------------------------------
+    let word = "Urd"
+    let chars = word.chars()
+    narrator: "chars(\"{word}\"): {chars}"
+
+    let divider_unit = "=-"
+    let divider = divider_unit.repeat(15)
+    narrator: "{divider}"
+
+    # -- Method chaining on strings --------------------------------------------
+    # Each method returns a new value; assign to a variable to continue.
+    let messy = "  hello WORLD  "
+    let trimmed_messy = messy.trim()
+    let clean = trimmed_messy.to_lower()
+    narrator: "Trim then to_lower: \"{clean}\""
+
+    let spaced = "  spaced  "
+    let trimmed_spaced = spaced.trim()
+    let chain_len = trimmed_spaced.len()
+    narrator: "Trim then len: {chain_len}"
+
+    jump in_operator
+}
+
+# ==============================================================================
+# THE `in` OPERATOR -- all four contexts
+# ==============================================================================
+
+label in_operator {
+    narrator: "=== THE `in` OPERATOR ==="
+
+    # -- 1. `in` with Range ----------------------------------------------------
+    narrator: "-- Range membership --"
+
+    let level = 7
+    let in_beginner   = level in 1..5
+    let in_mid        = level in 5..10
+    let in_inclusive   = level in 1..=7
+    let in_exclusive_7 = level in 1..7
+
+    narrator: "{level} in 1..5   (exclusive end)? {in_beginner}"
+    narrator: "{level} in 5..10  (exclusive end)? {in_mid}"
+    narrator: "{level} in 1..=7  (inclusive end)?  {in_inclusive}"
+    narrator: "{level} in 1..7   (exclusive end)? {in_exclusive_7}"
+
+    # -- 2. `in` with List -----------------------------------------------------
+    narrator: "-- List membership --"
+
+    let party = ["Kael", "Mira", "Dorn", "Lysa"]
+    let kael_here = "Kael" in party
+    let zara_here = "Zara" in party
+
+    narrator: "Is Kael in the party? {kael_here}"
+    narrator: "Is Zara in the party? {zara_here}"
+
+    let lucky_numbers = [7, 13, 21, 42]
+    let has_42 = 42 in lucky_numbers
+    let has_99 = 99 in lucky_numbers
+    narrator: "42 in lucky numbers? {has_42}"
+    narrator: "99 in lucky numbers? {has_99}"
+
+    # -- 3. `in` with Map ------------------------------------------------------
+    narrator: "-- Map key membership --"
+
+    let gear = :{ sword: 1, shield: 1, potion: 3 }
+    let has_sword  = "sword" in gear
+    let has_helmet = "helmet" in gear
+
+    narrator: "Has 'sword' key?  {has_sword}"
+    narrator: "Has 'helmet' key? {has_helmet}"
+
+    # -- 4. `in` with String (substring check) --------------------------------
+    narrator: "-- Substring membership --"
+
+    let inscription = "Forged in the fires of Mount Ashenmire"
+    let has_forged = "Forged" in inscription
+    let has_ice    = "ice" in inscription
+
+    narrator: "\"Forged\" in inscription? {has_forged}"
+    narrator: "\"ice\" in inscription?    {has_ice}"
+
+    # -- `in` with `not` ------------------------------------------------------
+    let missing_member = not ("Zara" in party)
+    narrator: "Zara NOT in party? {missing_member}"
+
+    # -- `in` used in conditionals ---------------------------------------------
+    let item_to_check = "potion"
+    if item_to_check in gear {
+        quartermaster: "We have {item_to_check} in the gear manifest."
+    } else {
+        quartermaster: "No {item_to_check} found. Add it to the requisition list."
+    }
+
+    jump final_report
+}
+
+# ==============================================================================
+# FINAL REPORT -- pulling it all together
+# ==============================================================================
+
+label final_report {
+    narrator: "=== FINAL EXPEDITION REPORT ==="
+
+    # Build a small inventory with maps and lists
+    let inventory = [:{ name: "Rope", qty: 4, price: 2 }, :{ name: "Torch", qty: 10, price: 1 }, :{ name: "Rations", qty: 20, price: 3 }, :{ name: "Elixir", qty: 2, price: 120 }, :{ name: "Cloak", qty: 5, price: 45 }]
+
+    # map + reduce: compute total expedition cost
+    let line_totals = inventory.map(item_line_total)
+    let total_cost = line_totals.reduce(0, sum_two)
+
+    narrator: "Total expedition supply cost: {total_cost} gp"
+
+    # filter: find luxury items using our named function
+    let luxury_items = inventory.filter(is_luxury_item)
+    let luxury_name_list = luxury_items.map(item_name)
+    let luxury_names = luxury_name_list.join(", ")
+
+    quartermaster: "Luxury items to double-check: {luxury_names}"
+
+    # any: do we have enough rations?
+    let enough_food = inventory.any(is_enough_rations)
+    if enough_food {
+        guild_leader: "Good. We have enough rations for the march."
+    } else {
+        guild_leader: "We need more rations. Send a runner to the market."
+    }
+
+    # all: verify every item has at least 1 in stock
+    let all_stocked = inventory.all(is_in_stock)
+    narrator: "All items in stock? {all_stocked}"
+
+    guild_leader: {
+        "The Ashenmire won't wait forever."
+        "Pack it up. We march at noon."
+    }
+
+    narrator: "The quartermaster rolls up the ledger with a satisfied nod."
+
+    end!()
+}
