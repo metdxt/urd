@@ -872,12 +872,45 @@ fn find_definition_in_children(content: &AstContent, name: &str) -> Option<Simpl
 pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) -> Option<String> {
     // First try matching against collected symbols.
     if let Some(sym) = find_symbol_at_offset(symbols, byte_offset) {
-        // Container symbols (labels, decorators) span their entire body.
-        // When the cursor is inside the body but not on the name itself,
-        // prefer a more specific AST-level hover before falling back to
-        // the container's hover.
-        let is_container = matches!(sym.kind, SymbolKind::Label | SymbolKind::Decorator);
+        // Container symbols (labels, decorators, functions) span their entire
+        // body.  When the cursor is inside the body but not on the name itself,
+        // prefer a more specific AST-level hover before falling back to the
+        // container's hover.
+        let is_container = matches!(
+            sym.kind,
+            SymbolKind::Label | SymbolKind::Decorator | SymbolKind::Function
+        );
+
+        // For non-container symbols whose span covers a wide area (e.g. a
+        // `let r = double(5)` declaration), the cursor might be on a *value*
+        // identifier rather than the symbol's own name.  Check whether the
+        // word under the cursor actually matches this symbol's name; if not,
+        // try a direct symbol-name lookup first (cheap), then fall through to
+        // the full AST walk.
         if !is_container {
+            let word = ident_at_offset(src, byte_offset);
+            if word == sym.name {
+                return Some(hover_for_symbol(sym, ast, symbols));
+            }
+            // Cursor is inside the symbol's span but on a different
+            // identifier — try resolving by name directly (handles fn
+            // references like `prices.map(double)` where `double` is a
+            // top-level function).
+            if let Some(target) = symbols
+                .iter()
+                .find(|s| s.name == word && !matches!(s.kind, SymbolKind::Import))
+                .or_else(|| symbols.iter().find(|s| s.name == word))
+            {
+                return Some(hover_for_symbol(target, ast, symbols));
+            }
+            // No symbol matches the word — try the AST walk.
+            if let Some(h) = hover_from_ast(ast, symbols, src, byte_offset, ast) {
+                if !h.is_empty() {
+                    return Some(h);
+                }
+                return None;
+            }
+            // Nothing more specific — show the enclosing symbol anyway.
             return Some(hover_for_symbol(sym, ast, symbols));
         }
 
@@ -3522,6 +3555,117 @@ mod tests {
         assert!(
             fn_name_tok.is_some(),
             "expected Function token with length=5 for 'greet', got {toks:?}"
+        );
+    }
+
+    // ── Function hover / symbol diagnostics ───────────────────────────────
+
+    #[test]
+    fn collect_symbols_includes_top_level_fn() {
+        let src = "fn double(x: int) -> int {\n  return x * 2\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let fn_sym = syms.iter().find(|s| s.name == "double");
+        assert!(
+            fn_sym.is_some(),
+            "collect_symbols must include top-level fn 'double'; got: {syms:?}"
+        );
+        let fn_sym = fn_sym.unwrap();
+        assert_eq!(fn_sym.kind, SymbolKind::Function);
+        assert!(
+            fn_sym.detail.as_deref().unwrap_or("").contains("fn double"),
+            "detail must contain 'fn double'; got: {:?}",
+            fn_sym.detail
+        );
+    }
+
+    #[test]
+    fn hover_on_fn_definition_name_shows_signature() {
+        let src = "fn double(x: int) -> int {\n  return x * 2\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("double").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(
+            info.is_some(),
+            "hover on fn definition name must return Some; got None"
+        );
+        let info = info.unwrap();
+        assert!(
+            info.contains("fn double"),
+            "hover must contain 'fn double'; got: {info}"
+        );
+    }
+
+    #[test]
+    fn hover_on_fn_reference_in_call_shows_signature() {
+        // When hovering over a function name used as a call target (e.g.
+        // `double(5)`), the IdentPath "double" should resolve to the
+        // Function symbol and display its signature — not the enclosing
+        // variable or label.
+        let src = "fn double(x: int) -> int {\n  return x * 2\n}\n\
+                   @entry\nlabel start {\n  let r = double(5)\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+
+        // Verify the Function symbol was collected.
+        let fn_sym = syms
+            .iter()
+            .find(|s| s.name == "double" && s.kind == SymbolKind::Function);
+        assert!(
+            fn_sym.is_some(),
+            "Function symbol 'double' must be in collected symbols; got: {:?}",
+            syms.iter().map(|s| (&s.name, &s.kind)).collect::<Vec<_>>()
+        );
+
+        // Find the second occurrence of "double" (the call inside the label).
+        let first = src.find("double").unwrap();
+        let second = src[first + 6..].find("double").unwrap() + first + 6;
+        let offset = second + 1;
+
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(
+            info.is_some(),
+            "hover on fn call target must return Some; got None"
+        );
+        let info = info.unwrap();
+        assert!(
+            info.contains("fn double"),
+            "hover on fn reference must show function signature; got: {info}"
+        );
+    }
+
+    #[test]
+    fn find_definition_resolves_fn_name() {
+        let src = "fn greet(name: str) -> str {\n  return name\n}\n";
+        let ast = parse(src);
+        let span = find_definition(&ast, "greet");
+        assert!(
+            span.is_some(),
+            "find_definition must resolve 'greet' to a span"
+        );
+    }
+
+    #[test]
+    fn hover_on_fn_with_doc_comment_shows_doc() {
+        let src = "## Doubles a value.\nfn double(x) -> int {\n  return x * 2\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("double").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(
+            info.is_some(),
+            "hover must return Some for fn with doc comment"
+        );
+        let info = info.unwrap();
+        assert!(
+            info.contains("fn double"),
+            "hover must contain signature; got: {info}"
+        );
+        // Doc comment should be included
+        assert!(
+            info.contains("Doubles a value"),
+            "hover must contain doc comment; got: {info}"
         );
     }
 
