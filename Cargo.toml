@@ -82,3 +82,4 @@ expect_used = "deny"
 
 [workspace.lints.rust]
 missing_docs = "warn"
+unsafe_code = "forbid"
