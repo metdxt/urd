@@ -8,15 +8,15 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT-0"
 repository = "https://github.com/metdxt/urd"
 
 [workspace.dependencies]
 # ── Workspace crates ──────────────────────────────────────────────────────────
-urd = { path = "crates/urd", version = "0.0.1" }
-urd-derive = { path = "crates/urd-derive", version = "0.0.1" }
+urd = { path = "crates/urd", version = "0.1.0" }
+urd-derive = { path = "crates/urd-derive", version = "0.1.0" }
 
 # ── Parsing / lexing ──────────────────────────────────────────────────────────
 chumsky = { version = "0.12.0", features = ["pratt"] }
