@@ -9,6 +9,8 @@ use urd::loc::{EventKind, IdContext, extract_id_override};
 use urd::parser::ast::{Ast, AstContent, DeclKind, EventConstraint, MatchPattern, TypeAnnotation};
 use urd::runtime::value::RuntimeValue;
 
+use crate::builtin_docs;
+
 // ── Symbol types ─────────────────────────────────────────────────────────────
 
 /// The kind of a named symbol found in an Urd AST.
@@ -903,10 +905,37 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
             {
                 return Some(hover_for_symbol(target, ast, symbols));
             }
+            // No symbol matches — check if it's a built-in method name
+            // (e.g. `len` when the cursor is on `x.len()` inside a `let`
+            // declaration whose span encloses the call).
+            if let Some(doc) = builtin_docs::method_doc(word, None) {
+                return Some(doc);
+            }
+            // Check if it's a built-in or user-defined decorator name
+            // (e.g. `fluent` in `@fluent` on a `const` declaration).
+            if is_decorator_at_offset(src, byte_offset) {
+                if let Some(doc) = builtin_docs::decorator_doc(word) {
+                    return Some(doc);
+                }
+                if let Some(dec_sym) = symbols
+                    .iter()
+                    .find(|s| s.name == word && s.kind == SymbolKind::Decorator)
+                {
+                    return Some(hover_for_symbol(dec_sym, ast, symbols));
+                }
+            }
             // No symbol matches the word — try the AST walk.
             if let Some(h) = hover_from_ast(ast, symbols, src, byte_offset, ast) {
                 if !h.is_empty() {
                     return Some(h);
+                }
+                return None;
+            }
+            // If the cursor is on a keyword, show its documentation instead
+            // of the enclosing symbol.
+            if is_keyword_or_syntax(src, byte_offset) {
+                if let Some(doc) = builtin_docs::keyword_doc(word) {
+                    return Some(doc);
                 }
                 return None;
             }
@@ -923,9 +952,32 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
             return None;
         }
 
-        // If the cursor is on a keyword, operator, or punctuation there's
-        // nothing useful to show — suppress the container hover.
+        // Check if the cursor is on a built-in decorator name (e.g. `entry`
+        // in `@entry`).  Decorator names sit inside the decorated node's span
+        // but are not AST children, so hover_from_ast never reaches them.
+        {
+            let word = ident_at_offset(src, byte_offset);
+            if is_decorator_at_offset(src, byte_offset) {
+                if let Some(doc) = builtin_docs::decorator_doc(word) {
+                    return Some(doc);
+                }
+                // User-defined decorator — try the symbol table.
+                if let Some(dec_sym) = symbols
+                    .iter()
+                    .find(|s| s.name == word && s.kind == SymbolKind::Decorator)
+                {
+                    return Some(hover_for_symbol(dec_sym, ast, symbols));
+                }
+            }
+        }
+
+        // If the cursor is on a keyword, show its documentation.
+        // For operators / punctuation, suppress the container hover.
         if is_keyword_or_syntax(src, byte_offset) {
+            let word = ident_at_offset(src, byte_offset);
+            if let Some(doc) = builtin_docs::keyword_doc(word) {
+                return Some(doc);
+            }
             return None;
         }
 
@@ -935,7 +987,38 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
 
     // Fall back: try to find an AST node at offset and describe it.
     // Filter out empty strings (meaning "position claimed, nothing to show").
-    hover_from_ast(ast, symbols, src, byte_offset, ast).filter(|h| !h.is_empty())
+    if let Some(h) = hover_from_ast(ast, symbols, src, byte_offset, ast) {
+        if !h.is_empty() {
+            return Some(h);
+        }
+        return None;
+    }
+
+    // Check for built-in or user-defined decorator names outside any symbol span.
+    {
+        let word = ident_at_offset(src, byte_offset);
+        if is_decorator_at_offset(src, byte_offset) {
+            if let Some(doc) = builtin_docs::decorator_doc(word) {
+                return Some(doc);
+            }
+            if let Some(dec_sym) = symbols
+                .iter()
+                .find(|s| s.name == word && s.kind == SymbolKind::Decorator)
+            {
+                return Some(hover_for_symbol(dec_sym, ast, symbols));
+            }
+        }
+    }
+
+    // Last resort: keyword outside any symbol span (e.g. top-level `import`).
+    if is_keyword_or_syntax(src, byte_offset) {
+        let word = ident_at_offset(src, byte_offset);
+        if let Some(doc) = builtin_docs::keyword_doc(word) {
+            return Some(doc);
+        }
+    }
+
+    None
 }
 
 /// Computes the localization ID for the innermost localizable node at `byte_offset`.
@@ -1237,6 +1320,32 @@ fn hover_from_ast(
             if let Some(sym) = sym {
                 return Some(hover_for_symbol(sym, root, symbols));
             }
+            // Multi-segment path with no symbol match — the last segment may
+            // be a built-in method (e.g. `x.len` from a `x.len()` call).
+            // Determine which segment the cursor is on and, if it's the last
+            // one, try the built-in method database.
+            if parts.len() >= 2 {
+                let span_start = ast.span().start;
+                let relative = byte_offset.saturating_sub(span_start);
+                let mut pos = 0;
+                for (i, segment) in parts.iter().enumerate() {
+                    let seg_end = pos + segment.len();
+                    if relative < seg_end || i == parts.len() - 1 {
+                        if i == parts.len() - 1
+                            && let Some(doc) = builtin_docs::method_doc(segment, None)
+                        {
+                            return Some(doc);
+                        }
+                        break;
+                    }
+                    pos = seg_end + 1; // +1 for the dot separator
+                }
+            }
+            // Single-segment path — could be a terminator like end!() or
+            // todo!() that the parser stores as an IdentPath.
+            if let Some(doc) = builtin_docs::keyword_doc(&name) {
+                return Some(doc);
+            }
             Some(format!("**identifier** `{name}`"))
         }
         AstContent::Value(RuntimeValue::Str(_)) => {
@@ -1339,6 +1448,31 @@ const KEYWORDS: &[&str] = &[
     "or",
     "not",
 ];
+
+/// Return `true` when `byte_offset` sits on an identifier that is immediately
+/// preceded by `@` (possibly with whitespace between the `@` and the word
+/// start).  This identifies decorator usages like `@entry`, `@fluent("x")`.
+fn is_decorator_at_offset(src: &str, byte_offset: usize) -> bool {
+    let bytes = src.as_bytes();
+    if byte_offset >= bytes.len() {
+        return false;
+    }
+    // Find the start of the current word.
+    let mut start = byte_offset;
+    while start > 0 && {
+        let p = bytes[start - 1];
+        p.is_ascii_alphanumeric() || p == b'_'
+    } {
+        start -= 1;
+    }
+    // Walk backwards over any whitespace between `@` and the word.
+    let mut pos = start;
+    while pos > 0 && bytes[pos - 1] == b' ' {
+        pos -= 1;
+    }
+    // Check if the character just before is `@`.
+    pos > 0 && bytes[pos - 1] == b'@'
+}
 
 /// Return `true` when `byte_offset` sits on a language keyword, operator, or
 /// punctuation — anything that doesn't benefit from a hover tooltip.
@@ -3800,5 +3934,182 @@ mod tests {
         let ast = parse(src);
         let result = hover_loc_id(&ast, "intro", 48);
         assert_eq!(result, Some("intro-start-my_line".to_string()));
+    }
+
+    // ── built-in docs integration ────────────────────────────────────────
+
+    #[test]
+    fn hover_on_method_call_shows_doc() {
+        let src = "label test {\n  let x = [1, 2, 3]\n  let n = x.len()\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        // Point at `len` in `x.len()`.
+        let len_offset = src.find("x.len").unwrap() + 2; // 'l' in 'len'
+        let info = hover_info(&ast, &syms, src, len_offset);
+        assert!(info.is_some(), "expected hover for built-in method 'len'");
+        let text = info.unwrap();
+        assert!(
+            text.contains("len()"),
+            "hover should contain method signature, got: {text}"
+        );
+        assert!(
+            text.contains("```urd"),
+            "hover should contain urd code block, got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_on_keyword_shows_doc() {
+        let src = "label hello {\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        // Point at the `label` keyword.
+        let label_offset = src.find("label").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, label_offset);
+        assert!(info.is_some(), "expected hover for keyword 'label'");
+        let text = info.unwrap();
+        assert!(
+            text.contains("**label**"),
+            "hover should contain bold keyword heading, got: {text}"
+        );
+        assert!(
+            text.contains("Defines a named block"),
+            "hover should describe the keyword, got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_on_end_bang_shows_doc() {
+        let src = "label hello {\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        // Point at `end` in `end!()`.
+        let end_offset = src.find("end!").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, end_offset);
+        assert!(info.is_some(), "expected hover for terminator 'end!()'");
+        let text = info.unwrap();
+        assert!(
+            text.contains("end!()"),
+            "hover should show end!(), got: {text}"
+        );
+        assert!(
+            text.contains("Terminates"),
+            "hover should describe termination, got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_on_builtin_decorator_entry_shows_doc() {
+        let src = "@entry\nlabel start {\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        // Cursor on "entry" (byte 1 is the 'e' in "@entry")
+        let offset = src.find("entry").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(info.is_some(), "hover on @entry must return Some; got None");
+        let text = info.unwrap();
+        assert!(
+            text.contains("@entry"),
+            "hover should show @entry signature, got: {text}"
+        );
+        assert!(
+            text.contains("entry point"),
+            "hover should describe entry point purpose, got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_on_builtin_decorator_fluent_shows_doc() {
+        let src = "@fluent\nconst narrator = \"Narrator\"\n@entry\nlabel start {\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let offset = src.find("fluent").unwrap() + 1;
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(
+            info.is_some(),
+            "hover on @fluent must return Some; got None"
+        );
+        let text = info.unwrap();
+        assert!(
+            text.contains("@fluent"),
+            "hover should show @fluent signature, got: {text}"
+        );
+        assert!(
+            text.contains("localisation") || text.contains("localization"),
+            "hover should describe localisation, got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_on_builtin_decorator_id_shows_doc() {
+        let src =
+            "@entry\nlabel start {\n  @id(\"greeting\")\n  narrator: \"Hello\"\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        // Find "id" that is preceded by "@" (skip any other occurrences)
+        let at_id = src.find("@id").unwrap();
+        let offset = at_id + 1; // cursor on 'i' in "@id"
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(info.is_some(), "hover on @id must return Some; got None");
+        let text = info.unwrap();
+        assert!(
+            text.contains("@id"),
+            "hover should show @id signature, got: {text}"
+        );
+        assert!(
+            text.contains("localisation") || text.contains("localization") || text.contains("ID"),
+            "hover should describe localisation ID override, got: {text}"
+        );
+    }
+
+    #[test]
+    fn hover_on_user_defined_decorator_still_works() {
+        // User-defined decorators should show their definition, not built-in docs.
+        let src = "decorator timed(duration: float) {\n  event[\"t\"] = duration\n}\n\
+                   @timed(3.0)\n@entry\nlabel start {\n  end!()\n}\n";
+        let ast = parse(src);
+        let syms = collect_symbols(&ast);
+        let at_timed = src.find("@timed").unwrap();
+        let offset = at_timed + 1; // cursor on 't' in "@timed"
+        let info = hover_info(&ast, &syms, src, offset);
+        assert!(
+            info.is_some(),
+            "hover on user-defined @timed must return Some; got None"
+        );
+        let text = info.unwrap();
+        assert!(
+            text.contains("timed"),
+            "hover should mention the decorator name, got: {text}"
+        );
+    }
+
+    #[test]
+    fn is_decorator_at_offset_true_for_at_prefix() {
+        let src = "@entry\nlabel start { end!() }\n";
+        // 'e' in "@entry" is at offset 1
+        assert!(
+            is_decorator_at_offset(src, 1),
+            "offset 1 in '@entry' should be detected as decorator"
+        );
+        // 'y' in "@entry" is at offset 5
+        assert!(
+            is_decorator_at_offset(src, 5),
+            "offset 5 in '@entry' should be detected as decorator"
+        );
+    }
+
+    #[test]
+    fn is_decorator_at_offset_false_for_non_decorator() {
+        let src = "label start { end!() }\n";
+        // 'l' in "label" is at offset 0
+        assert!(
+            !is_decorator_at_offset(src, 0),
+            "offset 0 in 'label' should NOT be detected as decorator"
+        );
+        // 's' in "start" is at offset 6
+        assert!(
+            !is_decorator_at_offset(src, 6),
+            "offset 6 in 'start' should NOT be detected as decorator"
+        );
     }
 }

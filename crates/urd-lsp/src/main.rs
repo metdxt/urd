@@ -4,6 +4,7 @@
 //! Provides real-time diagnostics, code completion, hover information, go-to-definition,
 //! find references, document symbols, and semantic token highlighting.
 
+mod builtin_docs;
 mod completion;
 mod document;
 mod semantic;
