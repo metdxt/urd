@@ -321,11 +321,11 @@ label start {
     let steps = run_script_with_externs(src, |vm| {
         vm.provide_extern(
             "player",
-            RuntimeValue::Extern(ExternHandle::new(Player::new(1, "Hero", 100, 3.14))),
+            RuntimeValue::Extern(ExternHandle::new(Player::new(1, "Hero", 100, 2.72))),
         );
     });
     let texts = dialogue_texts(&steps);
-    assert_eq!(texts, vec!["X: 3.14"]);
+    assert_eq!(texts, vec!["X: 2.72"]);
 }
 
 // ── VM integration: field reads via subscript ─────────────────────────────────
@@ -770,49 +770,49 @@ label start {
 #[test]
 fn conversion_round_trip_i32() {
     let val: i32 = 42;
-    let rv = val.into_runtime_value();
+    let rv = val.to_runtime_value();
     assert_eq!(i32::from_runtime_value(&rv).unwrap(), 42);
 }
 
 #[test]
 fn conversion_round_trip_string() {
     let val = "hello".to_string();
-    let rv = val.into_runtime_value();
+    let rv = val.to_runtime_value();
     assert_eq!(String::from_runtime_value(&rv).unwrap(), "hello");
 }
 
 #[test]
 fn conversion_round_trip_bool() {
-    let rv = true.into_runtime_value();
-    assert_eq!(bool::from_runtime_value(&rv).unwrap(), true);
+    let rv = true.to_runtime_value();
+    assert!(bool::from_runtime_value(&rv).unwrap());
 }
 
 #[test]
 fn conversion_round_trip_f64() {
-    let val: f64 = 3.14;
-    let rv = val.into_runtime_value();
+    let val: f64 = 2.72;
+    let rv = val.to_runtime_value();
     let back = f64::from_runtime_value(&rv).unwrap();
-    assert!((back - 3.14).abs() < f64::EPSILON);
+    assert!((back - 2.72).abs() < f64::EPSILON);
 }
 
 #[test]
 fn conversion_round_trip_option_some() {
     let val: Option<i64> = Some(7);
-    let rv = val.into_runtime_value();
+    let rv = val.to_runtime_value();
     assert_eq!(Option::<i64>::from_runtime_value(&rv).unwrap(), Some(7));
 }
 
 #[test]
 fn conversion_round_trip_option_none() {
     let val: Option<i64> = None;
-    let rv = val.into_runtime_value();
+    let rv = val.to_runtime_value();
     assert_eq!(Option::<i64>::from_runtime_value(&rv).unwrap(), None);
 }
 
 #[test]
 fn conversion_round_trip_vec() {
     let val: Vec<i64> = vec![1, 2, 3];
-    let rv = val.into_runtime_value();
+    let rv = val.to_runtime_value();
     assert_eq!(Vec::<i64>::from_runtime_value(&rv).unwrap(), vec![1, 2, 3]);
 }
 

@@ -226,7 +226,7 @@ pub fn display_brief(v: &RuntimeValue) -> String {
         }
         RuntimeValue::Map(m) => format!("map({})", m.len()),
         RuntimeValue::List(items) => {
-            let parts: Vec<String> = items.iter().map(|v| display_brief(v)).collect();
+            let parts: Vec<String> = items.iter().map(display_brief).collect();
             format!("[{}]", parts.join(", "))
         }
         RuntimeValue::Function { params, .. } => format!("fn({})", params.join(", ")),
@@ -244,7 +244,7 @@ pub fn display_brief(v: &RuntimeValue) -> String {
 /// Blanket implementations are provided for common primitive types.
 pub trait IntoRuntimeValue {
     /// Convert `&self` into a [`RuntimeValue`].
-    fn into_runtime_value(&self) -> RuntimeValue;
+    fn to_runtime_value(&self) -> RuntimeValue;
 }
 
 /// Reconstruct a Rust value from a [`RuntimeValue`].
@@ -257,7 +257,7 @@ pub trait FromRuntimeValue: Sized {
 }
 
 impl IntoRuntimeValue for RuntimeValue {
-    fn into_runtime_value(&self) -> RuntimeValue {
+    fn to_runtime_value(&self) -> RuntimeValue {
         self.clone()
     }
 }
@@ -271,7 +271,7 @@ impl FromRuntimeValue for RuntimeValue {
 // ── bool ──────────────────────────────────────────────────────────────────────
 
 impl IntoRuntimeValue for bool {
-    fn into_runtime_value(&self) -> RuntimeValue {
+    fn to_runtime_value(&self) -> RuntimeValue {
         RuntimeValue::Bool(*self)
     }
 }
@@ -288,7 +288,7 @@ impl FromRuntimeValue for bool {
 // ── i64 ───────────────────────────────────────────────────────────────────────
 
 impl IntoRuntimeValue for i64 {
-    fn into_runtime_value(&self) -> RuntimeValue {
+    fn to_runtime_value(&self) -> RuntimeValue {
         RuntimeValue::Int(*self)
     }
 }
@@ -305,7 +305,7 @@ impl FromRuntimeValue for i64 {
 // ── f64 ───────────────────────────────────────────────────────────────────────
 
 impl IntoRuntimeValue for f64 {
-    fn into_runtime_value(&self) -> RuntimeValue {
+    fn to_runtime_value(&self) -> RuntimeValue {
         RuntimeValue::Float(*self)
     }
 }
@@ -323,7 +323,7 @@ impl FromRuntimeValue for f64 {
 // ── String ────────────────────────────────────────────────────────────────────
 
 impl IntoRuntimeValue for String {
-    fn into_runtime_value(&self) -> RuntimeValue {
+    fn to_runtime_value(&self) -> RuntimeValue {
         RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain(self))
     }
 }
@@ -340,7 +340,7 @@ impl FromRuntimeValue for String {
 macro_rules! impl_int_via_i64 {
     ($($ty:ty),+) => { $(
         impl IntoRuntimeValue for $ty {
-            fn into_runtime_value(&self) -> RuntimeValue {
+            fn to_runtime_value(&self) -> RuntimeValue {
                 RuntimeValue::Int(*self as i64)
             }
         }
@@ -361,7 +361,7 @@ macro_rules! impl_int_via_i64 {
 impl_int_via_i64!(i8, i16, i32, u8, u16, u32);
 
 impl IntoRuntimeValue for u64 {
-    fn into_runtime_value(&self) -> RuntimeValue {
+    fn to_runtime_value(&self) -> RuntimeValue {
         RuntimeValue::Int(*self as i64)
     }
 }
@@ -374,7 +374,7 @@ impl FromRuntimeValue for u64 {
 }
 
 impl IntoRuntimeValue for f32 {
-    fn into_runtime_value(&self) -> RuntimeValue {
+    fn to_runtime_value(&self) -> RuntimeValue {
         RuntimeValue::Float(*self as f64)
     }
 }
@@ -387,9 +387,9 @@ impl FromRuntimeValue for f32 {
 }
 
 impl<T: IntoRuntimeValue> IntoRuntimeValue for Option<T> {
-    fn into_runtime_value(&self) -> RuntimeValue {
+    fn to_runtime_value(&self) -> RuntimeValue {
         match self {
-            Some(v) => v.into_runtime_value(),
+            Some(v) => v.to_runtime_value(),
             None => RuntimeValue::Null,
         }
     }
@@ -405,8 +405,8 @@ impl<T: FromRuntimeValue> FromRuntimeValue for Option<T> {
 }
 
 impl<T: IntoRuntimeValue> IntoRuntimeValue for Vec<T> {
-    fn into_runtime_value(&self) -> RuntimeValue {
-        RuntimeValue::List(self.iter().map(|v| v.into_runtime_value()).collect())
+    fn to_runtime_value(&self) -> RuntimeValue {
+        RuntimeValue::List(self.iter().map(|v| v.to_runtime_value()).collect())
     }
 }
 
@@ -527,8 +527,8 @@ mod tests {
     }
 
     #[test]
-    fn into_runtime_value_i32() {
-        assert_eq!(42i32.into_runtime_value(), RuntimeValue::Int(42));
+    fn to_runtime_value_i32() {
+        assert_eq!(42i32.to_runtime_value(), RuntimeValue::Int(42));
     }
 
     #[test]
@@ -545,9 +545,9 @@ mod tests {
     }
 
     #[test]
-    fn into_runtime_value_string() {
+    fn to_runtime_value_string() {
         let s = "hello".to_string();
-        match s.into_runtime_value() {
+        match s.to_runtime_value() {
             RuntimeValue::Str(ps) => assert_eq!(ps.to_string(), "hello"),
             other => panic!("expected Str, got {other:?}"),
         }
@@ -556,19 +556,19 @@ mod tests {
     #[test]
     fn option_none_is_null() {
         let v: Option<i64> = None;
-        assert_eq!(v.into_runtime_value(), RuntimeValue::Null);
+        assert_eq!(v.to_runtime_value(), RuntimeValue::Null);
     }
 
     #[test]
     fn option_some_unwraps() {
         let v: Option<i64> = Some(7);
-        assert_eq!(v.into_runtime_value(), RuntimeValue::Int(7));
+        assert_eq!(v.to_runtime_value(), RuntimeValue::Int(7));
     }
 
     #[test]
     fn vec_round_trip() {
         let v = vec![1i64, 2, 3];
-        let rv = v.into_runtime_value();
+        let rv = v.to_runtime_value();
         assert_eq!(Vec::<i64>::from_runtime_value(&rv).unwrap(), vec![1, 2, 3]);
     }
 

@@ -1,10 +1,13 @@
 [package]
 name = "urd"
-description = "a lang [very WIP]"
+description = "Dialogue scripting language for games — compiler, VM, and static analysis"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords = ["dialogue", "scripting", "gamedev", "visual-novel", "compiler"]
+categories = ["compilers", "game-development"]
 
 [dependencies]
 urd-derive = { workspace = true }

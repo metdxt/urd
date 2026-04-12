@@ -182,7 +182,9 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
         if attrs.skip {
             continue;
         }
-        let ident = field.ident.clone().expect("named field must have an ident");
+        let Some(ident) = field.ident.clone() else {
+            return Err(syn::Error::new_spanned(field, "named field must have an ident"));
+        };
         let script_name = attrs.rename.unwrap_or_else(|| ident.to_string());
         field_infos.push(FieldInfo {
             ident,
@@ -211,7 +213,7 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
                     "{}: {}",
                     #name,
                     ::urd::runtime::extern_object::display_brief(
-                        &::urd::runtime::extern_object::IntoRuntimeValue::into_runtime_value(&self.#ident)
+                        &::urd::runtime::extern_object::IntoRuntimeValue::to_runtime_value(&self.#ident)
                     )
                 ));
             }
@@ -244,7 +246,7 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
             let name = &fi.script_name;
             quote! {
                 #name => ::std::result::Result::Ok(
-                    ::urd::runtime::extern_object::IntoRuntimeValue::into_runtime_value(&self.#ident)
+                    ::urd::runtime::extern_object::IntoRuntimeValue::to_runtime_value(&self.#ident)
                 ),
             }
         })

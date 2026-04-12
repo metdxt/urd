@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords = ["urd", "cli", "dialogue", "runner", "gamedev"]
+categories = ["command-line-utilities", "game-development"]
 
 [[bin]]
 name = "quest"

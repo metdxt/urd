@@ -582,10 +582,10 @@ pub(super) fn resolve_interp_path(path: &str, env: &Environment) -> Result<Runti
             .or_else(|_| env.get(&crate::ir::namespace(segments[0], segments[1])))
             .or_else(|_| {
                 // Struct field access: `struct_var.field`
-                if let Ok(RuntimeValue::Struct { ref fields, .. }) = env.get(segments[0]) {
-                    if let Some(val) = fields.get(segments[1]) {
-                        return Ok(val.clone());
-                    }
+                if let Ok(RuntimeValue::Struct { ref fields, .. }) = env.get(segments[0])
+                    && let Some(val) = fields.get(segments[1])
+                {
+                    return Ok(val.clone());
                 }
                 // Extern object field access: `extern_var.field`
                 if let Ok(RuntimeValue::Extern(ref handle)) = env.get(segments[0]) {
