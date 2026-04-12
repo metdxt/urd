@@ -22,7 +22,7 @@ pub mod dot;
 pub mod mermaid;
 mod render_common;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 
@@ -87,6 +87,14 @@ pub struct IrGraph {
     /// (`main::hub`).  Use [`IrGraph::cluster_names`] when you need exactly
     /// one canonical name per node (e.g. for rendering cluster subgraphs).
     pub labels: HashMap<String, NodeIndex>,
+    /// Names of all `@entry`-decorated labels.
+    ///
+    /// In single-file compilation this contains the bare label names.
+    /// In multi-file compilation this includes both bare and namespaced
+    /// forms (e.g. `"start"` and `"tavern::enter"`).
+    ///
+    /// Use [`Vm::new_at`] to start the VM at a specific entry label.
+    pub entry_labels: HashSet<String>,
     /// Canonical display name for each unique label entry [`NodeIndex`].
     ///
     /// Unlike [`IrGraph::labels`] (which holds all resolvable aliases), this
@@ -114,6 +122,7 @@ impl IrGraph {
             graph: StableDiGraph::new(),
             entry: None,
             labels: HashMap::new(),
+            entry_labels: HashSet::new(),
             cluster_names: HashMap::new(),
             label_sources: HashMap::new(),
         }
@@ -135,6 +144,11 @@ impl IrGraph {
         self.graph.add_edge(from, to, edge);
     }
 
+    /// Returns the names of all `@entry`-decorated labels.
+    pub fn entry_labels(&self) -> &HashSet<String> {
+        &self.entry_labels
+    }
+
     /// Returns the set of decorator names used across all `Dialogue` and `Choice`
     /// nodes in this graph. Useful for pre-registering passthrough handlers before
     /// constructing a [`crate::vm::Vm`].
@@ -147,7 +161,11 @@ impl IrGraph {
                         names.insert(d.name());
                     }
                 }
-                IrNodeKind::Choice { decorators, options, .. } => {
+                IrNodeKind::Choice {
+                    decorators,
+                    options,
+                    ..
+                } => {
                     for d in decorators {
                         names.insert(d.name());
                     }

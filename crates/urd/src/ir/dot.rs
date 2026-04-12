@@ -1022,7 +1022,7 @@ fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<N
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::*;
     use crate::compiler::Compiler;
@@ -1651,6 +1651,7 @@ mod tests {
             graph: g,
             entry: Some(n0),
             labels: HashMap::new(),
+            entry_labels: HashSet::new(),
             cluster_names: HashMap::new(),
             label_sources: HashMap::new(),
         };

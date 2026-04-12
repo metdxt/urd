@@ -34,8 +34,8 @@ fn build_vm(ast: Ast) -> Vm {
 }
 
 fn build_vm_named(ast: Ast, file_stem: &str) -> Vm {
-    let graph = crate::compiler::Compiler::compile_named(&ast, file_stem)
-        .expect("compile_named failed");
+    let graph =
+        crate::compiler::Compiler::compile_named(&ast, file_stem).expect("compile_named failed");
     Vm::new(graph, empty_registry()).expect("vm construction failed")
 }
 
@@ -1139,6 +1139,7 @@ fn test_let_call_captures_return_value() {
 fn test_todo_bang_ends_script() {
     use crate::ir::{IrEdge, IrGraph, IrNodeKind};
     use petgraph::stable_graph::StableGraph;
+    use std::collections::HashSet;
 
     let mut g: StableGraph<IrNodeKind, IrEdge> = StableGraph::new();
     let todo_id = g.add_node(IrNodeKind::Todo);
@@ -1146,6 +1147,7 @@ fn test_todo_bang_ends_script() {
         graph: g,
         entry: Some(todo_id),
         labels: HashMap::new(),
+        entry_labels: HashSet::new(),
         cluster_names: HashMap::new(),
         label_sources: HashMap::new(),
     };
@@ -1162,6 +1164,7 @@ fn test_todo_bang_ends_script() {
 fn test_end_bang_ends_script() {
     use crate::ir::{IrEdge, IrGraph, IrNodeKind};
     use petgraph::stable_graph::StableGraph;
+    use std::collections::HashSet;
 
     let mut g: StableGraph<IrNodeKind, IrEdge> = StableGraph::new();
     let end_id = g.add_node(IrNodeKind::End);
@@ -1169,6 +1172,7 @@ fn test_end_bang_ends_script() {
         graph: g,
         entry: Some(end_id),
         labels: HashMap::new(),
+        entry_labels: HashSet::new(),
         cluster_names: HashMap::new(),
         label_sources: HashMap::new(),
     };
@@ -2282,8 +2286,8 @@ label start {
 /// string `"zara"`.
 #[test]
 fn test_const_speaker_resolves_to_value_not_identifier() {
-    use crate::compiler::loader::parse_source;
     use crate::compiler::Compiler;
+    use crate::compiler::loader::parse_source;
 
     let src = r#"
 const zara = :{ name: "Zara" }
@@ -2348,5 +2352,141 @@ label finish {
     let mut vm = Vm::new(graph, empty_registry()).expect("vm");
 
     expect_dialogue_line(&mut vm, "arrived");
+    assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
+}
+
+// ── entry_labels / Vm::new_at tests ──────────────────────────────────────
+
+/// Compiling a script with two `@entry` labels populates `entry_labels`
+/// with both bare names.
+#[test]
+fn test_entry_labels_populated_single_file() {
+    use crate::compiler::loader::parse_source;
+
+    let src = r#"
+@entry
+label a {
+    narrator: "label a"
+    end!()
+}
+
+@entry
+label b {
+    narrator: "label b"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile(&ast).expect("compile");
+
+    let entries = graph.entry_labels();
+    assert!(
+        entries.contains("a"),
+        "entry_labels should contain 'a': {entries:?}"
+    );
+    assert!(
+        entries.contains("b"),
+        "entry_labels should contain 'b': {entries:?}"
+    );
+    assert_eq!(
+        entries.len(),
+        2,
+        "should have exactly 2 entry labels: {entries:?}"
+    );
+}
+
+/// `Vm::new_at` starts execution at the specified `@entry` label.
+#[test]
+fn test_new_at_valid_entry_label() {
+    use crate::compiler::loader::parse_source;
+
+    let src = r#"
+@entry
+label a {
+    narrator: "label a"
+    end!()
+}
+
+@entry
+label b {
+    narrator: "label b"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile(&ast).expect("compile");
+    let mut vm = Vm::new_at(graph, empty_registry(), "b").expect("new_at should succeed");
+
+    expect_dialogue_line(&mut vm, "label b");
+    assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
+}
+
+/// `Vm::new_at` rejects a label that exists but is not `@entry`-decorated.
+#[test]
+fn test_new_at_non_entry_label_errors() {
+    use crate::compiler::loader::parse_source;
+
+    let src = r#"
+@entry
+label a {
+    narrator: "label a"
+    end!()
+}
+
+label b {
+    narrator: "label b"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile(&ast).expect("compile");
+    let result = Vm::new_at(graph, empty_registry(), "b");
+
+    assert!(
+        matches!(result, Err(VmError::UnknownLabel(ref msg)) if msg.contains("b")),
+        "expected UnknownLabel for non-@entry label 'b', got: {result:?}"
+    );
+}
+
+/// `Vm::new_at` rejects a label name that does not exist at all.
+#[test]
+fn test_new_at_nonexistent_label_errors() {
+    use crate::compiler::loader::parse_source;
+
+    let src = r#"
+@entry
+label a {
+    narrator: "label a"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile(&ast).expect("compile");
+    let result = Vm::new_at(graph, empty_registry(), "nonexistent");
+
+    assert!(
+        matches!(result, Err(VmError::UnknownLabel(ref msg)) if msg.contains("nonexistent")),
+        "expected UnknownLabel for 'nonexistent', got: {result:?}"
+    );
+}
+
+/// `Vm::new` still works exactly as before — starts at the first `@entry`
+/// label (backward compatibility).
+#[test]
+fn test_new_still_works_as_before() {
+    use crate::compiler::loader::parse_source;
+
+    let src = r#"
+@entry
+label start {
+    narrator: "hello from start"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile(&ast).expect("compile");
+    let mut vm = Vm::new(graph, empty_registry()).expect("new should succeed");
+
+    expect_dialogue_line(&mut vm, "hello from start");
     assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
 }

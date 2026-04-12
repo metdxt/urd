@@ -549,6 +549,14 @@ fn emit_all(
     let entry = chain_prologues(&mut state.graph, &preamble_entries, root_entry);
     state.graph.entry = entry;
 
+    // Record all @entry-decorated labels (bare + namespaced forms).
+    // Root-module bare names were already added by `compile_top_level` (guarded
+    // by `!is_imported_module`).  Here we extend with the namespaced / symbol-
+    // imported names produced by `build_global_labels`.
+    if let Some(exported) = state.exported_labels.take() {
+        state.graph.entry_labels.extend(exported);
+    }
+
     // ── Populate cluster_names and label_sources ──────────────────────────
     // These two maps let renderers (a) deduplicate clusters — one per unique
     // NodeIndex rather than one per alias — and (b) draw file-boundary

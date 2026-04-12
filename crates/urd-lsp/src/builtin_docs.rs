@@ -713,9 +713,12 @@ static DECORATOR_DOCS: &[DecoratorDoc] = &[
         name: "entry",
         signature: "@entry",
         description: "Marks a label as a VM entry point.\n\n\
-                      The VM begins execution at a label decorated with `@entry`. \
-                      A script may have multiple `@entry` labels — the host application \
-                      selects which one to start from.\n\n\
+                      The VM begins execution at the first `@entry` label by default. \
+                      Use `Vm::new_at(graph, registry, \"label_name\")` to start at a \
+                      specific entry point.\n\n\
+                      If no label has `@entry`, the first label in source order is used.\n\n\
+                      In multi-file projects, only `@entry` labels are valid cross-module \
+                      jump targets.\n\n\
                       Only valid on `label` statements.",
     },
     DecoratorDoc {

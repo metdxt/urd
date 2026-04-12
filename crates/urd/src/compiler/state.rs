@@ -200,6 +200,20 @@ impl CompilerState {
         // Priority: @entry-decorated label > first label in source order > None
         let entry_label_node = self.find_entry_label(&labels);
 
+        // Record all @entry-decorated label names so that `Vm::new_at` can
+        // validate its `label` argument.  In multi-file compilation we only
+        // record bare names for the root module — imported modules contribute
+        // their namespaced forms via `build_global_labels` instead.
+        if !self.is_imported_module {
+            for label_ast in &labels {
+                if let AstContent::LabeledBlock { label, .. } = label_ast.content()
+                    && label_ast.decorators().iter().any(|d| d.name() == "entry")
+                {
+                    self.graph.entry_labels.insert(label.clone());
+                }
+            }
+        }
+
         // ── Phase 3: compile preamble right-to-left, chaining into entry ──
         if preamble.is_empty() {
             // No preamble — entry is the label directly (or None).

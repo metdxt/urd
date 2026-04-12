@@ -318,6 +318,43 @@ impl Vm {
     /// Returns [`VmError::UnknownDecorator`] if any decorator used in the
     /// script is not registered.
     pub fn new(graph: IrGraph, registry: DecoratorRegistry) -> Result<Self, VmError> {
+        let cursor = graph.entry;
+        Self::build(graph, registry, cursor)
+    }
+
+    /// Creates a new VM starting at the specified `@entry` label.
+    ///
+    /// The `label` must be the name of an `@entry`-decorated label in the
+    /// compiled graph. Use [`IrGraph::entry_labels`] to discover available
+    /// entry points.
+    ///
+    /// # Errors
+    ///
+    /// - [`VmError::UnknownLabel`] if `label` is not a known `@entry` label.
+    /// - [`VmError::UnknownDecorator`] if any script decorator is not registered.
+    pub fn new_at(
+        graph: IrGraph,
+        registry: DecoratorRegistry,
+        label: &str,
+    ) -> Result<Self, VmError> {
+        // Verify the label exists and is @entry-decorated.
+        if !graph.entry_labels.contains(label) {
+            return Err(VmError::UnknownLabel(format!(
+                "label '{}' is not an @entry label (available: {:?})",
+                label, graph.entry_labels
+            )));
+        }
+        let cursor = graph.labels.get(label).copied();
+        Self::build(graph, registry, cursor)
+    }
+
+    /// Shared constructor: validates decorators, builds the exit-scope map,
+    /// and wires up the initial VM state starting at `cursor`.
+    fn build(
+        graph: IrGraph,
+        registry: DecoratorRegistry,
+        cursor: Option<NodeIndex>,
+    ) -> Result<Self, VmError> {
         // Pass 1: collect all names defined by DefineScriptDecorator nodes so
         // that the validation pass below can accept them without a Rust handler.
         let script_defined: HashSet<&str> = graph
@@ -375,7 +412,6 @@ impl Vm {
             })
             .collect();
 
-        let cursor = graph.entry;
         Ok(Vm {
             graph,
             exit_scope_map,
