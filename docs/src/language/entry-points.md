@@ -95,6 +95,11 @@ When the compiler processes `main.urd`, execution begins at `start`. The
 `@entry` on `enter_tavern` inside `tavern.urd` is only relevant if you compile
 and run `tavern.urd` directly.
 
+> **Important:** Labels in imported files **must** be decorated with `@entry` to
+> be visible as cross-module jump targets. Without `@entry`, the label is
+> private to its file and attempting to jump to it from another module will
+> produce a `PrivateLabel` compiler error.
+
 ---
 
 ## Naming Conventions

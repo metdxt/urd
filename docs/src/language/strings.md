@@ -31,6 +31,11 @@ The following escape sequences are recognized inside string literals:
 | `\n`     | Newline              |
 | `\t`     | Tab                  |
 | `\{`     | Literal open brace (suppresses interpolation) |
+| `\}`     | Literal close brace |
+| `\r`     | Carriage return |
+| `\xHH`   | Hex byte escape (2 hex digits) |
+| `\uHHHH` | Unicode escape (4 hex digits) |
+| `\u{H…}` | Unicode escape (1–6 hex digits, braced) |
 
 Example:
 
@@ -42,7 +47,7 @@ let literal_brace = "Use \{curly braces\} for interpolation"
 
 ## String Interpolation
 
-Embed any expression inside a string by wrapping it in curly braces `{…}`. The expression is evaluated at runtime and its result is converted to a string:
+Embed a variable name or dot-path inside a string by wrapping it in curly braces `{…}`. The value is evaluated at runtime and converted to a string:
 
 ```urd
 global gold = 50
@@ -50,10 +55,11 @@ narrator: "You have {gold} gold coins."
 # → "You have 50 gold coins."
 ```
 
-Interpolation supports arbitrary expressions, including arithmetic and function calls:
+Only variable names and dot-paths (e.g. `{gold}`, `{player.name}`) are supported inside interpolation braces — arbitrary expressions like arithmetic or function calls are **not** allowed. If you need a computed value, store it in a variable first:
 
 ```urd
-narrator: "You have {gold * 2} gold after doubling."
+let doubled = gold * 2
+narrator: "You have {doubled} gold after doubling."
 narrator: "Health: {health} / {max_health}"
 ```
 
@@ -67,9 +73,9 @@ narrator: "{hero.name} the {hero.class} enters the arena!"
 # → "Aldric the Paladin enters the arena!"
 ```
 
-### Nested Interpolation
+### Multiple Interpolations
 
-Interpolation expressions can themselves contain strings, though this is rarely needed:
+A single string can contain multiple interpolation sites:
 
 ```urd
 let label = "gold"

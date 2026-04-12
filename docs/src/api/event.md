@@ -9,7 +9,7 @@ Both `Event` and `ChoiceEvent` derive `Serialize` and `Deserialize`, so you can 
 ```rust
 pub enum Event {
     Dialogue { speakers, lines, fields, loc_id, fluent_vars, localized_text },
-    Choice   { options, fields, loc_id, fluent_vars },
+    Choice   { options, fields, loc_id, fluent_vars, has_default },
 }
 ```
 
@@ -60,20 +60,25 @@ Emitted when the script reaches a `menu` block. The VM pauses and waits for the 
 | `fields` | `HashMap<String, RuntimeValue>` | Decorator output applied to the menu as a whole (not to individual options). |
 | `loc_id` | `Option<String>` | Localization key for the entire choice event (the menu node). |
 | `fluent_vars` | `HashMap<String, RuntimeValue>` | Fluent variable bindings for this choice event's scope context. |
+| `has_default` | `bool` | `true` when the menu contains a wildcard/default option (`_ { ... }`). The host can use this to display a timeout indicator or skip the choice UI entirely. To trigger the default option, call `vm.next(None)` while the choice is pending. |
 
 **Typical usage:**
 
 ```rust
 match event {
-    Event::Choice { options, .. } => {
+    Event::Choice { options, has_default, .. } => {
         for (i, opt) in options.iter().enumerate() {
             let label = opt.localized_label.as_deref()
                 .unwrap_or(&opt.label);
             println!("  [{}] {}", i + 1, label);
         }
 
-        let choice = get_player_input() - 1;  // 0-based index
-        vm.next(Some(choice));
+        let choice = if has_default && should_timeout() {
+            None  // triggers the wildcard/default option
+        } else {
+            Some(get_player_input() - 1)  // 0-based index
+        };
+        vm.next(choice);
     }
     _ => {}
 }

@@ -6,6 +6,7 @@ The `Vm` is the heart of Urd's runtime. It owns a compiled IR graph and walks it
 
 ```rust
 use urd::prelude::*;
+use urd::compiler::Compiler;
 
 let graph = Compiler::compile(&ast)?;
 let registry = DecoratorRegistry::new();
@@ -125,3 +126,5 @@ See the [Localization](../localization/overview.md) section for how to implement
 | `vm.provide_extern(name, value)` | Inject a host-provided value |
 | `vm.set_step_budget(budget)` | Set the infinite-loop guard limit |
 | `vm.with_localizer(loc)` | Attach a localizer (builder pattern) |
+| `Vm::new_at(graph, registry, label)` | Create a VM that starts execution at a specific `@entry` label |
+| `vm.with_dice_roller(roller)` | Attach a custom dice roller (builder pattern) |

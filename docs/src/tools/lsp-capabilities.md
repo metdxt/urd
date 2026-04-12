@@ -85,13 +85,16 @@ The outline/symbol view in your editor is populated with:
 
 | Symbol Kind | LSP Kind |
 |-------------|----------|
-| Labels | Namespace |
+| Labels | Function |
 | Enums | Enum |
+| Enum Variants | Enum Member |
 | Structs | Struct |
 | Decorators | Function |
+| Functions | Function |
 | Constants | Constant |
 | Globals | Variable |
 | Extern declarations | Variable |
+| Imports | Module |
 
 This powers features like the breadcrumb bar, outline panel, and `Go to Symbol in File` commands.
 

@@ -26,6 +26,7 @@ need:
 
 ```rust
 use urd::prelude::*;
+use urd::compiler::Compiler;
 
 let graph = Compiler::compile(&ast)?;
 ```
@@ -85,7 +86,7 @@ resolve and fetch imported modules:
 
 ```rust
 use urd::prelude::*;
-use urd::vm::loader::FsLoader;
+use urd::compiler::Compiler;
 
 let loader = FsLoader::new("./scripts");
 let graph = Compiler::compile_with_loader(&ast, &loader)?;
@@ -97,12 +98,15 @@ circular imports.
 
 ### Additional Error Variants
 
-Multi-file compilation can produce two extra error variants:
+Multi-file compilation can produce these additional error variants:
 
 | Variant | When it fires |
 |---------|---------------|
 | `CompilerError::ModuleLoadError { path, message }` | The loader failed to fetch a module (file not found, I/O error, etc.). |
 | `CompilerError::CircularImport(path)` | Module A imports B which imports A (directly or transitively). |
+| `CompilerError::PrivateLabel(name)` | A cross-module jump targets a label that is not marked `@entry` in the imported module. |
+| `CompilerError::DuplicateAlias(name)` | Two whole-module imports use the same alias. |
+| `CompilerError::MissingImportedSymbol { symbol, module }` | A named import requests a symbol that doesn't exist in the target module. |
 
 ```rust
 match Compiler::compile_with_loader(&ast, &loader) {
@@ -112,10 +116,35 @@ match Compiler::compile_with_loader(&ast, &loader) {
     Err(CompilerError::CircularImport(path)) => {
         eprintln!("Circular import detected: '{path}'");
     }
+    Err(CompilerError::PrivateLabel(name)) => {
+        eprintln!("Label '{name}' is not marked @entry and cannot be jumped to from another module");
+    }
+    Err(CompilerError::DuplicateAlias(name)) => {
+        eprintln!("Alias '{name}' is already used by another whole-module import");
+    }
+    Err(CompilerError::MissingImportedSymbol { symbol, module }) => {
+        eprintln!("Symbol '{symbol}' does not exist in module '{module}'");
+    }
     // ... other variants ...
     # _ => {}
 }
 ```
+
+## Named Multi-File Compilation
+
+`Compiler::compile_named_with_loader` combines the behaviour of `compile_named`
+(loc_id generation) and `compile_with_loader` (import resolution):
+
+```rust
+use urd::prelude::*;
+use urd::compiler::Compiler;
+
+let loader = FsLoader::new("./scripts");
+let graph = Compiler::compile_named_with_loader(&ast, "intro", &loader)?;
+```
+
+This is the method you'll use in most production pipelines — multi-file projects
+that also need stable localization IDs.
 
 ## File Loaders
 
@@ -125,7 +154,7 @@ for full details.
 **`FsLoader`** — filesystem-backed, for standalone tools and native games:
 
 ```rust
-use urd::vm::loader::FsLoader;
+use urd::prelude::*;
 
 let loader = FsLoader::new("./scripts");
 ```
@@ -133,7 +162,7 @@ let loader = FsLoader::new("./scripts");
 **`MemLoader`** — in-memory, for tests and embedded sources:
 
 ```rust
-use urd::vm::loader::MemLoader;
+use urd::prelude::*;
 
 let mut loader = MemLoader::new();
 loader.add("helpers.urd", include_str!("scripts/helpers.urd"));
@@ -145,15 +174,19 @@ The compiled `IrGraph` is an immutable data structure. You can inspect it for
 debugging or tooling purposes:
 
 ```rust
+use urd::compiler::Compiler;
+
 let graph = Compiler::compile(&ast)?;
 
 // The graph is a petgraph-backed directed graph of IrNode values.
 // You can examine it, serialize it, or pass it to visualization tools.
-println!("Graph has {} nodes", graph.node_count());
+println!("Graph has {} nodes", graph.graph.node_count());
 ```
 
-The graph is cheap to clone (it's `Clone`) and can be shared across multiple VM
-instances if you want to run the same script concurrently with different state.
+`IrGraph` implements `Clone`, but cloning performs a full deep copy that is
+O(n) in graph size. If you need to share the same graph across multiple VM
+instances (e.g. running the same script concurrently with different state),
+wrap it in an `Arc<IrGraph>` instead.
 
 ## Putting It Together
 
@@ -161,15 +194,15 @@ A complete compile pipeline for a multi-file, localized project:
 
 ```rust
 use urd::prelude::*;
+use urd::compiler::Compiler;
 use urd::compiler::loader::parse_source;
-use urd::vm::loader::FsLoader;
 
 fn compile_project(entry: &str, scripts_dir: &str) -> Result<IrGraph, Box<dyn std::error::Error>> {
     let source = std::fs::read_to_string(format!("{scripts_dir}/{entry}.urd"))?;
     let ast = parse_source(&source).map_err(|e| format!("parse error: {e}"))?;
 
     let loader = FsLoader::new(scripts_dir);
-    let graph = Compiler::compile_with_loader(&ast, &loader)?;
+    let graph = Compiler::compile_named_with_loader(&ast, entry, &loader)?;
 
     Ok(graph)
 }

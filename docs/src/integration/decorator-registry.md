@@ -58,8 +58,8 @@ Fn(&[RuntimeValue]) -> HashMap<String, RuntimeValue> + Send + Sync + 'static
 
 - **Arguments** — a slice of `RuntimeValue` items, one per argument in the
   script's `@decorator(arg1, arg2, ...)` call. If the decorator has no
-  arguments the slice is empty (but will contain a single `Null` value from the
-  parser's default).
+  arguments (e.g. `@slow` with no parentheses), the slice will contain a
+  single `Null` value from the parser's default.
 - **Return** — a `HashMap` of field name → value pairs. These are merged into
   the `fields` on the emitted `Event::Dialogue` or `Event::Choice`.
 
@@ -104,6 +104,34 @@ registry.register("mood", |args| {
 
 The resulting event's `fields` will contain both `"speed"` and `"mood"`.
 
+## Passthrough Decorators
+
+If you want a decorator's arguments to appear as-is in the event's `fields`
+without writing a custom handler, use `register_passthrough`:
+
+```rust
+use urd::prelude::*;
+
+let mut registry = DecoratorRegistry::new();
+registry.register_passthrough("camera");
+```
+
+A passthrough handler stores each positional argument under its index key
+(`"0"`, `"1"`, …) and also stores the full argument list under `"_args"`.
+This is useful for engine integrations that want raw decorator data without
+per-decorator Rust logic:
+
+```urd
+@camera("zoom_in", 1.5)
+narrator: "The castle looms ahead."
+```
+
+The emitted event's `fields` will contain
+`"0" → Str("zoom_in")`, `"1" → Float(1.5)`, and `"_args" → List(...)`.
+
+If an entry for the given name already exists in the registry, the call is a
+no-op (first registration wins).
+
 ## Script-Defined Decorators
 
 Urd scripts can define their own decorators using the `decorator` keyword. These
@@ -111,8 +139,8 @@ coexist with Rust-registered ones — the VM checks both the registry and the
 script's environment when resolving a decorator name.
 
 ```urd
-decorator shake<dialogue>(intensity: float) {
-    return { "shake_intensity": intensity }
+decorator shake<event: dialogue>(intensity: float) {
+    return :{ shake_intensity: intensity }
 }
 
 @shake(2.5)
@@ -136,6 +164,7 @@ script-level decorator, construction fails immediately:
 
 ```rust
 use urd::prelude::*;
+use urd::compiler::Compiler;
 
 let source = r#"
 @unknown_decorator

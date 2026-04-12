@@ -238,22 +238,15 @@ let sword_count = inventory["sword"]
 
 ## Precedence Overview
 
-Operators bind from tightest (top) to loosest (bottom). For the full table with
-binding powers and detailed semantics, see the
-[Operator Reference](../reference/operators.md#precedence-table).
+In brief, operators bind from tightest to loosest in this order: **unary** (`-`,
+`!`, `not`) → **multiplicative** (`*`, `/`, `//`, `%`) → **additive** (`+`,
+`-`) → **shift / range** (`<<`, `>>`, `..`, `..=`) → **comparison** (`>`, `<`,
+`>=`, `<=`, `in`) → **equality** (`==`, `!=`) → **bitwise** (`&`, `^`, `|`) →
+**logical AND** (`and` / `&&`) → **logical OR** (`or` / `||`) → **assignment**
+(`=`).
 
-| Category              | Operators                              | Associativity |
-|-----------------------|----------------------------------------|:-------------:|
-| Unary                 | `!` `not` `-` (negate)                 | prefix        |
-| Multiplicative        | `*` `/` `//` `%`                       | left          |
-| Additive              | `+` `-`                                | left          |
-| Shift / Range         | `<<` `>>` `..` `..=`                   | left          |
-| Comparison            | `>` `<` `>=` `<=` `in`                 | left          |
-| Equality              | `==` `!=`                              | left          |
-| Bitwise AND / XOR / OR| `&` then `^` then `\|`                 | left          |
-| Logical AND           | `and` / `&&`                           | left          |
-| Logical OR            | `or` / `\|\|`                          | left          |
-| Assignment            | `=`                                    | right         |
+For the complete precedence table with binding powers and detailed per-operator
+semantics, see the [Operator Reference](../reference/operators.md#precedence-table).
 
 Parentheses `( )` can always be used to override the default precedence:
 

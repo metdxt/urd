@@ -24,7 +24,7 @@ The `path` argument is exactly the string literal from the `import` statement, u
 
 ```rust
 use urd::prelude::*;
-use urd::vm::loader::FsLoader;
+use urd::compiler::Compiler;
 
 let loader = FsLoader::new("./scripts");
 let ast = urd::compiler::loader::parse_source(&source)?;
@@ -54,6 +54,7 @@ import "symlink_to_outside.urd" as escape
 
 ```rust
 use urd::vm::loader::MemLoader;
+use urd::compiler::Compiler;
 
 let mut loader = MemLoader::new();
 loader.add("characters.urd", r#"

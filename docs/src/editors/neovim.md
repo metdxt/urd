@@ -102,7 +102,7 @@ if not configs.urd_lsp then
       init_options = {
         -- Force a specific spellcheck language (optional).
         -- Omit to let urd-lsp auto-detect via whatlang.
-        -- spellcheckLanguage = "English",
+        -- spellcheckLanguage = "english",
       },
     },
   }

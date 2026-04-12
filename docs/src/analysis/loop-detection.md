@@ -184,4 +184,4 @@ The pass is **hybrid** — it uses both the AST and the compiled IR:
 
 - **Combine with `end!` / `todo!` discipline.** The [DeadEnd](./error-lints.md) lint already ensures every label has a terminator. Loop detection goes further by checking that terminators are actually *reachable* through the cycle.
 
-- **Test in CI.** Run `quest check` (or compile with analysis enabled) in your CI pipeline. Loop detection runs automatically when any label carries `@lint(check_loops)`.
+- **Test in CI.** Run `quest run` or compile your scripts in your CI pipeline. Loop detection runs automatically when any label carries `@lint(check_loops)`.

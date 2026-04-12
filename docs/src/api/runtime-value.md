@@ -123,7 +123,7 @@ let numbers = [1, 2, 3]
 
 Lists are serializable as long as all their elements are themselves serializable.
 
-**Invariant:** A `List` must never contain a `ScriptDecorator` element. Use `RuntimeValue::list()` to construct lists from Rust code — it fires a `debug_assert!` in debug builds to catch violations early.
+**Invariant:** A `List` must never contain a `Function`, `Map`, `Roll`, `ScriptDecorator`, or `Struct` element. Use `RuntimeValue::list()` to construct lists from Rust code — it fires a `debug_assert!` in debug builds to catch violations early.
 
 ### `Function { params, body }`
 
@@ -197,25 +197,6 @@ const hero: Character = :{ name: "Hero", name_color: "#f5c542" }
 Attempting to serialize a skipped variant will silently omit the field. Deserialization will never reconstruct them — which is correct, because they only exist transiently during script execution and never appear in serialized `Event` payloads.
 
 ## Common Methods
-
-### `.type_name()`
-
-Returns a human-readable string identifying the variant type. Useful for debugging and error messages.
-
-### `Display` Implementation
-
-All variants implement `Display`:
-
-- `Null` → `"null"`
-- `Bool(true)` → `"true"`
-- `Int(42)` → `"42"`
-- `Float(3.14)` → `"3.14"`
-- `Str(s)` → the interpolated string content
-- `Dice(2, 6)` → `"2d6"`
-- `Roll([3, 5])` → `"[3, 5]"`
-- `Range { 0, 10, false }` → `"0..10"`
-- `Range { 1, 6, true }` → `"1..=6"`
-- `List([...])` → `"[elem1, elem2, ...]"`
 
 ### Comparison Semantics
 

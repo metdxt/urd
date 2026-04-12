@@ -69,7 +69,7 @@ The language server supports an optional `spellcheckLanguage` initialization opt
   "lsp": {
     "urd-lsp": {
       "initialization_options": {
-        "spellcheckLanguage": "en"
+        "spellcheckLanguage": "english"
       }
     }
   }

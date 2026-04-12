@@ -258,6 +258,112 @@ Possible typo: 'narator' looks like it could be the speaker 'narrator'
 
 ---
 
+## `IdOnUnsupportedNode`
+
+**What it catches:** The `@id` decorator was placed on a node type that does not support localization IDs — for example, a variable declaration or a control-flow statement.
+
+**Why it matters:** The `@id` decorator only has meaning on dialogue lines and menu options, where it overrides the auto-generated localization key. On any other node, it silently does nothing, which likely means it was placed on the wrong line.
+
+**Example:**
+
+```urd
+label intro {
+    @id("greeting")
+    let x = 42          # ⚠ @id has no effect on a variable declaration
+    narrator: "Hello!"
+    end!()
+}
+```
+
+**Diagnostic message:**
+
+```text
+@id on unsupported node: @id has no effect here
+```
+
+**Suggestion:** Move the `@id` decorator to the dialogue line or menu option you intended to tag.
+
+---
+
+## `FluentOnUnsupportedNode`
+
+**What it catches:** The `@fluent` decorator was applied to a node that is not a variable declaration (i.e., not a `global` or `let` binding).
+
+**Why it matters:** `@fluent` injects a variable into the Fluent localization context. It only makes sense on declarations whose value should be available as a Fluent variable. Placing it on a dialogue line, menu, or other construct has no effect and indicates a misunderstanding of the localization pipeline.
+
+**Example:**
+
+```urd
+label intro {
+    @fluent("greeting")
+    narrator: "Hello!"   # ⚠ @fluent has no effect on dialogue lines
+    end!()
+}
+```
+
+**Diagnostic message:**
+
+```text
+@fluent on unsupported node: @fluent has no effect here
+```
+
+**Suggestion:** Move the `@fluent` decorator to a `global` or `let` declaration whose value you want exposed as a Fluent variable.
+
+---
+
+## `DeadDicePattern`
+
+**What it catches:** A match arm in a dice `match` whose pattern can never fire because its value falls entirely outside the range of achievable dice sums.
+
+**Why it matters:** A dead pattern is wasted code that gives the author a false sense of coverage. It often indicates a misunderstanding of the dice range.
+
+**Example:**
+
+```urd
+match 1d6 {
+    1..6 { narrator: "Normal roll." }
+    10   { narrator: "Impossible!" }   # ⚠ max sum of 1d6 is 6
+    _ { narrator: "Fallback." }
+}
+```
+
+**Diagnostic message:**
+
+```text
+Dead dice pattern: value 10 can never match (1d6 produces sums in range 1..=6)
+```
+
+**Suggestion:** Remove the dead arm or fix the pattern to fall within the achievable range.
+
+---
+
+## `Misspelling`
+
+**What it catches:** A word in dialogue text that does not appear in the SymSpell dictionary for the detected (or configured) language.
+
+**Why it matters:** Typos in player-facing dialogue are embarrassing and break immersion. Catching them at edit time saves a QA round-trip.
+
+> **Note:** This warning is only emitted when the `spellcheck` Cargo feature is enabled. See [Spellcheck](../tools/lsp-spellcheck.md) for configuration details.
+
+**Example:**
+
+```urd
+narrator: "You enter the mystirious cave."
+#                        ^^^^^^^^^^^ ⚠ misspelling
+```
+
+**Diagnostic message:**
+
+```text
+Misspelling: 'mystirious' — did you mean 'mysterious'?
+```
+
+Diagnostics from the spellcheck pass appear with the source tag `urd-spell` (rather than `urd`).
+
+**Suggestion:** Accept the "Replace with '…'" code action to fix the typo, or use "Add to dictionary" to suppress it for intentional non-standard words.
+
+---
+
 ## `UndefinedLabel` (warning)
 
 **What it catches:** A `jump` or `let-call` that targets a label name not defined anywhere in the script (including imports).
@@ -335,6 +441,10 @@ Infinite dialogue loop: label 'ping' is part of a cycle with no escaping path to
 | `UnusedVariable` | Warning | Declared but never used |
 | `AlwaysDeadBranch` | Warning | Condition is a compile-time constant (always true/false) |
 | `PossibleTypo` | Warning | Identifier resembles a known name (Levenshtein ≤ 2) |
+| `IdOnUnsupportedNode` | Warning | `@id` on a node that doesn't support localization IDs |
+| `FluentOnUnsupportedNode` | Warning | `@fluent` on a non-declaration node |
+| `DeadDicePattern` | Warning | Dice match arm that can never fire |
+| `Misspelling` | Warning | Misspelled word in dialogue text (requires `spellcheck` feature) |
 | `UndefinedLabel` | Warning | Jump target doesn't exist (with typo suggestion) |
 | `InfiniteDialogueLoop` | Warning | Opt-in cycle detection via `@lint(check_loops)` |
 

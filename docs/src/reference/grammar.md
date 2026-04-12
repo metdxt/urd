@@ -69,7 +69,8 @@ let_decl        = "let" IDENT [ ":" type_annotation ] "=" expr ;
 
 extern_decl     = "extern" IDENT [ ":" type_annotation ] ;
 
-type_annotation = "int" | "str" | "float" | "bool" | IDENT ;
+type_annotation = "int" | "str" | "float" | "bool" | "null"
+                | "list" | "map" | "dice" | "range" | IDENT ;
 ```
 
 ## Labels
@@ -90,6 +91,7 @@ statement       = dialogue
                 | jump_stmt
                 | return_stmt
                 | let_decl
+                | let_call_stmt
                 | assignment
                 | expr_stmt
                 | end_stmt
@@ -103,13 +105,13 @@ todo_stmt       = "todo!" "(" ")" ;
 ## Dialogue
 
 ```ebnf
-dialogue        = { decorator } expr ":" dialogue_body ;
+dialogue        = { decorator } ident_path { "," ident_path } ":" dialogue_body ;
 
 dialogue_body   = STRING
                 | "{" { STRING } "}" ;
 ```
 
-A dialogue line consists of one or more speaker expressions followed by `:` and either a single string or a multi-line block of strings.
+A dialogue line consists of one or more speaker identifier paths (comma-separated) followed by `:` and either a single string or a multi-line block of strings.
 
 ## Menus
 
@@ -138,7 +140,7 @@ pattern         = "_"
                 | IDENT "." IDENT
                 | range_pattern
                 | "[" pattern_list "]"
-                | IDENT "@" pattern ;
+                | pattern "as" IDENT ;
 
 range_pattern   = literal ".." literal
                 | literal "..=" literal ;
@@ -151,6 +153,8 @@ pattern_list    = pattern { "," pattern } [ "," ] ;
 ```ebnf
 jump_stmt       = "jump" ident_path [ "and" "return" ] ;
 
+let_call_stmt   = "let" IDENT "=" "jump" ident_path "and" "return" ;
+
 return_stmt     = "return" [ expr ] ;
 ```
 
@@ -159,7 +163,7 @@ The `jump ... and return` form is a subroutine call — control transfers to the
 ## Functions
 
 ```ebnf
-fn_def          = "fn" IDENT "(" [ param_list ] ")" "{" block "}" ;
+fn_def          = "fn" IDENT "(" [ param_list ] ")" [ "->" type_annotation ] "{" block "}" ;
 
 param_list      = param { "," param } [ "," ] ;
 
@@ -188,21 +192,19 @@ expr            = or_expr [ "=" expr ] ;
 
 or_expr         = and_expr { ( "or" | "||" ) and_expr } ;
 
-and_expr        = membership_expr { ( "and" | "&&" ) membership_expr } ;
-
-membership_expr = range_expr [ "in" range_expr ] ;
-
-range_expr      = comparison { ( ".." | "..=" ) comparison } ;
-
-comparison      = bitor_expr { ( "==" | "!=" | "<" | ">" | "<=" | ">=" ) bitor_expr } ;
+and_expr        = bitor_expr { ( "and" | "&&" ) bitor_expr } ;
 
 bitor_expr      = bitxor_expr { "|" bitxor_expr } ;
 
 bitxor_expr     = bitand_expr { "^" bitand_expr } ;
 
-bitand_expr     = shift_expr { "&" shift_expr } ;
+bitand_expr     = comparison { "&" comparison } ;
 
-shift_expr      = additive { ( "<<" | ">>" ) additive } ;
+comparison      = relational { ( "==" | "!=" ) relational } ;
+
+relational      = shift_expr { ( ">" | "<" | ">=" | "<=" | "in" ) shift_expr } ;
+
+shift_expr      = additive { ( "<<" | ">>" | ".." | "..=" ) additive } ;
 
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 
@@ -247,7 +249,7 @@ map_literal     = ":" "{" [ map_entry { "," map_entry } [ "," ] ] "}" ;
 
 map_entry       = IDENT ":" expr ;
 
-fn_literal      = "fn" "(" [ param_list ] ")" "{" expr "}" ;
+fn_literal      = "fn" "(" [ param_list ] ")" [ "->" type_annotation ] "{" block "}" ;
 ```
 
 ## Identifiers
@@ -278,15 +280,12 @@ The second form is subscript assignment for lists and maps.
 
 ### String Interpolation
 
-Strings support inline expression interpolation via `{expr}` syntax:
+Strings support inline variable interpolation via `{variable}` or `{variable.field.path}` syntax. Only identifier paths are supported — arbitrary expressions are not allowed inside interpolation braces.
 
 ```urd
 "You have {gold} gold pieces."
 "Hello, {player.name}! Your health is {health}."
-"Result: {value:.2}"
 ```
-
-Format specifiers (e.g., `:.2` for two decimal places, `:04` for zero-padded) are supported after a colon inside the braces.
 
 ### Comments
 
@@ -304,19 +303,18 @@ For quick reference, see also [Operator Reference](./operators.md).
 
 | Precedence | Operators | Associativity |
 |:----------:|-----------|:-------------:|
-| 1 | `-` (unary), `!`, `not` | Right |
-| 2 | `*`, `/`, `//`, `%` | Left |
-| 3 | `+`, `-` | Left |
-| 4 | `<<`, `>>` | Left |
+| 11 (highest) | `-` (unary), `!`, `not` | Right |
+| 10 | `*`, `/`, `//`, `%` | Left |
+| 9 | `+`, `-` | Left |
+| 8 | `<<`, `>>`, `..`, `..=` | Left |
+| 7 | `>`, `<`, `>=`, `<=`, `in` | Left |
+| 6 | `==`, `!=` | Left |
 | 5 | `&` | Left |
-| 6 | `^` | Left |
-| 7 | `\|` | Left |
-| 8 | `==`, `!=`, `<`, `>`, `<=`, `>=` | Left |
-| 9 | `and`, `&&` | Left |
-| 10 | `or`, `\|\|` | Left |
-| 11 | `..`, `..=` | Left |
-| 12 | `in` | Left |
-| 13 | `=` | Right |
+| 4 | `^` | Left |
+| 3 | `\|` | Left |
+| 2 | `and`, `&&` | Left |
+| 1 | `or`, `\|\|` | Left |
+| 0 (lowest) | `=` | Right |
 
 ---
 

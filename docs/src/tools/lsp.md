@@ -25,7 +25,7 @@ Every keystroke triggers a full reparse and analysis cycle. The server maintains
 cargo install --path crates/urd-lsp
 ```
 
-To install **without** the spellcheck feature (smaller binary, no embedded dictionaries):
+To install **without** the spellcheck feature (smaller binary, no dictionary support):
 
 ```bash
 cargo install --no-default-features --path crates/urd-lsp
@@ -69,7 +69,7 @@ For detailed information on each feature, see:
 The `spellcheck` Cargo feature is **enabled by default**. It adds:
 
 - Automatic language detection via [whatlang](https://github.com/grstrz/whatlang-rs)
-- Per-language [SymSpell](https://github.com/wolfgarbe/SymSpell) dictionaries (embedded in the binary)
+- Per-language [SymSpell](https://github.com/wolfgarbe/SymSpell) dictionaries (downloaded lazily on first use and cached locally)
 - A persistent user dictionary (`.urd-dict` file in the workspace root)
 - "Replace with '…'" and "Add to dictionary" code actions
 
@@ -81,16 +81,16 @@ The server accepts initialization options from the client:
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `spellcheckLanguage` | `string` | Force a specific language for spell checking (e.g. `"en"`, `"pl"`). When omitted, language is auto-detected per document via whatlang. |
+| `spellcheckLanguage` | `string` | Force a specific language for spell checking (e.g. `"english"`, `"german"`). When omitted, language is auto-detected per document via whatlang. Supported values: `"english"`, `"german"`, `"spanish"`, `"french"`, `"hebrew"`, `"italian"`, `"russian"`, `"chinese"`. |
 
 How you pass these options depends on your editor — see the [Zed](../editors/zed.md), [Neovim](../editors/neovim.md), and [Helix](../editors/helix.md) setup guides for examples.
 
 ## Verifying the Installation
 
-After installing, verify the binary is on your PATH:
+The server communicates over stdin/stdout and has no CLI flags — it is designed to be launched by your editor automatically. You should not need to run it manually — just configure your editor to use `urd-lsp` as the language server for `.urd` files.
+
+To confirm the binary is installed and on your `PATH`:
 
 ```bash
-urd-lsp --version
+which urd-lsp
 ```
-
-The server is designed to be launched by your editor automatically. You should not need to run it manually — just configure your editor to use `urd-lsp` as the language server for `.urd` files.

@@ -219,6 +219,84 @@ match suspect_status {
 
 ---
 
+## `NonExhaustiveDiceMatch`
+
+**What it catches:** A `match` over a dice expression where some achievable sums are not covered by any arm and there is no wildcard (`_`) fallback.
+
+**Why it's an error:** Unlike enum matches, dice matches operate on numeric sums. If the player rolls a value that no arm handles, the VM has no code path to follow — identical to `NonExhaustiveMatch` but for dice expressions.
+
+**Example:**
+
+```urd
+@entry
+label roll {
+    match 1d6 {
+        1..3 {
+            narrator: "Low roll."
+        }
+    }
+    end!()
+}
+```
+
+**Diagnostic:**
+
+```text
+Non-exhaustive dice match: missing sums 4, 5, 6
+```
+
+Either add arms to cover the remaining sums or add a wildcard arm:
+
+```urd
+match 1d6 {
+    1..3 { narrator: "Low roll." }
+    _    { narrator: "High roll." }
+}
+```
+
+---
+
+## `DiceMatchRequiresWildcard`
+
+**What it catches:** A dice `match` that uses array patterns but has no `_` wildcard arm. Array-pattern exhaustiveness cannot be verified automatically, so a wildcard fallback is mandatory.
+
+**Why it's an error:** When match arms use array patterns (matching individual die faces rather than sums), the combinatorial space is too large for the analyzer to prove coverage. Requiring a wildcard guarantees the VM always has a code path.
+
+**Example:**
+
+```urd
+@entry
+label roll {
+    match 2d6 {
+        [1, 1] {
+            narrator: "Snake eyes!"
+        }
+        [6, 6] {
+            narrator: "Boxcars!"
+        }
+    }
+    end!()
+}
+```
+
+**Diagnostic:**
+
+```text
+Dice match requires a wildcard '_' arm: array pattern exhaustiveness cannot be verified automatically
+```
+
+Add a wildcard arm:
+
+```urd
+match 2d6 {
+    [1, 1] { narrator: "Snake eyes!" }
+    [6, 6] { narrator: "Boxcars!" }
+    _      { narrator: "Ordinary roll." }
+}
+```
+
+---
+
 ## `DeadEnd`
 
 **What it catches:** A label or execution path that has no terminator — no `jump`, `end!()`, `todo!()`, or `return` statement to transfer or end control flow.
@@ -373,6 +451,8 @@ The analyzer walks the scope stack (globals, label-local `let` bindings, functio
 | `EmptyMenu` | Error | Menu block with zero options |
 | `MultipleMenuDefaults` | Error | More than one `_` wildcard option in a menu |
 | `NonExhaustiveMatch` | Error | Match missing enum variants |
+| `NonExhaustiveDiceMatch` | Error | Dice match missing achievable sums |
+| `DiceMatchRequiresWildcard` | Error | Dice match with array patterns needs a `_` arm |
 | `DeadEnd` | Error | Label/path with no terminator |
 | `FluentDecorator` | Error | Invalid `@fluent` usage |
 | `IdDecorator` | Error | Invalid `@id` usage |

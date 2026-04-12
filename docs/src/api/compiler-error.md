@@ -120,11 +120,88 @@ tavern.urd ──import "main.urd"  as main  ──▶  main.urd   (circular!)
 circular import detected for 'main.urd'
 ```
 
-> **Important:** Despite being an error *variant*, circular imports are actually **handled gracefully** by the Urd compiler. The 4-phase flat compiler pre-allocates `NodeIndex` stubs for every label in both modules before any IR is emitted, so cross-module `jump` targets resolve cleanly even in circular import scenarios.
->
-> In practice, you will rarely see this error surface. The compiler detects the cycle, breaks it, and proceeds. This variant exists as a defensive measure for edge cases where the cycle cannot be resolved.
+The compiler detects circular import chains during module resolution and reports them immediately. If module A imports module B, and module B (directly or transitively) imports module A, this error is emitted with the path that closes the cycle.
 
-See the [Circular Imports example](../examples/circular-imports.md) for a working demonstration of circular imports in action.
+See the [Circular Imports example](../examples/circular-imports.md) for more context.
+
+---
+
+### `PrivateLabel(String)`
+
+A `jump` statement in one module targeted a label in another module that is not marked `@entry`. Only `@entry` labels are reachable across module boundaries.
+
+```urd
+# helper.urd
+label internal_setup {   # ← not @entry
+    narrator: "Setting up..."
+    end!()
+}
+
+# main.urd
+import "helper.urd" as helper
+@entry
+label start {
+    jump helper::internal_setup   # ← error: not an @entry label
+}
+```
+
+**Error message:**
+
+```text
+label `helper::internal_setup` is not marked `@entry` and cannot be reached from another module
+```
+
+---
+
+### `DuplicateAlias(String)`
+
+Two `import` statements in the same file used the same alias name.
+
+```urd
+import "tavern.urd" as place
+import "market.urd" as place    # ← duplicate alias
+```
+
+**Error message:**
+
+```text
+duplicate module alias `place`
+```
+
+---
+
+### `MissingImportedSymbol { symbol, module }`
+
+A named import referenced a symbol that does not exist in the target module.
+
+```urd
+import (greet) from "tavern.urd"    # ← tavern.urd has no label `greet`
+```
+
+**Error message:**
+
+```text
+symbol `greet` not found in module `tavern.urd`
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `symbol` | `String` | The symbol name that was requested |
+| `module` | `String` | The module path that was searched |
+
+---
+
+### `Internal(String)`
+
+An internal compiler error — a bug in the compiler itself, not in the user's script. If you encounter this variant, please file an issue.
+
+**Error message:**
+
+```text
+internal compiler error: <description>
+```
 
 ---
 
@@ -159,4 +236,8 @@ let graph = urd::compiler::Compiler::compile(&ast)?;
 | `DuplicateLabel(String)` | Two labels with the same name |
 | `InvalidStatement(String)` | Statement not allowed in context |
 | `ModuleLoadError { path, message }` | File couldn't be loaded |
-| `CircularImport(String)` | Circular import detected (handled gracefully) |
+| `CircularImport(String)` | Circular import chain detected |
+| `PrivateLabel(String)` | Cross-module jump to a non-`@entry` label |
+| `DuplicateAlias(String)` | Two imports share the same alias |
+| `MissingImportedSymbol { symbol, module }` | Named import references a symbol not found in the target module |
+| `Internal(String)` | Internal compiler bug |

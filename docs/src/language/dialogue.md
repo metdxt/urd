@@ -14,7 +14,7 @@ This produces a single `Event::Dialogue` that the VM yields when execution reach
 
 ## What Constitutes a Speaker
 
-The speaker position accepts any expression that resolves to a runtime value. In practice, speakers are almost always `const` bindings that hold a map with display metadata:
+The speaker position accepts an identifier path — a variable name or dotted path like `narrator` or `player.name`. In practice, speakers are almost always `const` bindings that hold a map with display metadata:
 
 ```urd
 const narrator = :{ name: "Narrator", name_color: "white" }
@@ -24,7 +24,7 @@ narrator: "You stand at the cave entrance."
 zara: "Be careful in there."
 ```
 
-However, any expression is valid in the speaker position — a variable, a function call, or a struct instance. Whatever value sits on the left side of the colon ends up in the `speakers` field of the emitted event.
+The identifier path is evaluated and the resulting value ends up in the `speakers` field of the emitted event. Speakers can be simple names (`narrator`) or dotted paths (`chars.narrator`), but not arbitrary expressions.
 
 See [Speakers](./speakers.md) for detailed guidance on defining speaker values.
 
@@ -46,17 +46,19 @@ See [Multi-line Dialogue](./multiline-dialogue.md) for more details.
 
 ## String Interpolation in Dialogue
 
-Dialogue lines support string interpolation with `{expression}` syntax:
+Dialogue lines support string interpolation with `{variable}` syntax. Only variable names and dot-paths are supported inside interpolation braces — not arbitrary expressions:
 
 ```urd
 global gold = 50
 global health = 100
 
 narrator: "You have {gold} gold and {health} health remaining."
-narrator: "That comes to {gold + health} total resource points."
+
+let total = gold + health
+narrator: "That comes to {total} total resource points."
 ```
 
-Interpolation can include field access:
+Interpolation supports field access via dot-paths:
 
 ```urd
 narrator: "{zara.name} beckons you forward."

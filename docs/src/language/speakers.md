@@ -1,6 +1,6 @@
 # Speakers
 
-In Urd, a **speaker** is the value on the left side of a dialogue statement. It identifies *who* is talking. Speakers are typically defined as `const` map literals at the top of a script, but any expression that resolves to a value can serve as a speaker.
+In Urd, a **speaker** is the value on the left side of a dialogue statement. It identifies *who* is talking. Speakers are typically defined as `const` map literals at the top of a script. The speaker position accepts an identifier path — a variable name or dotted path like `narrator` or `chars.narrator`.
 
 ## Defining Speakers as Maps
 
@@ -127,17 +127,17 @@ yaga: "Фу-фу-фу! Русским духом пахнет!"
 
 The language server's spellcheck automatically detects the script language and loads the appropriate dictionary — no configuration needed.
 
-## Speakers Are Just Expressions
+## Speakers Are Identifier Paths
 
-While `const` bindings are the idiomatic way to define speakers, the left side of a dialogue statement can be any expression that resolves to a value. This means you could technically use a variable, a function call, or even a map literal inline:
+The speaker position accepts identifier paths — simple names or dotted paths that resolve to a value. This includes `const` bindings, `let` variables, and cross-module references:
 
 ```urd
-# Inline map (works, but not recommended for readability)
-:{ name: "Mystery Voice", name_color: "gray" }: "Who goes there?"
-
 # Variable speaker
 let current_speaker = narrator
 current_speaker: "The story continues..."
+
+# Cross-module speaker
+chars.narrator: "A voice from another file."
 ```
 
-In practice, stick to top-level `const` definitions. They are self-documenting, reusable across labels, and enable static analysis.
+Arbitrary expressions (function calls, inline map literals, etc.) are **not** valid in the speaker position. In practice, stick to top-level `const` definitions. They are self-documenting, reusable across labels, and enable static analysis.

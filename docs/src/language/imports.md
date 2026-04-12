@@ -109,7 +109,11 @@ Anything defined at the top level of a file is importable:
 
 One of the most important uses of imports is jumping to labels defined in other
 files. This lets you organize a large game script into logical chapters or
-locations:
+locations.
+
+> **Important:** Cross-module jump targets **must** be decorated with `@entry`.
+> A label without `@entry` is private to its file — attempting to jump to it
+> from another module produces a `PrivateLabel` compiler error.
 
 ```urd
 # main.urd
@@ -145,9 +149,10 @@ label enter_tavern {
 }
 ```
 
-Each file can have its own `@entry` for standalone testing, but when imported,
-only the labels (and other declarations) are exposed — the importer's `@entry`
-is what drives execution.
+The `@entry` decorator on `enter_tavern` serves double duty: it makes the label
+a valid standalone entry point *and* marks it as publicly visible to other
+modules. Without `@entry`, the jump from `main.urd` would fail with a
+`PrivateLabel` error.
 
 ---
 

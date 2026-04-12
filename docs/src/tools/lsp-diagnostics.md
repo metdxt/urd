@@ -52,6 +52,18 @@ menu {
 }
 ```
 
+### MultipleMenuDefaults
+
+A `menu` block contains more than one default (`_ { ... }`) branch. Only a single default is allowed.
+
+```urd
+menu {
+    "Option A" -> a
+    _ { ... }   # first default
+    _ { ... }   # error: multiple menu defaults
+}
+```
+
 ### NonExhaustiveMatch
 
 A `match` over an enum did not cover all variants and has no wildcard arm.
@@ -81,25 +93,6 @@ match 1d6 {
 ### DiceMatchRequiresWildcard
 
 A dice `match` contains array patterns but has no `_` wildcard fallback. Array-pattern exhaustiveness cannot be verified automatically, so a wildcard arm is required.
-
-### DeadDicePattern
-
-A match arm pattern can never fire because its value falls entirely outside the range of achievable dice sums.
-
-```urd
-match 1d20 {
-    25 { ... }      # error: dead pattern — max sum is 20
-   *_ { ... }
-}
-```
-
-### UndefinedLabel
-
-A `jump` statement references a label that is not defined anywhere in the script (or imported files). If a close match exists, the diagnostic includes a suggestion.
-
-```urd
-jump statr  # error: undefined label 'statr' — did you mean 'start'?
-```
 
 ### DeadEnd
 
@@ -243,9 +236,24 @@ const narrator = :{ name: "Narrator" }
 narartor: "Hello!"  # warning: possible typo — did you mean 'narrator'?
 ```
 
-### UndefinedVar
+### UndefinedLabel
 
-A variable is referenced in a context where it might not be defined, depending on runtime flow.
+A `jump` statement references a label that is not defined anywhere in the script (or imported files). If a close match exists, the diagnostic includes a suggestion.
+
+```urd
+jump statr  # warning: undefined label 'statr' — did you mean 'start'?
+```
+
+### DeadDicePattern
+
+A match arm pattern can never fire because its value falls entirely outside the range of achievable dice sums.
+
+```urd
+match 1d20 {
+    25 { ... }      # warning: dead pattern — max sum is 20
+    _ { ... }
+}
+```
 
 ### InfiniteDialogueLoop
 
@@ -268,7 +276,16 @@ The `@id` decorator was placed on a node type that does not support localization
 
 ### FluentOnUnsupportedNode
 
-The `@fluent` decorator was applied to a node type that is not a variable declaration. The decorator has no effect.
+The `@fluent` decorator was applied to a node type that is not a dialogue or menu node. The decorator has no effect.
+
+### Misspelling
+
+A word in dialogue text was not found in the spellcheck dictionary. This diagnostic is only emitted when the `spellcheck` feature is enabled. Diagnostics appear with the source tag `urd-spell`.
+
+```urd
+narrator: "You enter the mystirious cave."
+# warning: misspelled word 'mystirious' — did you mean 'mysterious'?
+```
 
 ---
 

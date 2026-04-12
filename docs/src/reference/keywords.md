@@ -105,7 +105,7 @@ label helper {
     return
 }
 
-fn double(x: int) {
+fn double(x: int) -> int {
     return x * 2
 }
 ```
@@ -118,7 +118,7 @@ fn double(x: int) {
 |---------|---------|---------|
 | `label` | Named block definition — the basic unit of dialogue flow | `label tavern { ... }` |
 | `menu` | Choice menu — presents options to the player | `menu { "Option" { ... } }` |
-| `fn` | Function definition | `fn double(x: int) { x * 2 }` |
+| `fn` | Function definition | `fn double(x: int) -> int { return x * 2 }` |
 | `enum` | Enumeration type | `enum Faction { Guild, Empire, Rebel }` |
 | `struct` | Record type with named, typed fields | `struct Character { name: str }` |
 | `decorator` | Decorator definition (script-defined) | `decorator mood<event: dialogue>(m) { ... }` |
@@ -155,7 +155,7 @@ menu {
 Functions are pure — they run in an isolated environment with only their parameters. No access to outer scope.
 
 ```urd
-fn clamp(value: int, lo: int, hi: int) {
+fn clamp(value: int, lo: int, hi: int) -> int {
     if value < lo { return lo }
     if value > hi { return hi }
     return value
@@ -193,7 +193,7 @@ Script-defined decorators add metadata to dialogue and choice events. They can o
 
 ```urd
 decorator mood<event: dialogue>(m) {
-    :{ mood: m }
+    return :{ mood: m }
 }
 
 @mood("angry")
@@ -244,7 +244,7 @@ import Item as GameItem from "items.urd"
 | `not` | Logical NOT (unary) | `if not game_over { ... }` |
 | `in` | Membership test (Range, List, Map, String) | `if 5 in 1..10 { ... }` |
 
-The `and`, `or`, and `not` operators are equivalent to their symbolic counterparts (`&&`, `||`, `!`) but read more naturally in dialogue-heavy scripts.
+The `and` and `or` keywords are equivalent to their symbolic counterparts (`&&`, `||`) and are interchangeable. However, `not` and `!` are **not** equivalent: `not` is logical NOT (inverts truthiness), while `!` is bitwise NOT (flips every bit of an integer). See the [Operator Reference](./operators.md) for details.
 
 The `in` operator supports four right-hand side types:
 

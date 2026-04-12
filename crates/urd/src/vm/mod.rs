@@ -219,7 +219,7 @@ pub trait DiceRoller: Send + Sync {
     }
 }
 
-/// Default [`DiceRoller`] implementation backed by [`rand::rng`].
+/// Default [`DiceRoller`] implementation backed by [`fastrand`].
 ///
 /// Used by the VM unless the host replaces it via dependency injection.
 pub struct DefaultDiceRoller;

@@ -415,14 +415,23 @@ cannot define custom operator behaviour.
 
 ## String Interpolation
 
-While not technically an operator, string interpolation (`{expression}`) is
+While not technically an operator, string interpolation (`{variable}`) is
 worth noting here because it interacts with the expression system:
 
 ```urd
 narrator: "You have {gold} gold and {health} HP."
-narrator: "Damage dealt: {base_damage * multiplier}"
+narrator: "{player.name} dealt {damage} damage."
 ```
 
-Any expression valid in a normal context is valid inside `{}` interpolation
-braces. The expression is evaluated at runtime, and the result's `Display`
-representation is substituted into the string.
+Only variable names and dot-paths (e.g. `{gold}`, `{player.name}`) are
+supported inside interpolation braces. Arbitrary expressions like arithmetic
+or function calls are **not** allowed. If you need a computed value, store it
+in a variable first:
+
+```urd
+let total_damage = base_damage * multiplier
+narrator: "Damage dealt: {total_damage}"
+```
+
+The value is evaluated at runtime, and the result's `Display` representation
+is substituted into the string.

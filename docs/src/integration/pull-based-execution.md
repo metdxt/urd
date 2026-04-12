@@ -112,8 +112,15 @@ loop {
 }
 ```
 
-If you pass `None` when the VM is waiting for a choice, or pass an out-of-bounds
-index, you'll get `VmStep::Error(VmError::ChoiceOutOfBounds { .. })`.
+If you pass `None` when the VM is waiting for a choice, the behaviour depends on
+whether the menu has a default branch:
+
+- **No default** — the VM re-emits the same `Event::Choice`, giving the host
+  another chance to provide a selection.
+- **`has_default: true`** — the VM follows the `_ { ... }` fallback branch.
+
+Only passing `Some(index)` where `index >= options.len()` produces
+`VmStep::Error(VmError::ChoiceOutOfBounds { .. })`.
 
 ## Why Pull-Based?
 

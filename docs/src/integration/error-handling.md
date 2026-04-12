@@ -214,12 +214,45 @@ Failed to load a module during import resolution.
 CompilerError::ModuleLoadError { path: String, message: String }
 ```
 
+### `PrivateLabel`
+
+A cross-module jump targeted a label that exists but is not marked `@entry`.
+
+```rust
+CompilerError::PrivateLabel(String)
+```
+
+### `DuplicateAlias`
+
+Two whole-module imports used the same alias name.
+
+```rust
+CompilerError::DuplicateAlias(String)
+```
+
+### `MissingImportedSymbol`
+
+A symbol import requested a label that does not exist in the target module.
+
+```rust
+CompilerError::MissingImportedSymbol { symbol: String, module: String }
+```
+
 ### `CircularImport`
 
 A circular import chain was detected (e.g. `A` imports `B` which imports `A`).
 
 ```rust
 CompilerError::CircularImport(String)
+```
+
+### `Internal`
+
+An internal compiler invariant was violated. This indicates a compiler bug —
+please report it.
+
+```rust
+CompilerError::Internal(String)
 ```
 
 ---

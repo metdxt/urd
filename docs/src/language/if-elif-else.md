@@ -189,4 +189,24 @@ However, deeply nested conditionals can be hard to read. Consider using [match](
 
 ## Truthiness
 
-Conditions are expected to evaluate to `bool`. Non-boolean values in the condition position will produce a type error at runtime. Always ensure your conditions resolve to `true` or `false`.
+Conditions are not restricted to `bool` values. The VM evaluates any value for
+**truthiness** using the following rules:
+
+| Value                          | Truthy? |
+|--------------------------------|---------|
+| `null`                         | false   |
+| `Bool(b)`                      | `b`     |
+| `Int(0)`                       | false   |
+| `Float(0.0)` or `Float(NaN)`  | false   |
+| Empty `List`                   | false   |
+| Empty `Roll`                   | false   |
+| Empty `Range`                  | false   |
+| Everything else                | true    |
+
+This means you can write conditions like `if gold { ... }` (truthy when
+`gold` is non-zero) or `if inventory { ... }` (truthy when the list is
+non-empty). For clarity, explicit comparisons (`gold > 0`) are usually
+preferred, but truthiness-based conditions work and are well-defined.
+
+For the full truthiness specification, see the
+[Operator Reference](../reference/operators.md#truthiness).

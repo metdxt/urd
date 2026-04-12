@@ -22,12 +22,13 @@ label intro {
 
 ### Newline-Significant
 
-Statements are separated by newlines. There are no semicolons. Each statement occupies its own line.
+Statements are separated by newlines (semicolons are also accepted as statement separators). Each statement typically occupies its own line.
 
 ```urd
 let x = 10
 let y = 20
-narrator: "The sum is {x + y}"
+let sum = x + y
+narrator: "The sum is {sum}"
 ```
 
 ### Comments
@@ -72,14 +73,14 @@ menu {
 }
 ```
 
-### Expression-Oriented Where Possible
+### Rich Expressions
 
-Many constructs in Urd are expressions that produce values. Arithmetic, comparisons, logical operators, string interpolation, and function calls can all appear anywhere an expression is expected.
+Arithmetic, comparisons, logical operators, string interpolation, and function calls can all appear anywhere an expression is expected.
 
 ```urd
-let damage = if has_sword { 20 } else { 5 }
 let greeting = "Hello, {player.name}!"
 let roll_result = 2d6
+let total = base_damage * multiplier
 ```
 
 ## What Comes Next

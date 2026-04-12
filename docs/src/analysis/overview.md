@@ -90,9 +90,9 @@ All passes run to completion independently. An error in one pass does **not** su
 | Type Mismatch | `types` | Wrong primitive type in a typed declaration |
 | Struct Mismatch | `types` | Missing or wrongly-typed struct fields |
 | Top-Level Flow | `top_level` | Flow statements outside any label |
-| Duplicate Entry | `top_level` | Multiple labels with `@entry` |
 | Const Reassignment | `const_reassign` | Assigning to a `const` binding |
 | Empty Menu | `menu_structure` | Menu block with zero options |
+| Multiple Menu Defaults | `menu_structure` | More than one `_` wildcard option in a menu |
 | Non-Exhaustive Match | `exhaustiveness` | Match missing enum or dice variants |
 | Dead End | `dead_end` | Label with no terminator |
 | Fluent Decorator | `fluent_decorator` | Invalid `@fluent` usage |

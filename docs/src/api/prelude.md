@@ -10,9 +10,9 @@ use urd::prelude::*;
 
 ```rust
 pub use urd::{
-    ChoiceEvent, CompilerError, DecoratorRegistry, Event,
-    FileLoader, FsLoader, Localizer, MemLoader,
-    RuntimeValue, Vm, VmError, VmStep,
+    ChoiceEvent, CompilerError, DefaultDiceRoller, DecoratorRegistry,
+    DiceRoller, Event, FileLoader, FsLoader, IrGraph, Localizer,
+    MemLoader, RuntimeValue, Vm, VmError, VmStep,
 };
 ```
 
@@ -26,8 +26,11 @@ pub use urd::{
 | [`Event`](./event.md) | An observable event emitted by the VM — dialogue or choice | Two variants: `Dialogue { ... }` and `Choice { ... }` |
 | [`ChoiceEvent`](./event.md) | A single option inside a `Choice` event | Contains the label text, decorator fields, localization data |
 | [`RuntimeValue`](./runtime-value.md) | The universal value type used throughout the runtime | Null, Bool, Int, Float, Str, Dice, List, Map, Struct, and more |
+| [`IrGraph`](../integration/vm.md) | The compiled intermediate representation of a script | Produced by `Compiler::compile`, consumed by `Vm::new` |
 | [`DecoratorRegistry`](../integration/decorator-registry.md) | Registry for host-side decorator handlers | Register Rust closures that receive decorator arguments and return field maps |
 | [`CompilerError`](./compiler-error.md) | Error type from the compilation phase | Unknown labels, duplicate labels, module load failures, circular imports |
+| [`DiceRoller`](../integration/vm.md) | Trait for custom dice-rolling implementations | Implement to control how `NdM` dice expressions are resolved at runtime |
+| [`DefaultDiceRoller`](../integration/vm.md) | Built-in `DiceRoller` using a thread-local RNG | The default roller used when no custom roller is attached |
 | [`FileLoader`](../integration/file-loaders.md) | Trait for loading script files during import resolution | Implement this to control how `import "path"` resolves |
 | [`FsLoader`](../integration/file-loaders.md) | Built-in `FileLoader` that reads from the filesystem | The default loader used by `quest run` |
 | [`MemLoader`](../integration/file-loaders.md) | Built-in `FileLoader` backed by an in-memory map | Useful for testing, embedding scripts in binaries, or WASM targets |
@@ -37,12 +40,13 @@ pub use urd::{
 
 ```rust
 use urd::prelude::*;
+use urd::compiler::Compiler; // Not in the prelude — import explicitly
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load and compile
     let src = std::fs::read_to_string("dialogue.urd")?;
     let ast = urd::compiler::loader::parse_source(&src)?;
-    let graph = urd::compiler::Compiler::compile(&ast)?;
+    let graph = Compiler::compile(&ast)?;
 
     // 2. Create the VM with an empty decorator registry
     let registry = DecoratorRegistry::new();

@@ -22,13 +22,13 @@ tavern.urd ──import "main.urd"  as main  ──▶  main.urd
 ## How to Run
 
 ```bash
-cargo run --bin quest -- run examples/circular/main.urd
+quest run examples/circular/main.urd
 ```
 
 To visualise the cross-module control-flow graph:
 
 ```bash
-cargo run --bin quest -- export -f mermaid examples/circular/main.urd
+quest export -f mermaid examples/circular/main.urd
 ```
 
 ## The Story

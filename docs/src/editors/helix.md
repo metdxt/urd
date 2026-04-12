@@ -91,7 +91,7 @@ If you installed `urd-lsp` with the `spellcheck` feature (the default), you can 
 command = "urd-lsp"
 
 [language-server.urd-lsp.config]
-spellcheckLanguage = "en"
+spellcheckLanguage = "english"
 ```
 
 ---

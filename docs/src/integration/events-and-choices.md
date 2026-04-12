@@ -81,10 +81,10 @@ A `Choice` event is emitted when the VM encounters a `menu` block. It pauses exe
 ```rust
 Event::Choice {
     options: Vec<ChoiceEvent>,
-    has_default: bool,
     fields: HashMap<String, RuntimeValue>,
     loc_id: Option<String>,
     fluent_vars: HashMap<String, RuntimeValue>,
+    has_default: bool,
 }
 ```
 
@@ -93,10 +93,10 @@ Event::Choice {
 | Field | Type | Description |
 |-------|------|-------------|
 | `options` | `Vec<ChoiceEvent>` | The available choices the player can pick from. Default (`_`) options are **excluded**. |
-| `has_default` | `bool` | `true` if the menu has a `_ { ... }` fallback option. |
 | `fields` | `HashMap<String, RuntimeValue>` | Decorator fields applied to the menu as a whole. |
 | `loc_id` | `Option<String>` | Localization key for the entire menu node. |
 | `fluent_vars` | `HashMap<String, RuntimeValue>` | Fluent variable bindings for the menu scope. |
+| `has_default` | `bool` | `true` if the menu has a `_ { ... }` fallback option. |
 
 ### ChoiceEvent
 

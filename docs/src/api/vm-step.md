@@ -278,7 +278,7 @@ vm.set_step_budget(None);
 StackOverflow(usize)
 ```
 
-The call stack depth limit was reached. The default limit is **256 frames**. This indicates unbounded mutual recursion or a pathological `jump ... and return` cycle in the script.
+The call stack depth limit was reached. The default limit is **256 frames**. This indicates deeply nested `jump ... and return` calls or recursive `let` calls in the script.
 
 **Message:** `call stack overflow: maximum call depth ({0}) exceeded`
 
@@ -320,6 +320,76 @@ VmStep::Error(VmError::ChoiceOutOfBounds { len, .. }) => {
     // Re-prompt the player with the correct range
     choice = Some(prompt_player(len));
 }
+```
+
+---
+
+## `Vm` Methods
+
+Beyond the core `vm.next(choice)` loop, the `Vm` type exposes several additional public methods for construction and introspection.
+
+### `Vm::new(graph, registry)`
+
+The primary constructor. Creates a VM that begins execution at the graph's default entry point.
+
+```rust
+let mut vm = Vm::new(graph, registry)?;
+```
+
+Returns `Err(VmError::UnknownDecorator)` if any decorator used in the script is not registered in the `DecoratorRegistry`.
+
+---
+
+### `Vm::new_at(graph, registry, label)`
+
+Creates a VM that begins execution at a specific `@entry` label instead of the default entry point.
+
+```rust
+let mut vm = Vm::new_at(graph, registry, "tavern_intro")?;
+```
+
+Returns `Err(VmError::UnknownLabel(...))` if `label` is not an `@entry` label in the graph. Non-entry labels cannot be targeted — they are private to their module.
+
+---
+
+### `Vm::with_localizer(self, localizer) -> Self`
+
+Builder method to attach a `Localizer` implementation to the VM. The `localizer` parameter is an `Arc<dyn Localizer>`, allowing shared ownership across threads. When a localizer is present, the VM populates the `localized_text` / `localized_label` fields on `Event::Dialogue` and `ChoiceEvent`.
+
+```rust
+let vm = Vm::new(graph, registry)?
+    .with_localizer(Arc::new(my_localizer));
+```
+
+---
+
+### `Vm::with_dice_roller(self, roller) -> Self`
+
+Builder method to attach a custom `DiceRoller` implementation. By default the VM uses `DefaultDiceRoller` (which delegates to `rand`). Supply your own roller for deterministic testing or custom probability distributions.
+
+```rust
+let vm = Vm::new(graph, registry)?
+    .with_dice_roller(SeededRoller::new(42));
+```
+
+---
+
+### `Vm::env(&self)`
+
+Read-only access to the current variable environment. Returns a reference to the VM's environment, which you can inspect to read variable bindings during execution.
+
+```rust
+let env = vm.env();
+```
+
+---
+
+### `Vm::graph(&self)`
+
+Read-only access to the compiled IR graph backing this VM instance.
+
+```rust
+let graph = vm.graph();
 ```
 
 ---

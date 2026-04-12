@@ -10,7 +10,7 @@ Spellcheck is included by default:
 cargo install --path crates/urd-lsp
 ```
 
-To build **without** spellcheck (smaller binary, no embedded dictionaries):
+To build **without** spellcheck (smaller binary, no dictionary support):
 
 ```bash
 cargo install --no-default-features --path crates/urd-lsp
@@ -18,7 +18,9 @@ cargo install --no-default-features --path crates/urd-lsp
 
 ## How It Works
 
-The spellcheck system uses [SymSpell](https://github.com/wolfgarbe/SymSpell) for fast approximate string matching against built-in dictionaries. Language detection is performed automatically via [whatlang](https://github.com/grstreten/whatlang), so the server can handle scripts written in different natural languages.
+The spellcheck system uses [SymSpell](https://github.com/wolfgarbe/SymSpell) for fast approximate string matching. Language detection is performed automatically via [whatlang](https://github.com/grstrz/whatlang-rs), so the server can handle scripts written in different natural languages.
+
+Dictionaries are **not** embedded in the binary. Instead, they are downloaded lazily from the [hermitdave/FrequencyWords](https://github.com/hermitdave/FrequencyWords) corpus the first time a language is used, and cached locally under `{cache_dir}/urd-spellcheck/` (e.g. `~/.cache/urd-spellcheck/` on Linux). This means **network access is required on first use** of each language. Subsequent runs use the cached dictionaries.
 
 Spellcheck runs **on save** (not on every keystroke) to avoid the latency of dictionary lookups during interactive editing. Diagnostics from the spellcheck pass appear alongside the regular analysis diagnostics with the source tag `urd-spell`.
 
@@ -31,12 +33,14 @@ By default, the server auto-detects the language of dialogue text using whatlang
 ```json
 {
   "initializationOptions": {
-    "spellcheckLanguage": "en"
+    "spellcheckLanguage": "english"
   }
 }
 ```
 
 When set, all files in the workspace use the specified language for spellchecking, bypassing automatic detection.
+
+Supported languages: `"english"`, `"german"`, `"spanish"`, `"french"`, `"hebrew"`, `"italian"`, `"russian"`, `"chinese"`.
 
 ## User Dictionary
 
@@ -106,5 +110,5 @@ narrator: "You enter the mystirious cave."
 ## Limitations
 
 - Spellcheck only examines **dialogue text** (string content in dialogue lines and menu option labels). Variable names, label names, and comments are not checked.
-- SymSpell dictionaries are embedded in the binary at compile time. The set of supported languages depends on the dictionaries bundled with the `spellcheck` feature.
+- Dictionaries are downloaded on first use from the [FrequencyWords](https://github.com/hermitdave/FrequencyWords) corpus and cached under `{cache_dir}/urd-spellcheck/`. Network access is required the first time each language is used. Supported languages: English, German, Spanish, French, Hebrew, Italian, Russian, and Chinese.
 - The user dictionary is workspace-scoped. There is no global dictionary across projects — each workspace has its own `.urd-dict`.

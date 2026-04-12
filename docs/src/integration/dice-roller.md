@@ -12,9 +12,14 @@ pub trait DiceRoller: Send + Sync {
     fn roll_individual(&self, count: u32, sides: u32) -> Vec<i64>;
 
     /// Roll and return the total (sum of all individual results).
-    /// Defaults to summing `roll_individual`.
+    ///
+    /// The default implementation uses checked addition and saturates to
+    /// `i64::MAX` on overflow.
     fn roll(&self, count: u32, sides: u32) -> i64 {
-        self.roll_individual(count, sides).iter().sum()
+        self.roll_individual(count, sides)
+            .iter()
+            .try_fold(0i64, |acc, &x| acc.checked_add(x))
+            .unwrap_or(i64::MAX)
     }
 }
 ```
@@ -22,7 +27,7 @@ pub trait DiceRoller: Send + Sync {
 The trait has two methods:
 
 - **`roll_individual`** — the core method you must implement. Returns a `Vec<i64>` with one entry per die rolled, each in the range `1..=sides`.
-- **`roll`** — a convenience method that sums the individual results. You generally don't need to override this unless you want to optimize the common case.
+- **`roll`** — a convenience method that sums the individual results using checked arithmetic, saturating to `i64::MAX` on overflow. You generally don't need to override this unless you want to optimize the common case.
 
 Both methods must be safe to call from any thread (`Send + Sync`).
 
@@ -114,25 +119,22 @@ impl DiceRoller for NarrativeRoller {
 
 ## Setting the Dice Roller
 
-The dice roller is set on the VM's `Environment` via the `set_dice_roller` method:
+Use the `with_dice_roller` builder method on `Vm` to replace the default roller.
+Call it before the first `vm.next()` invocation:
 
 ```rust
-env.set_dice_roller(Box::new(FixedRoller));
+use urd::prelude::*;
+use urd::compiler::Compiler;
+
+let graph = Compiler::compile(&ast)?;
+let registry = DecoratorRegistry::new();
+
+let mut vm = Vm::new(graph, registry)?
+    .with_dice_roller(FixedRoller);
 ```
 
-> **Note:** The `set_dice_roller` method is `pub` on `Environment`, but the VM currently only exposes an immutable `env()` accessor. Within the crate (e.g. in tests), you can access it through `vm.state.env.set_dice_roller(...)`. A public `with_dice_roller` builder method on `Vm` may be added in a future release.
-
-For now, the practical approach for setting a custom roller from outside the crate is to configure the environment before constructing the VM, or to use the internal test helper pattern:
-
-```rust
-fn build_vm_with_roller(ast: Ast, roller: impl DiceRoller + 'static) -> Vm {
-    let graph = Compiler::compile(&ast).expect("compile failed");
-    let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init failed");
-    // Internal access — available within the urd crate
-    vm.state.env.set_dice_roller(Box::new(roller));
-    vm
-}
-```
+`with_dice_roller` accepts any `impl DiceRoller + 'static` and returns `Self`,
+so it chains naturally with `with_localizer` and other builder methods.
 
 ## Dice in Urd Scripts
 

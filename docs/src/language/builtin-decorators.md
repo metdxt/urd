@@ -135,7 +135,9 @@ Duplicate `@id` values within the same file are also flagged.
 ## `@lint`
 
 Enables opt-in analysis passes that are too expensive or too opinionated to run
-by default. Pass the name of the lint check as a string argument.
+by default. Pass the name of the lint check as an identifier or string argument.
+
+Both `@lint(check_loops)` and `@lint("check_loops")` are accepted.
 
 ### `@lint(check_loops)`
 
