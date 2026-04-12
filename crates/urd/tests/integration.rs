@@ -50,3 +50,6 @@ mod builtin_methods;
 
 #[path = "integration/in_operator_and_functions.rs"]
 mod in_operator_and_functions;
+
+#[path = "integration/example_smoke.rs"]
+mod example_smoke;

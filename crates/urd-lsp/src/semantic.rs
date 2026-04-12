@@ -28,6 +28,8 @@ pub enum SymbolKind {
     EnumVariant,
     /// A `struct Name { ... }` declaration.
     Struct,
+    /// A `fn name(...) { ... }` definition.
+    Function,
     /// A `decorator name(...) { ... }` definition.
     Decorator,
     /// An `import "..." as name` statement.
@@ -44,6 +46,7 @@ impl std::fmt::Display for SymbolKind {
             SymbolKind::Enum => write!(f, "enum"),
             SymbolKind::EnumVariant => write!(f, "enum variant"),
             SymbolKind::Struct => write!(f, "struct"),
+            SymbolKind::Function => write!(f, "function"),
             SymbolKind::Decorator => write!(f, "decorator"),
             SymbolKind::Import => write!(f, "import"),
         }
@@ -441,6 +444,39 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
             }
         }
 
+        // ── Function definitions ─────────────────────────────────────────
+        AstContent::FnDef {
+            name: Some(fn_name),
+            params,
+            ret_type,
+            body,
+            ..
+        } => {
+            let param_list: Vec<String> = params
+                .iter()
+                .map(|p| {
+                    if let Some(ta) = &p.type_annotation {
+                        format!("{}: {}", p.name, format_type_annotation(ta))
+                    } else {
+                        p.name.clone()
+                    }
+                })
+                .collect();
+            let ret_str = ret_type
+                .as_ref()
+                .map(|ta| format!(" -> {}", format_type_annotation(ta)))
+                .unwrap_or_default();
+            out.push(make_symbol(
+                fn_name.clone(),
+                SymbolKind::Function,
+                ast.span(),
+                ret_type.clone(),
+                Some(format!("fn {fn_name}({}){ret_str}", param_list.join(", "))),
+                ast.doc_comment.clone(),
+            ));
+            collect_symbols_recursive(body, out);
+        }
+
         // ── Decorator definitions ────────────────────────────────────────
         AstContent::DecoratorDef {
             name,
@@ -692,6 +728,20 @@ fn find_definition_recursive(ast: &Ast, name: &str) -> Option<SimpleSpan> {
         } => {
             if dec_name == name {
                 return Some(ast.span());
+            }
+            find_definition_recursive(body, name)
+        }
+
+        AstContent::FnDef {
+            name: Some(fn_name),
+            name_span,
+            body,
+            ..
+        } => {
+            if fn_name == name {
+                // Prefer the name_span (just the function name token) over
+                // the whole FnDef span.
+                return name_span.map(|ns| ns.0).or_else(|| Some(ast.span()));
             }
             find_definition_recursive(body, name)
         }
@@ -1090,6 +1140,15 @@ fn hover_for_symbol(sym: &Symbol, root: &Ast, symbols: &[Symbol]) -> String {
                 format!("```urd\n{detail}\n```")
             } else {
                 format!("```urd\nstruct {}\n```", sym.name)
+            };
+            append_doc_comment(hover, sym)
+        }
+
+        SymbolKind::Function => {
+            let hover = if let Some(detail) = &sym.detail {
+                format!("```urd\n{detail}\n```")
+            } else {
+                format!("```urd\nfn {}\n```", sym.name)
             };
             append_doc_comment(hover, sym)
         }

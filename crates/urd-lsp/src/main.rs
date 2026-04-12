@@ -85,6 +85,7 @@ fn urd_symbol_kind_to_lsp(kind: &UrdSymbolKind) -> SymbolKind {
         UrdSymbolKind::EnumVariant => SymbolKind::ENUM_MEMBER,
         UrdSymbolKind::Struct => SymbolKind::STRUCT,
         UrdSymbolKind::Decorator => SymbolKind::FUNCTION,
+        UrdSymbolKind::Function => SymbolKind::FUNCTION,
         UrdSymbolKind::Import => SymbolKind::MODULE,
     }
 }
@@ -100,6 +101,7 @@ fn urd_symbol_kind_to_completion(kind: &UrdSymbolKind) -> CompletionItemKind {
         UrdSymbolKind::EnumVariant => CompletionItemKind::ENUM_MEMBER,
         UrdSymbolKind::Struct => CompletionItemKind::STRUCT,
         UrdSymbolKind::Decorator => CompletionItemKind::FUNCTION,
+        UrdSymbolKind::Function => CompletionItemKind::FUNCTION,
         UrdSymbolKind::Import => CompletionItemKind::MODULE,
     }
 }
@@ -1324,6 +1326,7 @@ mod tests {
             UrdSymbolKind::EnumVariant,
             UrdSymbolKind::Struct,
             UrdSymbolKind::Decorator,
+            UrdSymbolKind::Function,
             UrdSymbolKind::Import,
         ];
         for k in &kinds {

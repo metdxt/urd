@@ -63,6 +63,9 @@ module.exports = grammar({
     [$._expr, $.subscript_assignment],
     // subscript_assignment vs plain assignment — both start with identifier_path
     [$.assignment, $.subscript_assignment],
+    // function_definition vs anonymous_function — both start with `fn`
+    // but named has an identifier before `(`, anonymous goes straight to `(`
+    [$.function_definition, $.anonymous_function],
   ],
 
   // Tokens that must be matched as complete atomic units.
@@ -95,6 +98,7 @@ module.exports = grammar({
         $.menu_statement,
         $.enum_declaration,
         $.struct_declaration,
+        $.function_definition,
         $.decorator_definition,
         $.decorated_statement,
         $.import_statement,
@@ -252,6 +256,7 @@ module.exports = grammar({
         $.paren_expr,
         $.unary_expr,
         $.binary_expr,
+        $.anonymous_function,
         $.end_bang,
         $.todo_bang,
       ),
@@ -601,6 +606,46 @@ module.exports = grammar({
 
     struct_field: ($) =>
       seq(field("name", $.identifier), field("type", $.type_annotation)),
+
+    // -----------------------------------------------------------------------
+    // Function definitions
+    // -----------------------------------------------------------------------
+
+    // fn name(param, param: Type, ...) -> ReturnType { body }
+    function_definition: ($) =>
+      seq(
+        "fn",
+        field("name", $.identifier),
+        "(",
+        commaSep(field("param", $.function_param)),
+        optional(","),
+        ")",
+        optional(field("return_type", $.return_type)),
+        field("body", $.block),
+      ),
+
+    // fn(param, param: Type, ...) -> ReturnType { body }
+    // Anonymous functions are expressions (passed to .map(), .filter(), etc.)
+    anonymous_function: ($) =>
+      seq(
+        "fn",
+        "(",
+        commaSep(field("param", $.function_param)),
+        optional(","),
+        ")",
+        optional(field("return_type", $.return_type)),
+        field("body", $.block),
+      ),
+
+    // A single function parameter with an optional type annotation.
+    function_param: ($) =>
+      seq(
+        field("name", $.identifier),
+        optional(field("type", $.type_annotation)),
+      ),
+
+    // -> TypeName
+    return_type: ($) => seq("->", field("type", $.type_name)),
 
     // -----------------------------------------------------------------------
     // Decorator definitions  &  decorator application

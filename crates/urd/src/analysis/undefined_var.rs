@@ -305,6 +305,12 @@ fn collect_global_names(ast: &Ast) -> HashSet<String> {
             AstContent::DecoratorDef { name, .. } => {
                 names.insert(name.clone());
             }
+            AstContent::FnDef {
+                name: Some(fn_name),
+                ..
+            } => {
+                names.insert(fn_name.clone());
+            }
             _ => {}
         }
     }
@@ -870,5 +876,70 @@ label start {
 "#,
         );
         assert_undefined(&errs, "MAX");
+    }
+
+    #[test]
+    fn top_level_fn_name_visible_in_labels() {
+        // Named functions defined at the top level are stored as
+        // `RuntimeValue::Function` in the environment by the compiler
+        // (`IrNodeKind::DefineFunction`).  They must be treated as
+        // valid identifiers inside label scopes — e.g. when passed
+        // by name to higher-order list methods like `.map(double)`.
+        assert_no_errors(&errors(
+            r#"
+fn double(x) -> int {
+    return x * 2
+}
+fn sum_two(a, b) -> int {
+    return a + b
+}
+@entry
+label start {
+    let xs = [1, 2, 3]
+    let doubled = xs.map(double)
+    let total = xs.reduce(0, sum_two)
+    end!()
+}
+"#,
+        ));
+    }
+
+    #[test]
+    fn top_level_fn_name_visible_across_multiple_labels() {
+        // The function name should be in scope for every label, not just the first.
+        assert_no_errors(&errors(
+            r#"
+fn greet(name) -> str {
+    return "hello"
+}
+@entry
+label a {
+    let x = greet("world")
+    jump b
+}
+label b {
+    let y = greet("urd")
+    end!()
+}
+"#,
+        ));
+    }
+
+    #[test]
+    fn anonymous_fn_not_in_global_scope() {
+        // Only *named* FnDef nodes register a global name.
+        // An anonymous function in statement position should not
+        // magically create a binding visible elsewhere.
+        let errs = errors(
+            r#"
+fn(x) { return x }
+@entry
+label start {
+    let y = mystery
+    end!()
+}
+"#,
+        );
+        assert_undefined(&errs, "mystery");
     }
 }

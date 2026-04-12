@@ -1943,3 +1943,176 @@ jump intro
   (line_comment)
   (jump_statement
     label: (identifier_path (identifier))))
+
+================================================================================
+Function definition minimal
+================================================================================
+
+fn greet() { return "hello" }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    body: (block
+      (return_statement
+        value: (string
+          (string_literal_fragment))))))
+
+================================================================================
+Function definition with params
+================================================================================
+
+fn add(a, b) { return a + b }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    param: (function_param
+      name: (identifier))
+    param: (function_param
+      name: (identifier))
+    body: (block
+      (return_statement
+        value: (binary_expr
+          left: (identifier_path (identifier))
+          operator: (binary_operator)
+          right: (identifier_path (identifier)))))))
+
+================================================================================
+Function definition with typed params
+================================================================================
+
+fn add(a: int, b: int) -> int { return a + b }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    param: (function_param
+      name: (identifier)
+      type: (type_annotation
+        (type_name)))
+    param: (function_param
+      name: (identifier)
+      type: (type_annotation
+        (type_name)))
+    return_type: (return_type
+      type: (type_name))
+    body: (block
+      (return_statement
+        value: (binary_expr
+          left: (identifier_path (identifier))
+          operator: (binary_operator)
+          right: (identifier_path (identifier)))))))
+
+================================================================================
+Function definition with return type
+================================================================================
+
+fn double(x) -> int { return x * 2 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    param: (function_param
+      name: (identifier))
+    return_type: (return_type
+      type: (type_name))
+    body: (block
+      (return_statement
+        value: (binary_expr
+          left: (identifier_path (identifier))
+          operator: (binary_operator)
+          right: (integer))))))
+
+================================================================================
+Function definition no return type
+================================================================================
+
+fn noop() { end!() }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    body: (block
+      (end_bang))))
+
+================================================================================
+Anonymous function expression
+================================================================================
+
+let f = fn(x) { return x * 2 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    value: (anonymous_function
+      param: (function_param
+        name: (identifier))
+      body: (block
+        (return_statement
+          value: (binary_expr
+            left: (identifier_path (identifier))
+            operator: (binary_operator)
+            right: (integer)))))))
+
+================================================================================
+Anonymous function with return type
+================================================================================
+
+let f = fn(x: int) -> int { return x * 2 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    value: (anonymous_function
+      param: (function_param
+        name: (identifier)
+        type: (type_annotation
+          (type_name)))
+      return_type: (return_type
+        type: (type_name))
+      body: (block
+        (return_statement
+          value: (binary_expr
+            left: (identifier_path (identifier))
+            operator: (binary_operator)
+            right: (integer)))))))
+
+================================================================================
+Function passed to method call
+================================================================================
+
+let r = xs.map(fn(x) { return x + 1 })
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    name: (identifier_path (identifier))
+    value: (call_expr
+      function: (identifier_path
+        (identifier)
+        (identifier))
+      argument: (anonymous_function
+        param: (function_param
+          name: (identifier))
+        body: (block
+          (return_statement
+            value: (binary_expr
+              left: (identifier_path (identifier))
+              operator: (binary_operator)
+              right: (integer))))))))

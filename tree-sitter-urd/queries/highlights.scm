@@ -28,6 +28,9 @@
 "label"  @keyword.other
 "menu"   @keyword.other
 
+; Function definition
+"fn"     @keyword.function
+
 ; Type definitions
 "enum"      @keyword.storage.type
 "struct"    @keyword.storage.type
@@ -63,6 +66,9 @@
 
 ; Assignment `=`
 "=" @operator
+
+; Arrow operator (return type)
+"->" @operator
 
 ; ── Literals ──────────────────────────────────────────────────────────────────
 
@@ -187,14 +193,11 @@
 (import_symbol
   alias: (identifier) @namespace)
 
-; ── Function / Call ───────────────────────────────────────────────────────────
-
-(call_expr
-  function: (identifier_path) @function)
-
 ; ── Variables & Paths ─────────────────────────────────────────────────────────
+; (must appear before more-specific identifier captures so that
+;  later patterns like function names / parameters can override)
 
-; Generic identifier paths not matched by a more specific rule above
+; Generic identifier paths not matched by a more specific rule below
 (identifier_path) @variable
 
 ; Bare identifiers
@@ -202,6 +205,20 @@
 
 ; Wildcard `_` in match patterns
 (wildcard) @variable.builtin
+
+; ── Function / Call ───────────────────────────────────────────────────────────
+
+; Named function definitions  fn name(…) { … }
+(function_definition
+  name: (identifier) @function)
+
+; Function parameters  fn name(x: int, y) { … }
+(function_param
+  name: (identifier) @variable.parameter)
+
+; Call expressions  foo(…)
+(call_expr
+  function: (identifier_path) @function)
 
 ; ── Punctuation ───────────────────────────────────────────────────────────────
 
