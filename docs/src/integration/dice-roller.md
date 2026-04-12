@@ -28,17 +28,15 @@ Both methods must be safe to call from any thread (`Send + Sync`).
 
 ## Default Implementation
 
-The `DefaultDiceRoller` uses `rand::rng()` to produce cryptographically adequate random numbers:
+The `DefaultDiceRoller` uses `fastrand` to produce random numbers:
 
 ```rust
 pub struct DefaultDiceRoller;
 
 impl DiceRoller for DefaultDiceRoller {
     fn roll_individual(&self, count: u32, sides: u32) -> Vec<i64> {
-        use rand::RngExt;
-        let mut rng = rand::rng();
         (0..count)
-            .map(|_| rng.random_range(1..=sides) as i64)
+            .map(|_| fastrand::u32(1..=sides) as i64)
             .collect()
     }
 }
@@ -70,24 +68,22 @@ For replay systems or save/load, you might want a seeded RNG:
 use std::sync::Mutex;
 
 struct SeededRoller {
-    rng: Mutex<rand::rngs::StdRng>,
+    rng: Mutex<fastrand::Rng>,
 }
 
 impl SeededRoller {
     fn new(seed: u64) -> Self {
-        use rand::SeedableRng;
         SeededRoller {
-            rng: Mutex::new(rand::rngs::StdRng::seed_from_u64(seed)),
+            rng: Mutex::new(fastrand::Rng::with_seed(seed)),
         }
     }
 }
 
 impl DiceRoller for SeededRoller {
     fn roll_individual(&self, count: u32, sides: u32) -> Vec<i64> {
-        use rand::RngExt;
         let mut rng = self.rng.lock().unwrap();
         (0..count)
-            .map(|_| rng.random_range(1..=sides) as i64)
+            .map(|_| rng.u32(1..=sides) as i64)
             .collect()
     }
 }
@@ -104,11 +100,9 @@ struct NarrativeRoller {
 
 impl DiceRoller for NarrativeRoller {
     fn roll_individual(&self, count: u32, sides: u32) -> Vec<i64> {
-        use rand::RngExt;
-        let mut rng = rand::rng();
         (0..count)
             .map(|_| {
-                let base = rng.random_range(1..=sides) as f64;
+                let base = fastrand::u32(1..=sides) as f64;
                 let max = sides as f64;
                 let biased = base + (max - base) * self.bias;
                 biased.round() as i64

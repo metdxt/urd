@@ -238,10 +238,8 @@ impl DiceRoller for DefaultDiceRoller {
             return vec![0; count.min(MAX_DICE) as usize];
         }
         let capped = count.min(MAX_DICE);
-        use rand::RngExt;
-        let mut rng = rand::rng();
         (0..capped)
-            .map(|_| rng.random_range(1..=sides) as i64)
+            .map(|_| fastrand::u32(1..=sides) as i64)
             .collect()
     }
 }
