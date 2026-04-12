@@ -10,10 +10,12 @@ use urd::prelude::*;
 
 ```rust
 pub use urd::{
-    ChoiceEvent, CompilerError, DefaultDiceRoller, DecoratorRegistry,
-    DiceRoller, Event, FileLoader, FsLoader, IrGraph, Localizer,
+    ChoiceEvent, CompilerError, DecoratorRegistry, DefaultDiceRoller,
+    DiceRoller, Event, ExternHandle, ExternObject, FileLoader,
+    FromRuntimeValue, FsLoader, IntoRuntimeValue, IrGraph, Localizer,
     MemLoader, RuntimeValue, Vm, VmError, VmStep,
 };
+// The `ExternObject` derive macro is also available in the macro namespace.
 ```
 
 ### Quick Reference
@@ -25,7 +27,11 @@ pub use urd::{
 | [`VmError`](./vm-step.md) | Runtime error type carried by `VmStep::Error` | 16 variants covering everything from type errors to stack overflow |
 | [`Event`](./event.md) | An observable event emitted by the VM — dialogue or choice | Two variants: `Dialogue { ... }` and `Choice { ... }` |
 | [`ChoiceEvent`](./event.md) | A single option inside a `Choice` event | Contains the label text, decorator fields, localization data |
-| [`RuntimeValue`](./runtime-value.md) | The universal value type used throughout the runtime | Null, Bool, Int, Float, Str, Dice, List, Map, Struct, and more |
+| [`RuntimeValue`](./runtime-value.md) | The universal value type used throughout the runtime | Null, Bool, Int, Float, Str, Dice, List, Map, Struct, Extern, and more |
+| `ExternObject` | Trait for host game objects exposed to scripts | Implement for any type you want scripts to read/write fields on. Also available as `#[derive(ExternObject)]`. |
+| `ExternHandle` | Reference-counted handle to a `dyn ExternObject` | Stored inside `RuntimeValue::Extern`. Cloning is cheap (Arc). |
+| `IntoRuntimeValue` | Trait: convert Rust type → `RuntimeValue` | Implemented for primitives, `String`, `Option<T>`, `Vec<T>` |
+| `FromRuntimeValue` | Trait: convert `RuntimeValue` → Rust type | Implemented for primitives, `String`, `Option<T>`, `Vec<T>` |
 | [`IrGraph`](../integration/vm.md) | The compiled intermediate representation of a script | Produced by `Compiler::compile`, consumed by `Vm::new` |
 | [`DecoratorRegistry`](../integration/decorator-registry.md) | Registry for host-side decorator handlers | Register Rust closures that receive decorator arguments and return field maps |
 | [`CompilerError`](./compiler-error.md) | Error type from the compilation phase | Unknown labels, duplicate labels, module load failures, circular imports |

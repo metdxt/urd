@@ -98,6 +98,113 @@ Each call to `provide_extern` overwrites the previous value for that name.
 
 ---
 
+## Extern Objects
+
+Extern objects go beyond simple values — they are **live references** to game
+engine objects. Instead of injecting a plain number or string, the host can
+expose a full object with readable and writable fields.
+
+```urd
+extern player
+
+@entry
+label greeting {
+    narrator: "Welcome, {player.name}!"
+    narrator: "You have {player.hp} hit points."
+
+    if player.hp < 50 {
+        narrator: "You look wounded..."
+    }
+}
+```
+
+### Reading Fields
+
+Extern object fields can be read with dot notation or subscript syntax:
+
+```urd
+extern player
+
+@entry
+label start {
+    # Dot notation (in expressions and string interpolation)
+    narrator: "{player.name} has {player.hp} HP"
+
+    # Subscript notation
+    let hp = player["hp"]
+    narrator: "HP is {hp}"
+}
+```
+
+### Writing Fields
+
+Extern object fields can be written using subscript-assignment syntax. Mutations
+flow through to the live game object — all references to the same extern see
+the change immediately:
+
+```urd
+extern player
+
+@entry
+label combat {
+    narrator: "The goblin attacks!"
+    player["hp"] = player.hp - 15
+    narrator: "You now have {player.hp} HP."
+}
+```
+
+Note that dot-assignment (`player.hp = 50`) is **not** supported — use subscript
+syntax (`player["hp"] = 50`).
+
+Some fields may be marked as **read-only** by the host. Attempting to write a
+read-only field produces a runtime error.
+
+### Methods on Extern Objects
+
+Extern objects support a few built-in methods:
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `to_string` | `.to_string() → Str` | Returns the human-readable string representation. |
+| `type_name` | `.type_name() → Str` | Returns the type name (e.g. `"Player"`, `"Node3D"`). |
+| `fields` | `.fields() → List[Str]` | Returns a list of all available field names. |
+| `cast` | `.cast(target: Str) → value` | Attempts to convert the object to the given type. |
+
+```urd
+extern player
+
+@entry
+label debug {
+    let t = player.type_name()
+    narrator: "Player type: {t}"
+
+    let f = player.fields()
+    narrator: "Available fields: {f}"
+}
+```
+
+### Identity Equality
+
+Two extern references are equal (`==`) only if they refer to the **same**
+underlying game object. Two different objects with identical field values are
+**not** equal:
+
+```urd
+extern a
+extern b
+
+@entry
+label test {
+    if a == b {
+        narrator: "Same object"
+    } else {
+        narrator: "Different objects"
+    }
+}
+```
+
+---
+
 ## The `ExternNotProvided` Error
 
 If the VM reaches an extern variable that has not been injected by the host, it
@@ -230,11 +337,16 @@ It is worth understanding when to use `extern` versus `global`:
 | Feature | `extern` | `global` |
 |---------|----------|----------|
 | Value source | Host application | Script initializer |
-| Mutable in script | No | Yes |
+| Mutable in script | No (simple values) / Fields writable (objects) | Yes |
 | Mutable by host | Yes (via `provide_extern`) | No |
 | Persists across labels | Yes | Yes |
 | Requires host setup | Yes | No |
-| Typical use | Engine state, player data | Game-tracked script state |
+| Typical use | Engine state, player data, game objects | Game-tracked script state |
+
+> **Note:** Extern objects blur the line — while you cannot reassign the extern
+> binding itself, you *can* write individual fields via subscript syntax
+> (`player["hp"] = 50`). This lets scripts mutate game-engine state in a
+> controlled, field-level way that simple extern values do not allow.
 
 Use `extern` for values that the game engine owns — player name, settings, world
 state. Use `global` for values that the script itself manages — quest progress,
@@ -245,8 +357,12 @@ dialogue flags, inventory counts.
 ## Summary
 
 - `extern name: Type` declares a host-provided value
-- The host injects it via `vm.provide_extern("name", value)`
+- `extern name` (without a type) can receive a simple value **or** an extern object
+- The host injects values via `vm.provide_extern("name", value)`
 - `ExternNotProvided` error if used but never injected
-- Read-only from script code; only the host can update
+- Simple extern values are read-only from script code; only the host can update
+- Extern objects expose fields that can be **read** (dot or subscript) and **written** (subscript-assignment)
+- Built-in methods: `to_string()`, `type_name()`, `fields()`, `cast()`
+- Extern objects use **identity equality** — two refs are equal only if they point to the same game object
 - Type annotations are optional but recommended
 - Use externs for game engine ↔ script communication

@@ -305,3 +305,35 @@ let has_ten = r.contains(10)   # false (exclusive)
 let ri = 0..=10
 let has_ten_i = ri.contains(10)  # true (inclusive)
 ```
+
+---
+
+## Extern Object Methods
+
+Methods callable on extern object references (values provided by the host via `ExternObject`).
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `to_string` | `.to_string() → Str` | Returns the human-readable string representation (calls `ExternObject::display()`). |
+| `type_name` | `.type_name() → Str` | Returns the type name of the underlying object (e.g. `"Player"`, `"Node3D"`). |
+| `fields` | `.fields() → List[Str]` | Returns a list of all available field names. |
+| `cast` | `.cast(target: Str) → value` | Attempts to convert the object to the given type. The host defines what conversions are supported. |
+
+Extern objects also support field access via dot notation (`obj.field`) and subscript syntax (`obj["field"]`), as well as field writes via subscript assignment (`obj["field"] = value`). See [Extern Values](../language/extern-values.md) for details.
+
+**Example:**
+
+```urd
+extern player
+
+@entry
+label debug {
+    let t = player.type_name()
+    let f = player.fields()
+    narrator: "Type: {t}, Fields: {f}"
+    
+    narrator: "HP: {player.hp}"
+    player["hp"] = player.hp - 10
+    narrator: "After hit: {player.hp}"
+}
+```

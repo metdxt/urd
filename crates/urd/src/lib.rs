@@ -65,6 +65,32 @@ pub use ir::VmStep;
 /// Runtime value type (what decorators receive and events contain).
 pub use runtime::value::RuntimeValue;
 
+/// The trait that host game engines implement to expose live objects to scripts.
+pub use runtime::extern_object::ExternObject;
+
+/// A reference-counted handle to a [`dyn ExternObject`] — stored inside
+/// [`RuntimeValue::Extern`].
+pub use runtime::extern_object::ExternHandle;
+
+/// Convert a Rust value into a [`RuntimeValue`] (used by the derive macro and
+/// manual [`ExternObject`] implementations).
+pub use runtime::extern_object::IntoRuntimeValue;
+
+/// Reconstruct a Rust value from a [`RuntimeValue`] (used by the derive macro
+/// and manual [`ExternObject`] implementations).
+pub use runtime::extern_object::FromRuntimeValue;
+
+/// Derive macro for [`ExternObject`] — generates the full trait implementation
+/// from a struct's named fields.
+///
+/// See [`urd_derive::ExternObject`] for supported attributes.
+///
+/// Re-exported with the same name as the trait — Rust keeps derive macros and
+/// types in separate namespaces, so `#[derive(ExternObject)]` resolves the
+/// macro while `impl ExternObject` resolves the trait (same pattern as
+/// `serde::Serialize`).
+pub use urd_derive::ExternObject;
+
 /// The virtual machine that drives script execution.
 pub use vm::Vm;
 
@@ -75,7 +101,7 @@ pub use vm::VmError;
 pub use vm::registry::DecoratorRegistry;
 
 /// Pluggable dice-rolling backend trait and the default `rand`-based implementation.
-pub use vm::{DiceRoller, DefaultDiceRoller};
+pub use vm::{DefaultDiceRoller, DiceRoller};
 
 /// The compiled IR graph — pass to [`Vm::new`] after compiling a script.
 pub use ir::IrGraph;
@@ -93,7 +119,8 @@ pub use compiler::CompilerError;
 /// engine integration typically needs.
 pub mod prelude {
     pub use super::{
-        ChoiceEvent, CompilerError, DefaultDiceRoller, DecoratorRegistry, DiceRoller, Event,
-        FileLoader, FsLoader, IrGraph, Localizer, MemLoader, RuntimeValue, Vm, VmError, VmStep,
+        ChoiceEvent, CompilerError, DecoratorRegistry, DefaultDiceRoller, DiceRoller, Event,
+        ExternHandle, ExternObject, FileLoader, FromRuntimeValue, FsLoader, IntoRuntimeValue,
+        IrGraph, Localizer, MemLoader, RuntimeValue, Vm, VmError, VmStep,
     };
 }

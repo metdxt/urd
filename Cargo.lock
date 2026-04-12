@@ -1856,8 +1856,18 @@ dependencies = [
  "serde",
  "symspell",
  "thiserror 2.0.17",
+ "urd-derive",
  "ureq",
  "whatlang",
+]
+
+[[package]]
+name = "urd-derive"
+version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

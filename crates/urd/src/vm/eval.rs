@@ -92,6 +92,47 @@ pub fn eval_expr(
                             end,
                             inclusive,
                         } => range_methods::dispatch(start, end, inclusive, method, &args),
+                        RuntimeValue::Extern(handle) => match method {
+                            "to_string" => handle
+                                .display()
+                                .map(|s| RuntimeValue::Str(ParsedString::new_plain(&s)))
+                                .map_err(VmError::TypeError),
+                            "fields" => handle
+                                .fields()
+                                .map(|names| {
+                                    RuntimeValue::List(
+                                        names
+                                            .into_iter()
+                                            .map(|n| RuntimeValue::Str(ParsedString::new_plain(&n)))
+                                            .collect(),
+                                    )
+                                })
+                                .map_err(VmError::TypeError),
+                            "cast" => {
+                                if args.len() != 1 {
+                                    return Err(VmError::TypeError(
+                                        "cast() expects exactly 1 argument (target type name)"
+                                            .into(),
+                                    ));
+                                }
+                                let target = match &args[0] {
+                                    RuntimeValue::Str(ps) => ps.to_string(),
+                                    other => {
+                                        return Err(VmError::TypeError(format!(
+                                            "cast() argument must be a Str, got {other:?}"
+                                        )));
+                                    }
+                                };
+                                handle.cast(&target).map_err(VmError::TypeError)
+                            }
+                            "type_name" => handle
+                                .type_name()
+                                .map(|s| RuntimeValue::Str(ParsedString::new_plain(&s)))
+                                .map_err(VmError::TypeError),
+                            _ => Err(VmError::UnknownMethod(format!(
+                                "method '{method}' is not defined on extern object"
+                            ))),
+                        },
                         _ => Err(VmError::UnknownMethod(format!(
                             "method '{}' is not defined on this value type",
                             method
@@ -343,8 +384,19 @@ pub fn eval_expr(
                         ))
                     })
                 }
+                RuntimeValue::Extern(handle) => {
+                    let key_str = match &key_val {
+                        RuntimeValue::Str(ps) => ps.to_string(),
+                        other => {
+                            return Err(VmError::TypeError(format!(
+                                "extern field key must be a Str, got {other:?}"
+                            )));
+                        }
+                    };
+                    handle.get(&key_str).map_err(VmError::TypeError)
+                }
                 other => Err(VmError::TypeError(format!(
-                    "subscript requires Map, List, or Struct, got {:?}",
+                    "subscript requires Map, List, Struct, or Extern, got {:?}",
                     other
                 ))),
             }
@@ -424,10 +476,7 @@ pub(super) fn eval_speakers_list(
     env: &Environment,
 ) -> Result<Vec<RuntimeValue>, VmError> {
     match ast.content() {
-        AstContent::ExprList(items) => items
-            .iter()
-            .map(|item| eval_speaker(item, env))
-            .collect(),
+        AstContent::ExprList(items) => items.iter().map(|item| eval_speaker(item, env)).collect(),
         _ => Ok(vec![eval_speaker(ast, env)?]),
     }
 }
@@ -480,6 +529,10 @@ pub(super) fn eval_runtime_value(
                 {
                     return Ok(val.clone());
                 }
+                // Try extern object field access: path = ["extern_var", "field"].
+                if let Ok(RuntimeValue::Extern(ref handle)) = env.get(&path[0]) {
+                    return handle.get(&path[1]).map_err(VmError::TypeError);
+                }
                 Err(VmError::UndefinedVariable(format!(
                     "{}.{}",
                     path[0], path[1]
@@ -526,7 +579,23 @@ pub(super) fn resolve_interp_path(path: &str, env: &Environment) -> Result<Runti
         1 => env.get(segments[0]),
         2 => env
             .get_enum_variant(segments[0], segments[1])
-            .or_else(|_| env.get(&crate::ir::namespace(segments[0], segments[1]))),
+            .or_else(|_| env.get(&crate::ir::namespace(segments[0], segments[1])))
+            .or_else(|_| {
+                // Struct field access: `struct_var.field`
+                if let Ok(RuntimeValue::Struct { ref fields, .. }) = env.get(segments[0]) {
+                    if let Some(val) = fields.get(segments[1]) {
+                        return Ok(val.clone());
+                    }
+                }
+                // Extern object field access: `extern_var.field`
+                if let Ok(RuntimeValue::Extern(ref handle)) = env.get(segments[0]) {
+                    return handle.get(segments[1]).map_err(VmError::TypeError);
+                }
+                Err(VmError::UndefinedVariable(format!(
+                    "{}.{}",
+                    segments[0], segments[1]
+                )))
+            }),
         _ => env.get(&crate::ir::namespace(segments[0], segments[1])),
     }
 }
@@ -636,6 +705,9 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
             RuntimeValue::Struct { name, fields } => {
                 format!("{}({})", name, fields.len())
             }
+            RuntimeValue::Extern(handle) => handle
+                .display()
+                .unwrap_or_else(|e| format!("<extern: {e}>")),
         },
     }
 }
@@ -1092,6 +1164,7 @@ pub(super) fn is_truthy(v: &RuntimeValue) -> bool {
                 end > start
             }
         }
+        RuntimeValue::Extern(_) => true,
         _ => true,
     }
 }
@@ -1164,6 +1237,7 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
             },
         ) => s1 == s2 && e1 == e2 && i1 == i2,
         (RuntimeValue::Roll(a), RuntimeValue::Roll(b)) => a == b,
+        (RuntimeValue::Extern(a), RuntimeValue::Extern(b)) => a == b,
         // Function and ScriptDecorator have no meaningful value equality — two distinct
         // function objects are never considered the same even if their bodies are
         // identical.  Any type not listed above (including future variants) defaults

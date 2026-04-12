@@ -123,7 +123,7 @@ let numbers = [1, 2, 3]
 
 Lists are serializable as long as all their elements are themselves serializable.
 
-**Invariant:** A `List` must never contain a `Function`, `Map`, `Roll`, `ScriptDecorator`, or `Struct` element. Use `RuntimeValue::list()` to construct lists from Rust code — it fires a `debug_assert!` in debug builds to catch violations early.
+**Invariant:** A `List` must never contain a `Function`, `Map`, `Roll`, `ScriptDecorator`, `Struct`, or `Extern` element. Use `RuntimeValue::list()` to construct lists from Rust code — it fires a `debug_assert!` in debug builds to catch violations early.
 
 ### `Function { params, body }`
 
@@ -173,6 +173,21 @@ const hero: Character = :{ name: "Hero", name_color: "#f5c542" }
 
 > **Note:** `Struct` is **not serializable** because field values may transitively reference `Function` or `ScriptDecorator` values.
 
+### `Extern(ExternHandle)`
+
+A live reference to a host game object, exposed via the [`ExternObject`](../integration/extern-values.md#the-externobject-trait) trait. The handle is reference-counted (`Arc<RwLock<dyn ExternObject>>`) — cloning is cheap and preserves identity.
+
+Scripts can read and write fields, call built-in methods, and use extern objects in string interpolation. Two extern references are equal only if they point to the same underlying object (pointer identity).
+
+```rust
+use urd::prelude::*;
+
+let handle = ExternHandle::new(my_player);
+let value = RuntimeValue::Extern(handle);
+```
+
+> **Note:** `Extern` is **not serializable** (`#[serde(skip)]`). Extern handles are ephemeral runtime links that only make sense while the host process is alive.
+
 ## Serialization
 
 `RuntimeValue` derives `Serialize` and `Deserialize` (via serde), but not all variants participate:
@@ -193,6 +208,7 @@ const hero: Character = :{ name: "Hero", name_color: "#f5c542" }
 | `Function` | ❌ | `#[serde(skip)]` — holds `Ast` |
 | `ScriptDecorator` | ❌ | `#[serde(skip)]` — holds `Ast` |
 | `Struct` | ❌ | `#[serde(skip)]` — fields may hold non-serializable values |
+| `Extern` | ❌ | `#[serde(skip)]` — ephemeral runtime link |
 
 Attempting to serialize a skipped variant will silently omit the field. Deserialization will never reconstruct them — which is correct, because they only exist transiently during script execution and never appear in serialized `Event` payloads.
 

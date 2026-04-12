@@ -53,3 +53,6 @@ mod in_operator_and_functions;
 
 #[path = "integration/example_smoke.rs"]
 mod example_smoke;
+
+#[path = "integration/extern_object.rs"]
+mod extern_object;

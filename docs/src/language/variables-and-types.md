@@ -169,6 +169,22 @@ struct Item { name: str, value: int }
 let sword: Item = :{ name: "Sword", value: 10 }
 ```
 
+### `extern`
+
+Extern object references are live links to host game objects. They support field
+access (dot notation and subscript), field writes (subscript-assignment), and
+built-in methods like `type_name()`, `fields()`, and `cast()`. Extern objects
+are always truthy and use identity equality — two references are equal only if
+they point to the same underlying game object.
+
+```urd
+extern player
+narrator: "{player.name} has {player.hp} HP"
+player["hp"] = player.hp - 10
+```
+
+See [Extern Values](./extern-values.md) for full details.
+
 ---
 
 For the full annotation reference, see [Type Annotations](./type-annotations.md).

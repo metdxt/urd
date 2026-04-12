@@ -4,6 +4,7 @@
 //! The `RuntimeValue` enum represents all possible values that can be produced
 //! by the interpreter during script execution.
 
+use super::extern_object::ExternHandle;
 use crate::lexer::{Token, strings::ParsedString};
 
 /// Represents a value in the Urd runtime environment.
@@ -133,6 +134,20 @@ pub enum RuntimeValue {
         /// Field values keyed by field name.
         fields: std::collections::HashMap<String, RuntimeValue>,
     },
+
+    /// A live reference to a host game object exposed via [`ExternObject`].
+    ///
+    /// Cloning a value of this variant is cheap (`Arc::clone`) and preserves
+    /// identity — all copies point to the **same** underlying object.
+    /// Mutations through one copy (e.g. field writes) are visible through
+    /// all others.
+    ///
+    /// Not serialisable — extern handles are ephemeral runtime links that
+    /// only make sense while the host process is alive.
+    ///
+    /// [`ExternObject`]: super::extern_object::ExternObject
+    #[serde(skip)]
+    Extern(ExternHandle),
 }
 
 impl RuntimeValue {
@@ -156,9 +171,10 @@ impl RuntimeValue {
                     | RuntimeValue::Map(_)
                     | RuntimeValue::Roll { .. }
                     | RuntimeValue::Struct { .. }
+                    | RuntimeValue::Extern(_)
             )),
             "List elements must not contain non-serialisable values \
-             (ScriptDecorator, Function, Map, Roll, Struct)"
+             (ScriptDecorator, Function, Map, Roll, Struct, Extern)"
         );
         RuntimeValue::List(elements)
     }

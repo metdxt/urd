@@ -120,6 +120,10 @@ pub(super) fn rv_summary(rv: &RuntimeValue) -> String {
             }
         }
         RuntimeValue::Struct { name, fields } => format!("⟨{}({})⟩", name, fields.len()),
+        RuntimeValue::Extern(handle) => {
+            let type_name = handle.type_name().unwrap_or_else(|_| "extern".into());
+            format!("⟨{type_name}⟩")
+        }
     }
 }
 

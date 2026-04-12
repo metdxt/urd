@@ -7,5 +7,7 @@
 //! ## Submodules
 //!
 //! - [`value`]: Value types and operations used at runtime
+//! - [`extern_object`]: External object bridge for host game engine integration
 
+pub mod extern_object;
 pub mod value;

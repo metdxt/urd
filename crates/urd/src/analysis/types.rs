@@ -695,6 +695,7 @@ fn runtime_value_type_name(value: &RuntimeValue) -> String {
         RuntimeValue::ScriptDecorator { .. } => "decorator".to_owned(),
         RuntimeValue::Range { .. } => "range".to_owned(),
         RuntimeValue::Struct { name, .. } => format!("struct '{name}'"),
+        RuntimeValue::Extern(handle) => handle.type_name().unwrap_or_else(|_| "extern".to_owned()),
     }
 }
 

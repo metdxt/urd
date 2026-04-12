@@ -144,3 +144,184 @@ Externs and regular script variables serve different purposes:
 This separation keeps scripts portable — a script can declare what data it
 needs, and any host environment can satisfy those declarations with its own
 values. No recompilation needed.
+
+## Extern Objects
+
+While primitive externs work for simple values, game engines often need to
+expose **live objects** — a player character, an NPC, a quest tracker — where
+the script can read and write individual fields. The `ExternObject` trait makes
+this possible.
+
+### The `ExternObject` Trait
+
+```rust
+use urd::prelude::*;
+
+pub trait ExternObject: Send + Sync {
+    /// Type name for display and pattern matching (e.g. "Player").
+    fn type_name(&self) -> &str;
+
+    /// Human-readable string representation (used in string interpolation).
+    fn display(&self) -> String { format!("<{}>", self.type_name()) }
+
+    /// Read a field by name.
+    fn get(&self, field: &str) -> Result<RuntimeValue, String>;
+
+    /// Write a field by name.
+    fn set(&mut self, field: &str, value: RuntimeValue) -> Result<(), String>;
+
+    /// List available field names (for introspection).
+    fn fields(&self) -> Vec<String> { vec![] }
+
+    /// Try to cast this object to a RuntimeValue of the given type.
+    fn cast(&self, target: &str) -> Result<RuntimeValue, String> {
+        Err(format!("cannot cast {} to '{target}'", self.type_name()))
+    }
+}
+```
+
+Implement this trait for any type you want scripts to interact with. Field
+names are stringly-typed — the set of fields can be dynamic.
+
+### Deriving `ExternObject`
+
+For structs with named fields, use the derive macro to generate the full
+implementation automatically:
+
+```rust
+use urd::prelude::*;
+
+#[derive(ExternObject)]
+#[extern_object(type_name = "Player")]
+struct Player {
+    hp: i32,
+    name: String,
+
+    #[extern_object(readonly)]
+    id: u64,
+
+    #[extern_object(skip)]
+    internal_state: SomeInternalType,
+
+    #[extern_object(rename = "pos_x")]
+    position_x: f64,
+}
+```
+
+**Container attributes** (`#[extern_object(...)]` on the struct):
+
+| Attribute | Description |
+|-----------|-------------|
+| `type_name = "..."` | Override the type name. Defaults to the struct name. |
+
+**Field attributes** (`#[extern_object(...)]` on a field):
+
+| Attribute | Description |
+|-----------|-------------|
+| `skip` | Omit entirely — not readable, writable, or listed. |
+| `readonly` | Readable but not writable from scripts. |
+| `rename = "..."` | Expose under a different name in scripts. |
+
+The derive generates `type_name()`, `display()`, `get()`, `set()`, and
+`fields()` — all from the struct definition. Field types must implement
+`IntoRuntimeValue` and `FromRuntimeValue`.
+
+### Conversion Traits
+
+The derive macro uses two traits to convert between Rust types and
+`RuntimeValue`:
+
+```rust
+pub trait IntoRuntimeValue {
+    fn into_runtime_value(&self) -> RuntimeValue;
+}
+
+pub trait FromRuntimeValue: Sized {
+    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String>;
+}
+```
+
+Built-in implementations are provided for:
+
+| Rust type | RuntimeValue variant | Notes |
+|-----------|---------------------|-------|
+| `bool` | `Bool` | |
+| `i8`, `i16`, `i32`, `i64` | `Int` | Narrowing types range-check on `FromRuntimeValue` |
+| `u8`, `u16`, `u32`, `u64` | `Int` | Range-checked; `u64` may overflow |
+| `f32`, `f64` | `Float` | `f32` widens/narrows through `f64` |
+| `String` | `Str` | |
+| `Option<T>` | `Null` or `T` | `None` ↔ `Null` |
+| `Vec<T>` | `List` | Elements converted recursively |
+| `RuntimeValue` | (identity) | Pass-through |
+
+For custom types, implement these traits manually.
+
+### Providing Extern Objects
+
+Wrap your object in an `ExternHandle` and provide it as a
+`RuntimeValue::Extern`:
+
+```rust
+use urd::prelude::*;
+
+let player = Player { hp: 100, name: "Kael".into(), id: 1, internal_state: ..., position_x: 0.0 };
+let handle = ExternHandle::new(player);
+
+vm.provide_extern("player", RuntimeValue::Extern(handle));
+```
+
+### Shared References
+
+`ExternHandle` uses `Arc<RwLock<dyn ExternObject>>` internally — cloning is
+cheap and preserves identity. The host can keep its own reference to mutate the
+object between VM steps:
+
+```rust
+let handle = ExternHandle::new(player);
+let host_handle = handle.clone();
+
+vm.provide_extern("player", RuntimeValue::Extern(handle));
+
+// Drive the VM...
+loop {
+    match vm.next(None) {
+        VmStep::Event(Event::Dialogue { .. }) => {
+            // Host-side mutation: update HP based on game logic
+            host_handle.set("hp", RuntimeValue::Int(75)).unwrap();
+        }
+        VmStep::Ended => break,
+        VmStep::Error(e) => { eprintln!("{e}"); break; }
+    }
+}
+```
+
+Mutations through the host handle are immediately visible to the script on the
+next field access.
+
+You can also use `ExternHandle::from_arc()` if you need to construct the
+`Arc<RwLock<_>>` yourself:
+
+```rust
+use std::sync::{Arc, RwLock};
+
+let arc: Arc<RwLock<dyn ExternObject>> = Arc::new(RwLock::new(player));
+let handle = ExternHandle::from_arc(Arc::clone(&arc));
+```
+
+### What Scripts Can Do
+
+From the script's perspective, extern objects support:
+
+| Operation | Syntax | Example |
+|-----------|--------|---------|
+| Field read (dot) | `obj.field` | `player.hp` |
+| Field read (subscript) | `obj["field"]` | `player["hp"]` |
+| Field write | `obj["field"] = value` | `player["hp"] = 50` |
+| String interpolation | `"{obj.field}"` | `"HP: {player.hp}"` |
+| Display | `"{obj}"` | Uses `ExternObject::display()` |
+| Method: `to_string()` | `obj.to_string()` | Returns display string |
+| Method: `type_name()` | `obj.type_name()` | Returns type name |
+| Method: `fields()` | `obj.fields()` | Returns field name list |
+| Method: `cast(type)` | `obj.cast("map")` | Attempts conversion |
+| Truthiness | `if obj { ... }` | Always truthy |
+| Equality | `a == b` | Identity (pointer) equality |

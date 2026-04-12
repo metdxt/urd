@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use crate::parser::ast::{AstContent, DeclKind};
 use crate::runtime::value::RuntimeValue;
 
+use super::VmError;
 use super::env::Environment;
 use super::eval::eval_expr;
-use super::VmError;
 
 // ─── Subscript-assign helper ──────────────────────────────────────────────────
 
@@ -82,8 +82,19 @@ pub(super) fn eval_subscript_assign(
             list[actual] = new_val;
             env.set(&var_name, RuntimeValue::List(list), &DeclKind::Variable)
         }
+        RuntimeValue::Extern(handle) => {
+            let key_str = match key_val {
+                RuntimeValue::Str(ref ps) => ps.to_string(),
+                other => {
+                    return Err(VmError::TypeError(format!(
+                        "extern field key must be a Str, got {other:?}"
+                    )));
+                }
+            };
+            handle.set(&key_str, new_val).map_err(VmError::TypeError)
+        }
         other => Err(VmError::TypeError(format!(
-            "subscript assign: {var_name} is not a map or list, got {other:?}"
+            "subscript assign: {var_name} is not a map, list, or extern, got {other:?}"
         ))),
     }
 }
