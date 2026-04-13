@@ -97,16 +97,7 @@ fn run_script_with_externs(src: &str, setup: impl FnOnce(&mut Vm)) -> Vec<VmStep
 }
 
 fn drive_vm(vm: &mut Vm) -> Vec<VmStep> {
-    let mut steps = Vec::new();
-    for _ in 0..1024 {
-        let step = vm.next(None);
-        let terminal = matches!(step, VmStep::Ended | VmStep::Error(_));
-        steps.push(step);
-        if terminal {
-            break;
-        }
-    }
-    steps
+    super::fixtures::drive_vm(vm, 1024)
 }
 
 /// Collect every dialogue line (as a plain `String`) from a step sequence.

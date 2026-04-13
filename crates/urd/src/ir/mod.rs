@@ -211,6 +211,21 @@ impl IrGraph {
     /// so `enum Faction` from a module imported as `chars` becomes
     /// `chars::Faction` in the merged graph.
     ///
+    /// # Deprecation
+    ///
+    /// This method is no longer used by any production code path.
+    /// [`compile_flat`](crate::compiler::compile_flat) now builds all modules
+    /// into a single shared graph directly, making post-hoc merging
+    /// unnecessary. This method is retained only to avoid a breaking API
+    /// change; prefer `compile_flat` for all new code.
+    ///
+    /// # Complexity
+    ///
+    /// **O(N · E)** worst-case, where *N* is the number of nodes in `other`
+    /// and *E* is the number of edges.  Each call to
+    /// [`StableGraph::remove_node`] is O(E) because it must scan the
+    /// adjacency lists to drop incident edges, and we call it once per node.
+    ///
     /// # Returns
     /// A `HashMap<NodeIndex, NodeIndex>` mapping every node index from `other`
     /// to its freshly-assigned index in `self`.  Callers can use this map to
@@ -219,6 +234,11 @@ impl IrGraph {
     ///
     /// # Label namespacing
     /// A label `"start"` from a module imported as `"foo"` becomes `"foo::start"`.
+    #[deprecated(
+        since = "0.2.0",
+        note = "No longer used in production. `compile_flat` builds into a single shared graph, \
+                making post-hoc merging unnecessary. This method has O(N·E) worst-case complexity."
+    )]
     pub fn merge(&mut self, other: IrGraph, alias: &str) -> HashMap<NodeIndex, NodeIndex> {
         // Snapshot all edges *before* we begin consuming `other.graph`.
         // `remove_node` drops incident edges from the StableGraph's adjacency
@@ -725,6 +745,7 @@ mod tests {
     // ── IrGraph::merge ────────────────────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)]
     fn merge_offsets_node_ids() {
         // base: one End node; module: one End node.
         // After merge the graph must contain both nodes, and the returned
@@ -755,6 +776,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_namespaces_labels() {
         let mut base = IrGraph::new();
         let e = base.push(IrNodeKind::End);
@@ -786,6 +808,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_jump_target_remapped() {
         // Build a module:  End ←[Jump]─ Jump  (edge connects jump→target).
         let mut module = IrGraph::new();
@@ -840,6 +863,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_node_end_sentinel_preserved() {
         // A Nop node with *no outgoing edges* is the petgraph equivalent of the
         // old `Nop { next: NODE_END }`.  After merging it must still have zero
@@ -872,6 +896,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_empty_other_is_noop() {
         let mut base = single_end_graph();
         let original_count = base.graph.node_count();
@@ -891,6 +916,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_multiple_labels_all_namespaced() {
         let mut base = IrGraph::new();
         let _e = base.push(IrNodeKind::End);
@@ -940,6 +966,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_branch_targets_remapped() {
         let mut base = IrGraph::new();
         let _e0 = base.push(IrNodeKind::End);
@@ -1009,6 +1036,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn merge_preserves_cluster_names_and_label_sources() {
         let mut base = IrGraph::new();
         let n0 = base.push(IrNodeKind::Nop);

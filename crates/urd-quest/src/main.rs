@@ -23,6 +23,7 @@ use crossterm::{
 };
 
 use urd::analysis;
+use urd::analysis::imports::{collect_label_names_from_ast, collect_type_defs_from_ast};
 
 use urd::VmStep;
 use urd::ir::{Event, IrGraph};
@@ -711,93 +712,7 @@ fn collect_analysis_imports(
     }
 }
 
-fn collect_type_defs_from_ast(
-    ast: &urd::parser::ast::Ast,
-    alias: &str,
-    structs: &mut std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
-    enums: &mut std::collections::HashMap<String, Vec<String>>,
-) {
-    use urd::parser::ast::AstContent;
 
-    match ast.content() {
-        AstContent::Block(stmts) => {
-            for stmt in stmts {
-                collect_type_defs_from_ast(stmt, alias, structs, enums);
-            }
-        }
-        AstContent::StructDecl { name, fields } => {
-            if !alias.is_empty() {
-                structs
-                    .entry(format!("{alias}.{name}"))
-                    .or_insert_with(|| fields.clone());
-            }
-            structs
-                .entry(name.clone())
-                .or_insert_with(|| fields.clone());
-        }
-        AstContent::EnumDecl { name, variants } => {
-            let variant_names: Vec<String> = variants.iter().map(|(n, _)| n.clone()).collect();
-            if !alias.is_empty() {
-                enums
-                    .entry(format!("{alias}.{name}"))
-                    .or_insert_with(|| variant_names.clone());
-            }
-            enums.entry(name.clone()).or_insert_with(|| variant_names);
-        }
-        AstContent::LabeledBlock { block, .. } => {
-            collect_type_defs_from_ast(block, alias, structs, enums);
-        }
-        _ => {}
-    }
-}
-
-fn collect_label_names_from_ast(ast: &urd::parser::ast::Ast) -> std::collections::HashSet<String> {
-    let mut labels = std::collections::HashSet::new();
-    collect_label_names_from_node(ast, &mut labels);
-    labels
-}
-
-fn collect_label_names_from_node(
-    ast: &urd::parser::ast::Ast,
-    labels: &mut std::collections::HashSet<String>,
-) {
-    use urd::parser::ast::AstContent;
-
-    match ast.content() {
-        AstContent::LabeledBlock { label, block, .. } => {
-            labels.insert(label.clone());
-            collect_label_names_from_node(block, labels);
-        }
-        AstContent::Block(stmts) => {
-            for stmt in stmts {
-                collect_label_names_from_node(stmt, labels);
-            }
-        }
-        AstContent::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_label_names_from_node(then_block, labels);
-            if let Some(else_block) = else_block {
-                collect_label_names_from_node(else_block, labels);
-            }
-        }
-        AstContent::Menu { options } => {
-            for opt in options {
-                if let AstContent::MenuOption { content, .. } = opt.content() {
-                    collect_label_names_from_node(content, labels);
-                }
-            }
-        }
-        AstContent::Match { arms, .. } => {
-            for arm in arms {
-                collect_label_names_from_node(&arm.body, labels);
-            }
-        }
-        _ => {}
-    }
-}
 
 /// Load, lex, parse, analyse and compile the script at `path` into an [`IrGraph`].
 ///

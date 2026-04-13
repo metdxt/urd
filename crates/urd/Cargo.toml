@@ -38,9 +38,19 @@ spellcheck = ["dep:symspell", "dep:whatlang", "dep:ureq", "dep:dirs"]
 ## production builds — the module is test scaffolding only.
 test-support = []
 
+[dev-dependencies]
+fluent-bundle = { workspace = true }
+intl-memoizer = "0.5"
+unic-langid = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+
 [[test]]
 name = "integration"
 required-features = ["test-support"]
+
+[[bench]]
+name = "vm_bench"
+harness = false
 
 [lints]
 workspace = true

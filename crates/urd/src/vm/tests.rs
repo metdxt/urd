@@ -1554,15 +1554,15 @@ label start {
 /// Unconditional jump loops between two labeled blocks must NOT accumulate
 /// [`CallFrame`]s on the call stack.
 ///
-/// **Known bug**: [`IrNodeKind::EnterScope`] always pushes a [`CallFrame`]
+/// Previously, [`IrNodeKind::EnterScope`] always pushed a [`CallFrame`]
 /// regardless of whether the label was entered via [`IrNodeKind::LetCall`]
-/// (subroutine) or a plain [`IrNodeKind::Jump`] (tail transfer).  Because
-/// an unconditional `jump` never reaches [`IrNodeKind::ExitScope`] of the
-/// *previous* label, the pushed frame is never popped.
+/// (subroutine) or a plain [`IrNodeKind::Jump`] (tail transfer).  This was
+/// fixed so that only `LetCall` pushes a frame; plain `jump` uses tail-call
+/// semantics and does not accumulate frames.
 ///
-/// After 20 dialogue events from the A → B → A loop the call stack has ≈ 20
-/// leaked frames; this test asserts 0 and therefore **FAILS** against the
-/// current implementation.
+/// After 20 dialogue events from the A → B → A loop the call stack must
+/// have 0 leaked frames.  This test **PASSES** against the current
+/// implementation.
 #[test]
 fn test_unconditional_jump_loop_leaks_call_frames() {
     use crate::compiler::loader::parse_source;
@@ -2568,4 +2568,176 @@ fn test_is_truthy_empty_struct_is_falsy() {
         fields,
     };
     assert!(is_truthy(&non_empty_struct), "non-empty struct should be truthy");
+}
+
+// ── Edge-case tests ───────────────────────────────────────────────────────
+
+/// Setting a step budget via [`Vm::set_step_budget`] must cause
+/// [`VmError::BudgetExceeded`] after exactly that many internal VM steps.
+///
+/// Strategy: build a simple dialogue loop that emits observable events
+/// (each requiring several internal steps), set a small budget, and drive
+/// `next()` until `BudgetExceeded` fires.  We also verify that the error
+/// is *sticky* — calling `next()` again after exhaustion still returns
+/// `BudgetExceeded`.
+#[test]
+fn test_budget_exhaustion_across_multiple_next_calls() {
+    use crate::compiler::loader::parse_source;
+
+    // A loop that emits one dialogue event per iteration, ensuring the VM
+    // burns internal steps (EnterScope, Dialogue, Jump, etc.) on each pass.
+    let src = r#"
+@entry
+label loop {
+    Narrator: "tick"
+    jump loop
+}
+"#;
+
+    let ast = parse_source(src).expect("parse must succeed");
+    let graph = Compiler::compile(&ast).expect("compile must succeed");
+    let mut vm = Vm::new(graph, empty_registry()).expect("vm construction must succeed");
+
+    // A very small budget — enough for a few events but not infinite.
+    let budget: u64 = 30;
+    vm.set_step_budget(Some(budget));
+
+    let mut events_seen = 0u64;
+    let mut hit_budget = false;
+
+    // Drive more iterations than the budget could possibly sustain.
+    for _ in 0..budget + 50 {
+        match vm.next(None) {
+            VmStep::Event(_) => {
+                events_seen += 1;
+            }
+            VmStep::Error(VmError::BudgetExceeded) => {
+                hit_budget = true;
+                break;
+            }
+            VmStep::Ended => panic!("script should loop, not end"),
+            VmStep::Error(e) => panic!("unexpected VM error: {e}"),
+        }
+    }
+
+    assert!(
+        hit_budget,
+        "expected BudgetExceeded after {budget} steps, but saw {events_seen} events without it"
+    );
+    assert!(
+        events_seen > 0,
+        "should have emitted at least one event before budget ran out"
+    );
+
+    // Verify the error is sticky: once exhausted, subsequent calls also fail.
+    assert!(
+        matches!(vm.next(None), VmStep::Error(VmError::BudgetExceeded)),
+        "BudgetExceeded must be sticky — subsequent next() calls must also fail"
+    );
+}
+
+/// Mutual recursion via `let r = jump … and return` must hit
+/// [`VmError::StackOverflow`] once the call-stack depth limit is reached.
+///
+/// We lower `max_call_depth` to a small value so the test completes quickly.
+#[test]
+fn test_let_call_mutual_recursion_causes_stack_overflow() {
+    use crate::compiler::loader::parse_source;
+
+    // Two labels that call each other as subroutines (LetCall).  Each emits
+    // a dialogue so that the VM yields control between calls, but the
+    // LetCall frames accumulate on the call stack.
+    let src = r#"
+@entry
+label ping {
+    Narrator: "ping"
+    let r = jump pong and return
+}
+
+label pong {
+    Narrator: "pong"
+    let r = jump ping and return
+}
+"#;
+
+    let ast = parse_source(src).expect("parse must succeed");
+    let graph = Compiler::compile(&ast).expect("compile must succeed");
+    let mut vm = Vm::new(graph, empty_registry()).expect("vm construction must succeed");
+
+    // Lower max_call_depth so we don't have to spin through 256 frames.
+    vm.state.max_call_depth = 8;
+    // Disable the step budget so only the stack-depth guard triggers.
+    vm.set_step_budget(None);
+
+    let mut hit_overflow = false;
+
+    for _ in 0..500 {
+        match vm.next(None) {
+            VmStep::Event(_) => {}
+            VmStep::Error(VmError::StackOverflow(depth)) => {
+                assert_eq!(depth, 8, "StackOverflow should report the configured limit");
+                hit_overflow = true;
+                break;
+            }
+            VmStep::Ended => panic!("mutual recursion should not end normally"),
+            VmStep::Error(e) => panic!("unexpected VM error: {e}"),
+        }
+    }
+
+    assert!(
+        hit_overflow,
+        "expected StackOverflow from mutual LetCall recursion"
+    );
+}
+
+/// A script-defined decorator whose parameter list contains `"event"` must
+/// be rejected at runtime with [`VmError::TypeError`], because `event` is
+/// a reserved name injected automatically into the decorator body scope.
+#[test]
+fn test_decorator_param_named_event_is_rejected() {
+    use crate::parser::ast::{DecoratorParam, EventConstraint};
+
+    // Define a decorator with a parameter literally called "event".
+    let decorator_def = Ast::decorator_def(
+        "bad_deco".to_string(),
+        EventConstraint::Any,
+        vec![DecoratorParam {
+            name: "event".to_string(),
+            type_annotation: None,
+        }],
+        Ast::block(vec![]),
+    );
+
+    // Apply the decorator to a dialogue node, passing one argument.
+    let speakers = Ast::expr_list(vec![str_lit("Alice")]);
+    let lines = Ast::expr_list(vec![str_lit("Hello")]);
+    let deco = Decorator::new(
+        "bad_deco".to_string(),
+        Ast::expr_list(vec![int(1)]),
+    );
+    let dialogue = Ast::new_decorated(
+        AstContent::Dialogue {
+            speakers: Box::new(speakers),
+            content: Box::new(lines),
+        },
+        vec![deco],
+    );
+
+    let ast = Ast::block(vec![decorator_def, dialogue]);
+    let mut vm = build_vm(ast);
+
+    match vm.next(None) {
+        VmStep::Error(VmError::TypeError(msg)) => {
+            assert!(
+                msg.contains("event") && msg.contains("reserved"),
+                "TypeError should mention 'event' and 'reserved', got: {msg}"
+            );
+        }
+        VmStep::Event(e) => {
+            panic!("expected TypeError for reserved param name 'event', but got event: {e:?}")
+        }
+        other => panic!(
+            "expected TypeError for reserved param name 'event', got: {other:?}"
+        ),
+    }
 }

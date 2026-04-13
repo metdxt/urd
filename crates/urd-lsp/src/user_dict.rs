@@ -8,7 +8,7 @@
 //! one-line comment header so users know what it is.
 
 use std::collections::HashSet;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Write};
 #[cfg(test)]
 use std::path::Path;
@@ -138,19 +138,19 @@ impl UserDictionary {
         // Update the in-memory set unconditionally – disk write is best-effort.
         self.words.insert(lower.clone());
 
-        let needs_header = !self.path.exists();
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-
-        if needs_header {
-            writeln!(
-                file,
-                "# Urd user dictionary \u{2013} words in this file are not spell-checked."
-            )?;
-        }
+        let mut file = match File::create_new(&self.path) {
+            Ok(mut f) => {
+                writeln!(
+                    f,
+                    "# Urd user dictionary \u{2013} words in this file are not spell-checked."
+                )?;
+                f
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                OpenOptions::new().append(true).open(&self.path)?
+            }
+            Err(e) => return Err(e),
+        };
 
         writeln!(file, "{lower}")?;
         Ok(())

@@ -1,0 +1,39 @@
+[package]
+name = "urd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+chumsky = { version = "0.12.0", features = ["pratt"] }
+logos = "0.16.1"
+
+[dependencies.urd]
+path = "../crates/urd"
+features = ["test-support"]
+
+# Prevent this from interfering with the workspace
+[workspace]
+
+[[bin]]
+name = "fuzz_lexer"
+path = "fuzz_targets/fuzz_lexer.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_compiler"
+path = "fuzz_targets/fuzz_compiler.rs"
+doc = false
+
+[profile.release]
+debug = 1
+opt-level = 3

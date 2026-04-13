@@ -330,14 +330,13 @@ impl LanguageServer for Backend {
                 )),
 
                 // ── Execute command ──────────────────────────────────────
-                execute_command_provider: if cfg!(feature = "spellcheck") {
-                    Some(ExecuteCommandOptions {
-                        commands: vec!["urd.addToDictionary".to_string()],
-                        work_done_progress_options: Default::default(),
-                    })
-                } else {
-                    None
-                },
+                #[cfg(feature = "spellcheck")]
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec!["urd.addToDictionary".to_string()],
+                    work_done_progress_options: Default::default(),
+                }),
+                #[cfg(not(feature = "spellcheck"))]
+                execute_command_provider: None,
 
                 // ── Semantic tokens ──────────────────────────────────────
                 semantic_tokens_provider: Some(
@@ -749,7 +748,7 @@ impl LanguageServer for Backend {
         };
 
         let src = doc.rope.to_string();
-        let raw_tokens = compute_semantic_tokens(ast);
+        let raw_tokens = compute_semantic_tokens(ast, &src);
 
         if raw_tokens.is_empty() {
             return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {

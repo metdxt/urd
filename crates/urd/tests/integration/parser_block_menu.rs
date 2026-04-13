@@ -142,8 +142,8 @@ fn test_id_decorator_override_used_in_compile_named() {
 
     let mut found_opt1 = false;
     let mut found_opt2 = false;
-    for idx in graph.graph.node_indices() {
-        if let IrNodeKind::Choice { options, .. } = &graph.graph[idx] {
+    for idx in graph.graph().node_indices() {
+        if let IrNodeKind::Choice { options, .. } = &graph.graph()[idx] {
             // First option: @id override "torch" takes precedence over text slug.
             assert_eq!(
                 options[0].loc_id.as_deref(),
@@ -184,10 +184,10 @@ fn test_id_decorator_on_menu_option_parse_roundtrip_via_source() {
     let ast = parse_source(src).expect("parse failed");
     let graph = Compiler::compile_named(&ast, "cave").expect("compile_named failed");
 
-    for idx in graph.graph.node_indices() {
+    for idx in graph.graph().node_indices() {
         if let IrNodeKind::Choice {
             options, loc_id, ..
-        } = &graph.graph[idx]
+        } = &graph.graph()[idx]
         {
             assert_eq!(
                 loc_id.as_deref(),

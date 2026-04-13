@@ -1,0 +1,286 @@
+# dice.urd — Dice System Showcase
+#
+# Demonstrates every aspect of dice mechanics in Urd:
+#   · Dice literals: 1d6, 2d6, 1d20, 3d8
+#   · Dice in arithmetic expressions
+#   · match with dice scrutinees:
+#       – Value patterns (matching the sum)
+#       – Range patterns: 2..6, 12..=18
+#       – Array patterns: [1, _], [6, 6]
+#       – Wildcard: _
+#   · Using dice rolls for a simple combat encounter
+#
+# Theme: A tabletop RPG combat encounter — the knight Ser Aldric faces
+#         a tunnel troll beneath the Ironridge.
+
+# ── Characters ────────────────────────────────────────────────────────────────
+const narrator  = :{ name: "Narrator",    name_color: "white"  }
+const dm        = :{ name: "DM",          name_color: "yellow" }
+const aldric    = :{ name: "Ser Aldric",  name_color: "cyan"   }
+const troll     = :{ name: "Tunnel Troll", name_color: "red"   }
+
+# ── Combat state ──────────────────────────────────────────────────────────────
+global aldric_hp  = 40
+global troll_hp   = 30
+global round_num  = 0
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STORY
+# ══════════════════════════════════════════════════════════════════════════════
+
+@entry
+label start {
+    narrator: {
+        "The passage narrows to a low arch of dripping stone."
+        "Beyond it, something large shifts in the dark — a guttural snarl"
+        "echoes off the tunnel walls."
+    }
+
+    dm: "Roll for initiative!"
+
+    # ── Basic dice literal ────────────────────────────────────────────────────
+    let initiative = 1d20
+    narrator: "Ser Aldric rolls initiative: {initiative}"
+
+    # ── Dice in an arithmetic expression ──────────────────────────────────────
+    let initiative_bonus = 3
+    let total_initiative = 1d20 + initiative_bonus
+    dm: "Troll rolls initiative (with +3 bonus): {total_initiative}"
+
+    narrator: "The torchlight catches a pair of jaundiced eyes. Combat begins!"
+
+    jump combat_round
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMBAT ROUND — demonstrates dice + match patterns
+# ══════════════════════════════════════════════════════════════════════════════
+
+label combat_round {
+    round_num = round_num + 1
+    dm: "══ Round {round_num} ══"
+    dm: "Aldric HP: {aldric_hp} | Troll HP: {troll_hp}"
+
+    # ── Attack roll: match a 1d20 with range and value patterns ───────────────
+    narrator: "Ser Aldric swings his longsword!"
+
+    let attack_roll = 1d20
+
+    match attack_roll {
+        1 {
+            # Critical miss — exact value pattern
+            dm: "Attack roll: {attack_roll} — CRITICAL MISS!"
+            aldric: "Blast! My blade lodges in the rock wall!"
+            narrator: "Aldric wastes his turn wrestling the sword free."
+        }
+        2..8 {
+            # Low roll — exclusive range pattern (2, 3, 4, 5, 6, 7)
+            dm: "Attack roll: {attack_roll} — Miss."
+            narrator: "The troll lurches sideways. Aldric's blade cuts only air."
+        }
+        8..=14 {
+            # Glancing blow — inclusive range pattern (8 through 14)
+            dm: "Attack roll: {attack_roll} — Glancing blow!"
+            let damage = 1d6
+            troll_hp = troll_hp - damage
+            narrator: "The sword scrapes across thick hide for {damage} damage."
+        }
+        15..=19 {
+            # Solid hit — inclusive range
+            dm: "Attack roll: {attack_roll} — Solid hit!"
+            let damage = 2d6
+            troll_hp = troll_hp - damage
+            narrator: "Steel bites deep! {damage} damage to the troll!"
+            troll: "GRAAAGH!"
+        }
+        20 {
+            # Critical hit — exact value pattern
+            dm: "Attack roll: {attack_roll} — CRITICAL HIT!"
+            # Critical hits roll double dice
+            let damage = 4d6
+            troll_hp = troll_hp - damage
+            narrator: "A devastating strike! The blade cleaves through sinew for {damage} damage!"
+            aldric: "For Ironridge!"
+        }
+    }
+
+    if troll_hp <= 0 {
+        jump victory
+    }
+
+    jump troll_attacks
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TROLL ATTACK — demonstrates 2d6 match with array patterns
+# ══════════════════════════════════════════════════════════════════════════════
+
+label troll_attacks {
+    narrator: "The troll swings a massive fist!"
+
+    # ── Match on 2d6 with array patterns ──────────────────────────────────────
+    # Array patterns match individual dice, not the sum.
+    let troll_attack = 2d6
+
+    match troll_attack {
+        [1, 1] {
+            # Snake eyes — both dice show 1
+            dm: "Troll rolls {troll_attack} — Snake eyes! The troll trips!"
+            troll: "HNNGRRR..."
+            narrator: "The troll stumbles over its own feet and crashes to the ground."
+            narrator: "It takes 2 damage from the fall!"
+            troll_hp = troll_hp - 2
+        }
+        [6, 6] {
+            # Boxcars — both dice show 6
+            dm: "Troll rolls {troll_attack} — Double sixes! Devastating slam!"
+            let damage = 12 + 1d4
+            aldric_hp = aldric_hp - damage
+            narrator: "Both fists connect! {damage} damage — bones crack!"
+            aldric: "Nngh...!"
+        }
+        [_, 1] {
+            # Second die is 1 — weak off-hand
+            dm: "Troll rolls {troll_attack} — Clumsy off-hand swing."
+            let damage = 3
+            aldric_hp = aldric_hp - damage
+            narrator: "A glancing backhand for {damage} damage."
+        }
+        [1, _] {
+            # First die is 1 — weak leading hand
+            dm: "Troll rolls {troll_attack} — Wild swing, barely connects."
+            let damage = 3
+            aldric_hp = aldric_hp - damage
+            narrator: "A clumsy overhead blow for {damage} damage."
+        }
+        2..=5 {
+            # Low sum — light hit (range matched against sum of the roll)
+            dm: "Troll rolls {troll_attack} (sum) — Light hit."
+            let damage = 1d4
+            aldric_hp = aldric_hp - damage
+            narrator: "A weak swipe catches Aldric's arm for {damage} damage."
+        }
+        10..=12 {
+            # High sum — heavy hit with poison
+            dm: "Troll rolls {troll_attack} (sum) — Poisoned strike!"
+            let damage = 2d6
+            aldric_hp = aldric_hp - damage
+            narrator: "The troll's venomous claws rake across Aldric for {damage} damage!"
+            aldric: "That burns... poison!"
+            jump saving_throw
+        }
+        _ {
+            # Wildcard — catch everything else
+            dm: "Troll rolls {troll_attack} — A solid thump."
+            let damage = 1d6
+            aldric_hp = aldric_hp - damage
+            narrator: "The troll connects for {damage} damage."
+        }
+    }
+
+    if aldric_hp <= 0 {
+        jump defeat
+    }
+
+    jump combat_round
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SAVING THROW — demonstrates 3d6 dice and value/range patterns
+# ══════════════════════════════════════════════════════════════════════════════
+
+label saving_throw {
+    dm: "Aldric must make a Constitution saving throw!"
+
+    let save = 3d6
+
+    match save {
+        3 {
+            dm: "Save roll: {save} — all ones. Automatic failure."
+            aldric_hp = aldric_hp - 10
+            narrator: "The poison courses unchecked. 10 damage!"
+        }
+        4..=8 {
+            dm: "Save roll: {save} — Failed."
+            aldric_hp = aldric_hp - 5
+            narrator: "Aldric buckles. 5 damage from the poison."
+        }
+        9..=12 {
+            dm: "Save roll: {save} — Partial success."
+            aldric_hp = aldric_hp - 2
+            narrator: "Aldric grits his teeth. Only 2 damage."
+        }
+        13..=17 {
+            dm: "Save roll: {save} — Success!"
+            narrator: "Aldric shrugs off the venom with sheer grit."
+        }
+        18 {
+            dm: "Save roll: {save} — all sixes! Perfect save!"
+            aldric_hp = aldric_hp + 5
+            narrator: "The poison seems to invigorate him! +5 HP!"
+        }
+        _ {
+            dm: "Save roll: {save} — Resolved."
+        }
+    }
+
+    if aldric_hp <= 0 {
+        jump defeat
+    }
+
+    # After the saving throw, return to combat
+    jump combat_round
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OUTCOMES
+# ══════════════════════════════════════════════════════════════════════════════
+
+label victory {
+    narrator: {
+        "The troll collapses with a shudder that shakes loose dust from the ceiling."
+        "Silence returns to the tunnel, broken only by the hiss of the dying torch."
+    }
+
+    dm: "Combat resolved in {round_num} round(s)."
+    dm: "Aldric HP remaining: {aldric_hp}"
+
+    # ── Loot roll — one last dice demonstration ───────────────────────────────
+    dm: "Roll for loot!"
+    let loot = 1d6
+    match loot {
+        1..=2 {
+            narrator: "Loot roll: {loot} — A handful of tarnished copper coins."
+        }
+        3..=4 {
+            narrator: "Loot roll: {loot} — A crude iron ring, faintly warm to the touch."
+        }
+        5 {
+            narrator: "Loot roll: {loot} — A vial of troll blood. Alchemists pay well for this."
+        }
+        6 {
+            narrator: "Loot roll: {loot} — A chipped gemstone glimmers in the troll's nest. Jackpot!"
+        }
+    }
+
+    aldric: "Another day, another tunnel cleared."
+    narrator: "Ser Aldric sheathes his sword and presses deeper into the Ironridge."
+
+    end!()
+}
+
+label defeat {
+    narrator: {
+        "Aldric's knees buckle."
+        "The torchlight gutters and dies."
+        "The tunnel swallows another soul."
+    }
+
+    dm: "Ser Aldric has fallen after {round_num} round(s)."
+    dm: "Final HP: {aldric_hp}"
+
+    troll: "HRRRMPH."
+    narrator: "The troll settles back into its nest. It will eat well tonight."
+
+    end!()
+}

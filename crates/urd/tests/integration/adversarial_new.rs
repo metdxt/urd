@@ -34,22 +34,9 @@ use urd::{
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Parse, compile, and drive the VM to completion or the first terminal step.
-/// Capped at 256 steps to prevent infinite loops.
-#[allow(clippy::expect_used)]
+/// Capped at 256 steps (the default) to prevent infinite loops.
 fn run_script(src: &str) -> Vec<VmStep> {
-    let ast = parse_source(src).expect("script should parse");
-    let graph = Compiler::compile(&ast).expect("script should compile");
-    let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm should initialise");
-    let mut steps = Vec::new();
-    for _ in 0..256 {
-        let step = vm.next(None);
-        let terminal = matches!(step, VmStep::Ended | VmStep::Error(_));
-        steps.push(step);
-        if terminal {
-            break;
-        }
-    }
-    steps
+    super::fixtures::run_script_default(src)
 }
 
 /// Collect every dialogue text line from a step sequence.
@@ -1021,9 +1008,8 @@ fn test_null_byte_escape_is_valid() {
 
 /// ## QUIRK — Empty string `""` is truthy (all `Str` values are).
 ///
-/// `is_truthy` for `Str` falls to the `_ => true` catch-all, so every string —
-/// including `""` — is truthy.  This differs from Python, JavaScript, and most
-/// scripting languages where `""` is falsy.
+/// `is_truthy` for `Str` returns `!s.is_empty()`, so `""` is falsy — consistent
+/// with Python, JavaScript, and most scripting languages.
 ///
 /// This test **documents** the current behaviour.  If the design changes,
 /// update the assertion and the `is_truthy` doc comment together.
@@ -1044,8 +1030,8 @@ label start {
     let steps = run_script(src);
     assert_eq!(
         dialogue_texts(&steps),
-        vec!["truthy"],
-        "current behaviour: empty string is truthy (all Str fall to `_ => true` in \
+        vec!["falsy"],
+        "current behaviour: empty string is falsy (`Str(s) => !s.is_empty()` in \
          is_truthy). Update this assertion if the design intentionally changes."
     );
 }
@@ -1152,6 +1138,7 @@ label main {
             }
             VmStep::Error(e) => panic!("VM error: {e}"),
             VmStep::Event(_) => {}
+            _ => {}
         }
     }
     assert_eq!(

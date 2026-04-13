@@ -23,8 +23,7 @@
 use urd::{
     Event, RuntimeValue, VmError, VmStep,
     analysis::AnalysisError,
-    compiler::{Compiler, loader::parse_source},
-    vm::{Vm, registry::DecoratorRegistry},
+    compiler::loader::parse_source,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -32,21 +31,8 @@ use urd::{
 /// Parse, compile, and drive the VM to completion (or the first error/termination),
 /// returning every [`VmStep`] observed.  Capped at 128 steps to prevent infinite
 /// loops in broken scripts.
-#[allow(clippy::expect_used)]
 fn run_script(src: &str) -> Vec<VmStep> {
-    let ast = parse_source(src).expect("script should parse");
-    let graph = Compiler::compile(&ast).expect("script should compile");
-    let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm should initialise");
-    let mut steps = Vec::new();
-    for _ in 0..128 {
-        let step = vm.next(None);
-        let terminal = matches!(step, VmStep::Ended | VmStep::Error(_));
-        steps.push(step);
-        if terminal {
-            break;
-        }
-    }
-    steps
+    super::fixtures::run_script(src, 128)
 }
 
 /// Collect every dialogue line (as a plain `String`) from a step sequence.

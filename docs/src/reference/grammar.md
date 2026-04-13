@@ -93,7 +93,6 @@ statement       = dialogue
                 | let_decl
                 | let_call_stmt
                 | assignment
-                | expr_stmt
                 | end_stmt
                 | todo_stmt ;
 
@@ -101,6 +100,17 @@ end_stmt        = "end!" "(" ")" ;
 
 todo_stmt       = "todo!" "(" ")" ;
 ```
+
+> **Note — no bare expression statements.** Unlike most imperative languages,
+> Urd does **not** allow a standalone expression (such as a function call) as a
+> statement. Writing `log("debug")` on its own is a parse error. To call a
+> function for its side effects and discard the result, capture it in a named
+> variable: `let _result = log("debug")`. (Bare `_` is a wildcard token, not
+> an identifier, so `let _ = …` is also a parse error.) This keeps narrative
+> scripts free of "do-nothing" lines that are almost always bugs in a dialogue
+> context. See the
+> [Functions](../language/functions.md#calling-without-capturing) chapter for
+details.
 
 ## Dialogue
 

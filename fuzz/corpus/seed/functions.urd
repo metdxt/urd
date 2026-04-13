@@ -1,0 +1,306 @@
+# functions.urd — Pure Functions Showcase
+#
+# Demonstrates every aspect of user-defined functions in Urd:
+#   · Named function definitions with parameters
+#   · Return-type annotations (-> int, -> str, -> bool, -> float)
+#   · Functions used inside expressions
+#   · Functions passed by name to list higher-order methods (map, filter, reduce)
+#   · Functions returning different value types
+#   · Conditional logic inside function bodies
+#
+# Theme: Elara's Potion Shop — pricing, discounts, and inventory calculations.
+#
+# NOTE: Urd functions are pure — they cannot access outer scope variables,
+# globals, or other functions.  All inputs must be passed as parameters.
+
+# ── Characters ────────────────────────────────────────────────────────────────
+const narrator = :{ name: "Narrator", name_color: "white"  }
+const elara    = :{ name: "Elara",    name_color: "purple" }
+const customer = :{ name: "Customer", name_color: "green"  }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FUNCTION DEFINITIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Basic arithmetic with return-type annotation ──────────────────────────────
+
+## Computes the total cost of `qty` items at `unit_price` gold each.
+fn total_cost(qty, unit_price) -> int {
+    return qty * unit_price
+}
+
+## Applies a flat discount (in gold) to a price, flooring at zero.
+fn apply_discount(price, discount) -> int {
+    if discount >= price {
+        return 0
+    }
+    return price - discount
+}
+
+# ── Percentage helpers using arithmetic ───────────────────────────────────────
+
+## Returns the given percentage of a value.
+fn percent_of(value, pct) -> int {
+    let result = value * pct / 100
+    return result
+}
+
+## Calculates a percentage discount off a price.
+fn discounted_price(price, pct) -> int {
+    let off = price * pct / 100
+    return price - off
+}
+
+# ── Predicate function (returns bool) ─────────────────────────────────────────
+
+## Returns true if the customer qualifies for the loyalty discount (50+ gold spent).
+fn qualifies_for_loyalty(total_spent) -> bool {
+    return total_spent >= 50
+}
+
+# ── Function returning a string ───────────────────────────────────────────────
+
+## Builds a receipt line: "3x Healing Salve = 45 gp"
+fn receipt_line(name, qty, line_total) -> str {
+    return "{qty}x {name} = {line_total} gp"
+}
+
+# ── Function with conditional logic ───────────────────────────────────────────
+
+## Returns a tier label based on how much gold the customer has spent.
+fn loyalty_tier(total_spent) -> str {
+    if total_spent >= 200 {
+        return "Platinum"
+    }
+    if total_spent >= 100 {
+        return "Gold"
+    }
+    if total_spent >= 50 {
+        return "Silver"
+    }
+    return "Bronze"
+}
+
+# ── Function that returns different value types ───────────────────────────────
+
+## Returns the potion description if known, or null for unknown potions.
+fn potion_description(potion_name) {
+    if potion_name == "Healing Salve" {
+        return "Restores 25 HP over 10 seconds."
+    }
+    if potion_name == "Mana Draught" {
+        return "Restores 40 MP instantly."
+    }
+    if potion_name == "Liquid Courage" {
+        return "Grants +5 STR for one encounter."
+    }
+    # No explicit return for unknown potions yields null.
+}
+
+# ── Clamping utility (multiple params, nested conditionals) ───────────────────
+
+## Clamps a value between lo and hi (inclusive).
+fn clamp(val, lo, hi) -> int {
+    if val < lo {
+        return lo
+    }
+    if val > hi {
+        return hi
+    }
+    return val
+}
+
+# ── Functions used as higher-order callbacks ──────────────────────────────────
+# These are named functions passed to list methods like .map(), .filter(), etc.
+
+## Doubles a price (for the bulk-order inflation scenario).
+fn double_price(p) -> int {
+    return p * 2
+}
+
+## Returns true if a quantity exceeds 5 (used to find bulk items).
+fn is_bulk(qty) -> bool {
+    return qty > 5
+}
+
+## Accumulates a running total (used with .reduce()).
+fn sum_two(acc, val) -> int {
+    return acc + val
+}
+
+## Returns true if a quantity exceeds 10.
+fn is_large_order(qty) -> bool {
+    return qty > 10
+}
+
+## Returns true if a quantity is exactly 1.
+fn is_single_unit(qty) -> bool {
+    return qty == 1
+}
+
+## Returns true if a quantity is positive.
+fn is_positive(qty) -> bool {
+    return qty > 0
+}
+
+## Comparator: returns true if a < b (ascending sort).
+fn ascending(a, b) -> bool {
+    return a < b
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STORY LABELS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@entry
+label start {
+    narrator: {
+        "The brass bell above the door chimes softly."
+        "You step into Elara's Potion Shop."
+        "Shelves of coloured glass line every wall, each bottle glowing faintly."
+    }
+
+    elara: "Welcome to Elara's! What can I brew for you today?"
+
+    # ── Prices ────────────────────────────────────────────────────────────────
+    let salve_price    = 15
+    let draught_price  = 25
+    let courage_price  = 40
+
+    # ── Functions used directly in expressions ────────────────────────────────
+    let salve_3   = total_cost(3, salve_price)
+    let draught_2 = total_cost(2, draught_price)
+
+    narrator: "Price list:"
+    narrator: "  Healing Salve  : {salve_price} gp each"
+    narrator: "  Mana Draught   : {draught_price} gp each"
+    narrator: "  Liquid Courage : {courage_price} gp each"
+
+    customer: "I'll take three Healing Salves and two Mana Draughts."
+
+    # ── Calling functions, composing results ──────────────────────────────────
+    let subtotal = salve_3 + draught_2
+
+    # Function calls with string args must be pre-computed into variables
+    # because nested quotes are not allowed inside interpolation blocks.
+    let line_salve   = receipt_line("Healing Salve", 3, salve_3)
+    let line_draught = receipt_line("Mana Draught", 2, draught_2)
+
+    narrator: {
+        "  {line_salve}"
+        "  {line_draught}"
+        "  ----------------------"
+        "  Subtotal: {subtotal} gp"
+    }
+
+    jump discount_phase
+}
+
+label discount_phase {
+    let subtotal = 95
+
+    # ── Boolean function in a conditional ─────────────────────────────────────
+    let is_loyal = qualifies_for_loyalty(subtotal)
+    let tier = loyalty_tier(subtotal)
+
+    narrator: "Loyalty tier: {tier}"
+
+    if is_loyal {
+        # ── Functions composed in expressions ─────────────────────────────────
+        let final_price = discounted_price(subtotal, 10)
+        let savings = subtotal - final_price
+
+        elara: {
+            "Ah, a {tier}-tier customer!"
+            "You qualify for a 10% loyalty discount."
+            "That brings your total down to {final_price} gp. You save {savings} gp!"
+        }
+    } else {
+        let final_price = subtotal
+        elara: "Your total comes to {final_price} gp."
+    }
+
+    jump potion_info
+}
+
+label potion_info {
+    # ── Function returning different types (string or null) ───────────────────
+    narrator: "You ask Elara about each potion."
+
+    let desc_salve   = potion_description("Healing Salve")
+    let desc_draught = potion_description("Mana Draught")
+    let desc_unknown = potion_description("Dragon Bile")
+
+    elara: "Healing Salve: {desc_salve}"
+    elara: "Mana Draught: {desc_draught}"
+    elara: "Dragon Bile: {desc_unknown}"
+
+    # That last one returns null because Elara doesn't stock it!
+    narrator: "Elara shrugs at the mention of Dragon Bile."
+    elara: "Never heard of that one. Sounds dangerous."
+
+    jump bulk_order
+}
+
+label bulk_order {
+    narrator: "A merchant arrives with a bulk order."
+
+    # -- Named functions passed to list higher-order methods ----------------
+    let order_quantities = [5, 12, 3, 8, 20, 1]
+
+    # map: double every price (using a named function)
+    let prices = [5, 120, 2, 45, 8]
+    let inflated = prices.map(double_price)
+    narrator: "Original prices: {prices}"
+    narrator: "Inflated (x2):   {inflated}"
+
+    # filter: find bulk items (quantity > 5)
+    let bulk_items = order_quantities.filter(is_bulk)
+    narrator: "Order quantities: {order_quantities}"
+    narrator: "Bulk items (qty > 5): {bulk_items}"
+
+    # reduce: sum all quantities
+    let total_units = order_quantities.reduce(0, sum_two)
+    narrator: "Total units ordered: {total_units}"
+
+    # find: first quantity exceeding 10
+    let first_large = order_quantities.find(is_large_order)
+    narrator: "First large order (qty > 10): {first_large}"
+
+    # any / all
+    let has_single = order_quantities.any(is_single_unit)
+    let all_positive = order_quantities.all(is_positive)
+    narrator: "Has a single-unit order? {has_single}"
+    narrator: "All quantities positive? {all_positive}"
+
+    # sort_by: ascending order
+    let sorted = order_quantities.sort_by(ascending)
+    narrator: "Sorted quantities: {sorted}"
+
+    jump final_tally
+}
+
+label final_tally {
+    # ── clamp used in an expression ───────────────────────────────────────────
+    let raw_discount = 35
+    let clamped = clamp(raw_discount, 0, 25)
+
+    narrator: "Maximum discount is 25 gp."
+    narrator: "Requested {raw_discount} gp off, clamped to {clamped} gp."
+
+    let final_price = apply_discount(100, clamped)
+    narrator: "Final price after clamped discount: {final_price} gp"
+
+    # ── Functions in complex inline expressions ───────────────────────────────
+    let combined = total_cost(2, 15) + total_cost(3, 25)
+    narrator: "Quick combo deal (2 Salves + 3 Draughts): {combined} gp"
+
+    elara: {
+        "Thank you for your patronage!"
+        "Come back when the moon is full. I'll have a fresh batch of everything."
+    }
+
+    narrator: "The brass bell chimes once more as you step into the evening air."
+
+    end!()
+}

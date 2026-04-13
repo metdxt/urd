@@ -3,13 +3,45 @@
 //! Centralises example Urd scripts so render (and other) tests can
 //! import them from one place.  Changes to language syntax only need
 //! to be applied once.
-//!
-// TODO: extract a shared `run_script(src, step_cap) -> Vec<VmStep>` helper
-// into this module.  The same function is copy-pasted across adversarial.rs,
-// adversarial_new.rs, adversarial_round2.rs, builtin_methods.rs,
-// in_operator_and_functions.rs, string_format_and_extern.rs, and
-// vm_decorator.rs — each with a different step cap (64 / 128 / 256 / 1024).
-// A single parametric version here would eliminate the duplication.
+
+use urd::{
+    VmStep,
+    compiler::{Compiler, loader::parse_source},
+    vm::{Vm, registry::DecoratorRegistry},
+};
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+/// Drive a [`Vm`] to completion (or the first terminal step), returning every
+/// [`VmStep`] observed.  Capped at `step_cap` steps to prevent infinite loops.
+pub fn drive_vm(vm: &mut Vm, step_cap: usize) -> Vec<VmStep> {
+    let mut steps = Vec::new();
+    for _ in 0..step_cap {
+        let step = vm.next(None);
+        let terminal = matches!(step, VmStep::Ended | VmStep::Error(_));
+        steps.push(step);
+        if terminal {
+            break;
+        }
+    }
+    steps
+}
+
+/// Parse, compile, and drive the VM to completion (or the first terminal step),
+/// returning every [`VmStep`] observed.  Capped at `step_cap` steps to prevent
+/// infinite loops in broken scripts.
+#[allow(clippy::expect_used)]
+pub fn run_script(src: &str, step_cap: usize) -> Vec<VmStep> {
+    let ast = parse_source(src).expect("script should parse");
+    let graph = Compiler::compile(&ast).expect("script should compile");
+    let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm should initialise");
+    drive_vm(&mut vm, step_cap)
+}
+
+/// Convenience wrapper: [`run_script`] with a default cap of 256 steps.
+pub fn run_script_default(src: &str) -> Vec<VmStep> {
+    run_script(src, 256)
+}
 
 /// Full showcase Urd script exercising every major language feature.
 /// Used as a smoke-test input for both DOT and Mermaid renderers.

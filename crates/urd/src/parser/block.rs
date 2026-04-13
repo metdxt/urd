@@ -277,7 +277,52 @@ fn terminator_statement<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
     })
 }
 
-/// Helper for statement parsing, allowing recursion injection.
+/// Core statement parser — enumerates every valid statement form in Urd.
+///
+/// # Bare expression statements are **not** supported
+///
+/// Unlike most imperative languages, `statement_inner` has **no `expr()` fallback**.
+/// A standalone expression such as a bare function call is *not* a valid statement:
+///
+/// ```text
+/// # ✗ Parse error — bare call is not a statement
+/// log("debug")
+///
+/// # ✓ Capture the return value (even if unused)
+/// let _result = log("debug")
+/// ```
+///
+/// This means every statement must match one of the explicit forms listed in the
+/// combinator chain below (declaration, assignment, jump, return, dialogue,
+/// menu, label, if/match, fn/decorator def, import, terminator, or a decorated
+/// variant of the above).
+///
+/// # Why no `expr()` fallback?
+///
+/// Urd is a **dialogue scripting language**, not a general-purpose language.
+/// The statement grammar is intentionally restrictive:
+///
+/// - **Readability over flexibility** — narrative scripts are read by writers and
+///   designers, not just programmers.  Allowing arbitrary expressions as
+///   statements (e.g. `a + b`, `true`, `items.len()`) would introduce
+///   "do-nothing" lines that are almost always bugs in a dialogue context.
+///
+/// - **Side-effect–free expressions are meaningless** — Urd functions are pure
+///   and cannot mutate ambient state.  A bare `add(1, 2)` has no observable
+///   effect, so permitting it would only mask mistakes.
+///
+/// - **Clear intent** — requiring `let _result = …` for fire-and-forget calls
+///   makes the "I don't care about the result" intent explicit and grep-able.
+///   (Note: bare `_` is a wildcard token, not an identifier, so `let _ = …`
+///   is a parse error — use a named variable like `_result` instead.)
+///
+/// // DESIGN NOTE: This is a deliberate omission.  The grammar reference
+/// // (`docs/src/reference/grammar.md`) lists `expr_stmt` as a production but
+/// // it was never implemented in the parser.  If bare expression statements are
+/// // desired in the future (e.g. for side-effectful host callbacks), add
+/// // `.or(expr())` as the **last** alternative in the chain below and update
+/// // the grammar reference accordingly.  See the project roadmap for the
+/// // tracking item "bare expression statements".
 fn statement_inner<'tok, I: UrdInput<'tok>>(
     block: impl UrdParser<'tok, I> + 'tok,
 ) -> impl UrdParser<'tok, I> {
@@ -315,6 +360,9 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
     // generic expression fallback can consume them.
     // anon_fn_assignment must precede declaration() because both start with
     // `let`/`const`/`global`; the `fn` token after `=` distinguishes them.
+    //
+    // NOTE: There is intentionally no `.or(expr())` fallback here.
+    // See the doc comment on this function for the rationale.
     terminator_statement()
         .or(let_call_statement())
         .or(assignment())

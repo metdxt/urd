@@ -16,7 +16,9 @@
 //!    - `LetCall { target, .. }` → add `target` to `reachable`.
 //!    - `LabeledBlock { label, .. }` that carries a decorator named `"entry"`
 //!      → add `label` to `reachable` (it is a program entry point).
-//! 3. Any label in `defined` that is **not** in `reachable` emits
+//! 3. Merge in the caller-supplied `externally_reachable` set — these are
+//!    labels that other modules jump to (populated by the import resolver).
+//! 4. Any label in `defined` that is **not** in the merged reachable set emits
 //!    [`AnalysisError::UnreachableLabel`].
 //!
 //! ## Exemptions
@@ -25,6 +27,9 @@
 //!   `inv.show_inventory`) are skipped in every step: they cannot be local
 //!   label definitions and must not count as making a local label reachable.
 //! - A label decorated with `@entry` is always reachable by definition.
+//! - Labels listed in the `externally_reachable` set (typically provided by
+//!   an import resolver that knows which labels other modules jump into) are
+//!   never flagged.
 
 use std::collections::{HashMap, HashSet};
 
@@ -44,15 +49,15 @@ use crate::parser::ast::{Ast, AstContent, walk_ast};
 ///
 /// Results are ordered by source position (ascending) for deterministic output.
 ///
-/// # Known Limitations
+/// # Parameters
 ///
-/// This pass operates on a **single module** in isolation. Labels that are only
-/// referenced by `jump` or `let-call` statements in *other* files (i.e.
-/// cross-module callers via `import`) will be falsely flagged as unreachable.
-/// A proper fix requires cross-module analysis — tracking which labels are
-/// exported and which imported modules reference them — which is not yet
-/// implemented.
-pub fn check(ast: &Ast) -> Vec<AnalysisError> {
+/// * `ast` — the parsed AST of the module under analysis.
+/// * `externally_reachable` — a set of label names that are known to be
+///   reachable from *other* modules (e.g. via `import`).  Labels present in
+///   this set will **not** be flagged as unreachable even if no local `jump`
+///   or `@entry` targets them.  Pass an empty set when cross-module
+///   information is unavailable.
+pub fn check(ast: &Ast, externally_reachable: &HashSet<String>) -> Vec<AnalysisError> {
     // ── Step 1: collect all locally-defined labels and their spans ──────────
     let defined = collect_defined(ast);
     if defined.is_empty() {
@@ -63,9 +68,12 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let reachable = collect_reachable(ast);
 
     // ── Step 3: emit an error for every defined label not in the reachable set
+    //            and not in the externally-reachable set ──────────────────────
     let mut errors: Vec<AnalysisError> = defined
         .into_iter()
-        .filter(|(name, _span)| !reachable.contains(name.as_str()))
+        .filter(|(name, _span)| {
+            !reachable.contains(name.as_str()) && !externally_reachable.contains(name.as_str())
+        })
         .map(|(label, span)| AnalysisError::UnreachableLabel { label, span })
         .collect();
 
@@ -152,6 +160,12 @@ mod tests {
         parse_source(src).expect("test source should parse")
     }
 
+    /// Helper: run `check` with an empty externally-reachable set (the common
+    /// case for single-module analysis).
+    fn check_no_external(ast: &Ast) -> Vec<AnalysisError> {
+        check(ast, &HashSet::new())
+    }
+
     // -----------------------------------------------------------------------
     // No-error cases
     // -----------------------------------------------------------------------
@@ -159,7 +173,7 @@ mod tests {
     #[test]
     fn empty_script_produces_no_errors() {
         let ast = parse("");
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
@@ -174,7 +188,7 @@ label main {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
@@ -194,7 +208,7 @@ label finish {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
@@ -212,7 +226,7 @@ label helper {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
@@ -239,7 +253,7 @@ label path_b {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
@@ -261,7 +275,7 @@ label target {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
@@ -279,7 +293,7 @@ label orphan {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
         match &errors[0] {
             AnalysisError::UnreachableLabel { label, .. } => {
@@ -303,7 +317,7 @@ label dead {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
         match &errors[0] {
             AnalysisError::UnreachableLabel { label, .. } => {
@@ -329,7 +343,7 @@ label ghost_b {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert_eq!(errors.len(), 2, "expected 2 errors, got: {errors:?}");
 
         let labels: Vec<&str> = errors
@@ -361,7 +375,7 @@ label beta {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert_eq!(errors.len(), 2, "expected 2 errors, got: {errors:?}");
 
         let labels: Vec<&str> = errors
@@ -392,7 +406,7 @@ label tail {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
         match &errors[0] {
             AnalysisError::UnreachableLabel { label, .. } => {
@@ -417,7 +431,7 @@ label sub {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
@@ -440,7 +454,7 @@ label start {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         // `start` should still be flagged as unreachable — the qualified jump
         // does not satisfy it.
         assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
@@ -467,7 +481,7 @@ label worker {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         // `worker` should be unreachable — `jump other.worker` is cross-module.
         assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
         match &errors[0] {
@@ -489,7 +503,7 @@ label main {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert!(
             errors.iter().all(|e| !matches!(
                 e,
@@ -515,7 +529,7 @@ label second {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         // This pass emits UnreachableLabel only; neither label is unreachable.
         assert!(
             errors.is_empty(),
@@ -543,7 +557,7 @@ label destination {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
@@ -563,7 +577,7 @@ label third_dead {
 }
 "#,
         );
-        let errors = check(&ast);
+        let errors = check_no_external(&ast);
         assert_eq!(errors.len(), 3);
 
         let labels: Vec<&str> = errors
@@ -579,5 +593,147 @@ label third_dead {
             vec!["first_dead", "second_dead", "third_dead"],
             "errors should be in source order"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Externally-reachable labels
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn externally_reachable_label_is_not_flagged() {
+        // `helper` has no local jump or @entry targeting it, but it is listed
+        // in the externally-reachable set (simulating another module that
+        // imports and jumps to it).
+        let ast = parse(
+            r#"
+@entry
+label main {
+  end!()
+}
+label helper {
+  end!()
+}
+"#,
+        );
+        let mut ext = HashSet::new();
+        ext.insert("helper".to_owned());
+
+        let errors = check(&ast, &ext);
+        assert!(
+            errors.is_empty(),
+            "expected no errors when 'helper' is externally reachable, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn externally_reachable_does_not_suppress_other_unreachable_labels() {
+        // `helper` is externally reachable, but `orphan` is not — it should
+        // still be flagged.
+        let ast = parse(
+            r#"
+@entry
+label main {
+  end!()
+}
+label helper {
+  end!()
+}
+label orphan {
+  end!()
+}
+"#,
+        );
+        let mut ext = HashSet::new();
+        ext.insert("helper".to_owned());
+
+        let errors = check(&ast, &ext);
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::UnreachableLabel { label, .. } => {
+                assert_eq!(label, "orphan");
+            }
+            other => panic!("expected UnreachableLabel for 'orphan', got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn externally_reachable_label_not_defined_locally_is_harmless() {
+        // The externally-reachable set mentions a label that doesn't even
+        // exist in this file.  That must not cause any crash or spurious error.
+        let ast = parse(
+            r#"
+@entry
+label main {
+  end!()
+}
+"#,
+        );
+        let mut ext = HashSet::new();
+        ext.insert("nonexistent".to_owned());
+
+        let errors = check(&ast, &ext);
+        assert!(
+            errors.is_empty(),
+            "expected no errors, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn all_labels_externally_reachable_produces_no_errors() {
+        // Every defined label is in the externally-reachable set — none should
+        // be flagged.
+        let ast = parse(
+            r#"
+label alpha {
+  end!()
+}
+label beta {
+  end!()
+}
+"#,
+        );
+        let mut ext = HashSet::new();
+        ext.insert("alpha".to_owned());
+        ext.insert("beta".to_owned());
+
+        let errors = check(&ast, &ext);
+        assert!(
+            errors.is_empty(),
+            "expected no errors when all labels are externally reachable, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn externally_reachable_combined_with_local_jump() {
+        // `helper` is externally reachable, `target` is locally jumped to,
+        // `dead` is neither — only `dead` should be flagged.
+        let ast = parse(
+            r#"
+@entry
+label main {
+  jump target
+}
+label target {
+  end!()
+}
+label helper {
+  end!()
+}
+label dead {
+  end!()
+}
+"#,
+        );
+        let mut ext = HashSet::new();
+        ext.insert("helper".to_owned());
+
+        let errors = check(&ast, &ext);
+        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
+        match &errors[0] {
+            AnalysisError::UnreachableLabel { label, .. } => {
+                assert_eq!(label, "dead");
+            }
+            other => panic!("expected UnreachableLabel for 'dead', got: {other:?}"),
+        }
     }
 }

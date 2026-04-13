@@ -17,6 +17,7 @@ use chumsky::span::{SimpleSpan, Span as _};
 use dashmap::DashMap;
 use tower_lsp::lsp_types::{Location, Url};
 
+use urd::analysis::imports::collect_type_defs_from_ast;
 use urd::compiler::loader::parse_source;
 use urd::parser::ast::{Ast, AstContent};
 
@@ -346,61 +347,6 @@ impl WorkspaceIndex {
         }
 
         (structs, enums, labels)
-    }
-}
-
-// ── Type-definition collection (cross-file analysis) ─────────────────────────
-
-/// Recursively walk `ast` and collect every `StructDecl` and `EnumDecl` into
-/// the provided maps.
-///
-/// Each name is inserted under:
-/// - a qualified key `"alias.Name"` — for references written as `chars.Character`
-///   (only when `alias` is non-empty)
-/// - an unqualified key `"Name"` — for bare references
-///
-/// Existing entries are never overwritten (first-write-wins), so caller order
-/// determines precedence when multiple modules define a same-named type.
-fn collect_type_defs_from_ast(
-    ast: &Ast,
-    alias: &str,
-    structs: &mut std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
-    enums: &mut std::collections::HashMap<String, Vec<String>>,
-) {
-    use urd::parser::ast::AstContent;
-    match ast.content() {
-        AstContent::Block(stmts) => {
-            for stmt in stmts {
-                collect_type_defs_from_ast(stmt, alias, structs, enums);
-            }
-        }
-        AstContent::StructDecl { name, fields } => {
-            // Store under qualified ("chars.Character") and unqualified
-            // ("Character") keys, but never generate malformed ".Character".
-            if !alias.is_empty() {
-                let qualified = format!("{alias}.{name}");
-                structs.entry(qualified).or_insert_with(|| fields.clone());
-            }
-            structs
-                .entry(name.clone())
-                .or_insert_with(|| fields.clone());
-        }
-        AstContent::EnumDecl { name, variants } => {
-            // Extract just the variant names (dropping source spans).
-            // Avoid malformed ".Faction" when alias is empty.
-            let variant_names: Vec<String> = variants.iter().map(|(n, _)| n.clone()).collect();
-            if !alias.is_empty() {
-                let qualified = format!("{alias}.{name}");
-                enums
-                    .entry(qualified)
-                    .or_insert_with(|| variant_names.clone());
-            }
-            enums.entry(name.clone()).or_insert_with(|| variant_names);
-        }
-        AstContent::LabeledBlock { block, .. } => {
-            collect_type_defs_from_ast(block, alias, structs, enums);
-        }
-        _ => {}
     }
 }
 

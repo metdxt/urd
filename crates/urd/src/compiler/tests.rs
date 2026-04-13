@@ -1157,3 +1157,74 @@ fn test_two_dialogues_in_same_block_get_source_order_ids() {
         id_map,
     );
 }
+
+/// `struct Foo { a: int, b: str }` compiles to a single `IrNodeKind::DefineStruct`
+/// node carrying the struct name and ordered field names.
+#[test]
+fn test_struct_decl_compiles_to_define_struct() {
+    use crate::parser::ast::{StructField, TokSpan, TypeAnnotation};
+
+    let fields = vec![
+        StructField {
+            name: "a".into(),
+            span: TokSpan::default(),
+            type_annotation: TypeAnnotation::Int,
+        },
+        StructField {
+            name: "b".into(),
+            span: TokSpan::default(),
+            type_annotation: TypeAnnotation::Str,
+        },
+    ];
+    let struct_ast = Ast::struct_decl("Foo".to_string(), fields);
+    let script_ast = Ast::block(vec![struct_ast]);
+
+    let graph = Compiler::compile(&script_ast).expect("compile failed");
+    let entry_idx = graph.entry.expect("graph must have an entry node");
+
+    match node_kind(&graph, entry_idx) {
+        IrNodeKind::DefineStruct { name, fields } => {
+            assert_eq!(name, "Foo");
+            assert_eq!(fields, &["a", "b"]);
+            assert!(
+                next_of(&graph, entry_idx).is_none(),
+                "single DefineStruct must have no outgoing Next edge"
+            );
+        }
+        other => panic!("expected DefineStruct at entry, got {:?}", other),
+    }
+}
+
+/// Building an AST deeper than `MAX_COMPILER_DEPTH` (512) must cause the
+/// compiler to bail out with `CompilerError::Internal` rather than blowing
+/// the call stack.
+#[test]
+fn test_max_compiler_depth_exceeded_returns_error() {
+    // Build 513 nested if-blocks: if true { if true { if true { … } } }
+    // The innermost body is an empty block.
+    const DEPTH: usize = 513;
+
+    let mut ast = Ast::block(vec![]);
+    for _ in 0..DEPTH {
+        let condition = Ast::equals_op(int(1), int(1));
+        ast = Ast::if_stmt(condition, ast, None);
+    }
+    // Wrap in a top-level block so it looks like a normal script.
+    let script = Ast::block(vec![ast]);
+
+    let err = Compiler::compile(&script).expect_err(
+        "compiling a script nested beyond MAX_COMPILER_DEPTH must fail",
+    );
+
+    match &err {
+        CompilerError::Internal(msg) => {
+            assert!(
+                msg.contains("maximum nesting depth exceeded"),
+                "unexpected Internal message: {msg}",
+            );
+        }
+        other => panic!(
+            "expected CompilerError::Internal for depth overflow, got: {other}",
+        ),
+    }
+}

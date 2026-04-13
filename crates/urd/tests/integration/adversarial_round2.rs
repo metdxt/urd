@@ -41,21 +41,8 @@ use urd::{
 
 /// Parse, compile, and drive the VM to completion or the first terminal step.
 /// Capped at 1024 steps to prevent infinite loops.
-#[allow(clippy::expect_used)]
 fn run_script(src: &str) -> Vec<VmStep> {
-    let ast = parse_source(src).expect("script should parse");
-    let graph = Compiler::compile(&ast).expect("script should compile");
-    let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm should initialise");
-    let mut steps = Vec::new();
-    for _ in 0..1024 {
-        let step = vm.next(None);
-        let terminal = matches!(step, VmStep::Ended | VmStep::Error(_));
-        steps.push(step);
-        if terminal {
-            break;
-        }
-    }
-    steps
+    super::fixtures::run_script(src, 1024)
 }
 
 /// Collect every dialogue text line from a step sequence.
@@ -1218,7 +1205,7 @@ fn test_deeply_nested_braces_must_not_crash() {
     {
         let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm init");
         for _ in 0..2 {
-            vm.next(None);
+            let _ = vm.next(None);
         }
     }
 }

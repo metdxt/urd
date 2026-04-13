@@ -6,6 +6,7 @@ members = [
     "crates/urd-lsp",
     "crates/urd-quest",
 ]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"

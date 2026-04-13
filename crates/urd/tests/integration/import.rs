@@ -77,6 +77,7 @@ fn collect_dialogue_lines(vm: &mut Vm) -> Result<Vec<String>, Box<dyn std::error
             }
             VmStep::Event(_) => {}
             VmStep::Error(e) => return Err(io::Error::other(format!("VM error: {e}")).into()),
+            _ => {}
         }
     }
     Ok(out)

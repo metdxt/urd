@@ -15,17 +15,14 @@ use urd::{
     vm::{Vm, registry::DecoratorRegistry},
 };
 
+use super::fixtures;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Parse, compile, and drive the VM to completion (or the first terminal step),
-/// returning every [`VmStep`] observed.  Capped at 1024 steps to prevent
-/// infinite loops in broken scripts.
-#[allow(clippy::expect_used)]
+/// returning every [`VmStep`] observed.  Capped at 1024 steps.
 fn run_script(src: &str) -> Vec<VmStep> {
-    let ast = parse_source(src).expect("script should parse");
-    let graph = Compiler::compile(&ast).expect("script should compile");
-    let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm should initialise");
-    drive_vm(&mut vm)
+    fixtures::run_script(src, 1024)
 }
 
 /// Like [`run_script`] but accepts a callback that can call
@@ -36,20 +33,7 @@ fn run_script_with_externs(src: &str, setup: impl FnOnce(&mut Vm)) -> Vec<VmStep
     let graph = Compiler::compile(&ast).expect("script should compile");
     let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm should initialise");
     setup(&mut vm);
-    drive_vm(&mut vm)
-}
-
-fn drive_vm(vm: &mut Vm) -> Vec<VmStep> {
-    let mut steps = Vec::new();
-    for _ in 0..1024 {
-        let step = vm.next(None);
-        let terminal = matches!(step, VmStep::Ended | VmStep::Error(_));
-        steps.push(step);
-        if terminal {
-            break;
-        }
-    }
-    steps
+    fixtures::drive_vm(&mut vm, 1024)
 }
 
 /// Collect every dialogue line (as a plain `String`) from a step sequence.

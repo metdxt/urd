@@ -22,33 +22,15 @@
 //! 3. **Fails at runtime** because `eval_binop` for `Assign` evaluates the
 //!    RHS, and `ghost_var` is not in the environment.
 
-use urd::{
-    Event, RuntimeValue, VmError, VmStep,
-    compiler::{Compiler, loader::parse_source},
-    vm::{Vm, registry::DecoratorRegistry},
-};
+use urd::{Event, RuntimeValue, VmError, VmStep};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
 /// Parse, compile, and drive the VM to completion (or the first error),
 /// returning every [`VmStep`] observed.  Caps at 64 steps to prevent infinite
 /// loops in broken tests.
-#[allow(clippy::expect_used)]
 fn run_script(src: &str) -> Vec<VmStep> {
-    let ast = parse_source(src).expect("script should parse without errors");
-    let graph = Compiler::compile(&ast).expect("script should compile without errors");
-    let mut vm = Vm::new(graph, DecoratorRegistry::new()).expect("vm should initialise");
-
-    let mut steps = Vec::new();
-    for _ in 0..64 {
-        let step = vm.next(None);
-        let terminal = matches!(step, VmStep::Ended | VmStep::Error(_));
-        steps.push(step);
-        if terminal {
-            break;
-        }
-    }
-    steps
+    super::fixtures::run_script(src, 64)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

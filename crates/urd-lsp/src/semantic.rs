@@ -2102,17 +2102,44 @@ fn collect_field_in_map_keys(ast: &Ast, field_name: &str, out: &mut Vec<SimpleSp
 
 /// Walk the AST and produce a flat list of [`SemanticTokenInfo`] ranges.
 ///
+/// `src` is the original source text, used to trim whitespace from operator
+/// spans (BinOp / UnaryOp).  Pass `""` when the source is unavailable — the
+/// operator spans will then fall back to their raw (untrimmed) ranges.
+///
 /// Note: comments are stripped by the Urd lexer before parsing, so they do
 /// **not** appear in the AST and cannot be tagged here.
-pub fn semantic_tokens(ast: &Ast) -> Vec<SemanticTokenInfo> {
+pub fn semantic_tokens(ast: &Ast, src: &str) -> Vec<SemanticTokenInfo> {
     let mut tokens = Vec::new();
-    emit_semantic_tokens(ast, &mut tokens);
+    emit_semantic_tokens(ast, src, &mut tokens);
     // Sort by start offset so the consumer can compute deltas easily.
     tokens.sort_by_key(|t| t.start);
     tokens
 }
 
-fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
+/// Trim leading/trailing ASCII whitespace from the byte range `[start, end)`,
+/// returning the narrowed `(start, end)` pair.  Falls back to the original
+/// range when `src` does not cover `[start, end)`.
+fn trim_token_span(src: &str, start: usize, end: usize) -> (usize, usize) {
+    if start >= end || end > src.len() {
+        return (start, end);
+    }
+    let bytes = &src.as_bytes()[start..end];
+    let leading = bytes.iter().take_while(|b| b.is_ascii_whitespace()).count();
+    let trailing = bytes
+        .iter()
+        .rev()
+        .take_while(|b| b.is_ascii_whitespace())
+        .count();
+    let s = start + leading;
+    let e = end - trailing;
+    if s >= e {
+        // Entire range was whitespace — return original to avoid zero-length token.
+        return (start, end);
+    }
+    (s, e)
+}
+
+fn emit_semantic_tokens(ast: &Ast, src: &str, out: &mut Vec<SemanticTokenInfo>) {
     let span = ast.span();
     let len = span.end.saturating_sub(span.start);
 
@@ -2149,19 +2176,13 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
         }
 
         AstContent::BinOp { op: _, left, right } => {
-            emit_semantic_tokens(left, out);
-            emit_semantic_tokens(right, out);
-            // The operator token itself sits between left and right spans.
-            //
-            // TODO(L-12): This span includes surrounding whitespace — for
-            // `a + b` the "operator" token covers ` + ` (3 chars) instead of
-            // just `+` (1 char).  Fixing this properly requires access to the
-            // source text so we can trim leading/trailing whitespace from the
-            // span, but `emit_semantic_tokens` only receives the AST.  A fix
-            // would either thread the source `&str` through every call, or
-            // store the precise operator span in the AST node itself.
-            let op_start = left.span().end;
-            let op_end = right.span().start;
+            emit_semantic_tokens(left, src, out);
+            emit_semantic_tokens(right, src, out);
+            // The operator token sits between left and right spans.
+            // Trim surrounding whitespace so `a + b` highlights just `+`.
+            let raw_start = left.span().end;
+            let raw_end = right.span().start;
+            let (op_start, op_end) = trim_token_span(src, raw_start, raw_end);
             if op_end > op_start {
                 out.push(SemanticTokenInfo {
                     start: op_start,
@@ -2173,18 +2194,18 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
 
         AstContent::UnaryOp { op: _, expr } => {
             // Operator token is the bytes before the operand.
-            // TODO(L-12): Same whitespace-in-span issue as BinOp above —
-            // the span may include trailing whitespace between the operator
-            // and its operand.
-            let op_end = expr.span().start;
-            if op_end > span.start {
+            // Trim trailing whitespace between operator and operand.
+            let raw_start = span.start;
+            let raw_end = expr.span().start;
+            let (op_start, op_end) = trim_token_span(src, raw_start, raw_end);
+            if op_end > op_start {
                 out.push(SemanticTokenInfo {
-                    start: span.start,
-                    length: op_end - span.start,
+                    start: op_start,
+                    length: op_end - op_start,
                     token_type: SemanticTokenType::Operator,
                 });
             }
-            emit_semantic_tokens(expr, out);
+            emit_semantic_tokens(expr, src, out);
         }
 
         AstContent::Declaration {
@@ -2202,8 +2223,8 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     token_type: SemanticTokenType::Keyword,
                 });
             }
-            emit_semantic_tokens(decl_name, out);
-            emit_semantic_tokens(decl_defs, out);
+            emit_semantic_tokens(decl_name, src, out);
+            emit_semantic_tokens(decl_defs, src, out);
         }
 
         AstContent::LabeledBlock {
@@ -2227,7 +2248,7 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     token_type: SemanticTokenType::Label,
                 });
             }
-            emit_semantic_tokens(block, out);
+            emit_semantic_tokens(block, src, out);
         }
 
         AstContent::Jump {
@@ -2267,7 +2288,7 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                 });
             }
             if let Some(v) = value {
-                emit_semantic_tokens(v, out);
+                emit_semantic_tokens(v, src, out);
             }
         }
 
@@ -2285,10 +2306,10 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     token_type: SemanticTokenType::Keyword,
                 });
             }
-            emit_semantic_tokens(condition, out);
-            emit_semantic_tokens(then_block, out);
+            emit_semantic_tokens(condition, src, out);
+            emit_semantic_tokens(then_block, src, out);
             if let Some(eb) = else_block {
-                emit_semantic_tokens(eb, out);
+                emit_semantic_tokens(eb, src, out);
             }
         }
 
@@ -2301,12 +2322,12 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     token_type: SemanticTokenType::Keyword,
                 });
             }
-            emit_semantic_tokens(scrutinee, out);
+            emit_semantic_tokens(scrutinee, src, out);
             for arm in arms {
                 if let MatchPattern::Value(v) = &arm.pattern {
-                    emit_semantic_tokens(v, out);
+                    emit_semantic_tokens(v, src, out);
                 }
-                emit_semantic_tokens(&arm.body, out);
+                emit_semantic_tokens(&arm.body, src, out);
             }
         }
 
@@ -2389,7 +2410,7 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     token_type: SemanticTokenType::Keyword,
                 });
             }
-            emit_semantic_tokens(body, out);
+            emit_semantic_tokens(body, src, out);
         }
 
         AstContent::FnDef {
@@ -2420,7 +2441,7 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     });
                 }
             }
-            emit_semantic_tokens(body, out);
+            emit_semantic_tokens(body, src, out);
         }
 
         AstContent::Import { .. } => {
@@ -2445,12 +2466,12 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     token_type: SemanticTokenType::Function,
                 });
             }
-            emit_semantic_tokens(params, out);
+            emit_semantic_tokens(params, src, out);
         }
 
         AstContent::Dialogue { speakers, content } => {
-            emit_semantic_tokens(speakers, out);
-            emit_semantic_tokens(content, out);
+            emit_semantic_tokens(speakers, src, out);
+            emit_semantic_tokens(content, src, out);
         }
 
         AstContent::Menu { options } => {
@@ -2463,12 +2484,12 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                 });
             }
             for opt in options {
-                emit_semantic_tokens(opt, out);
+                emit_semantic_tokens(opt, src, out);
             }
         }
 
         AstContent::MenuOption { content, .. } => {
-            emit_semantic_tokens(content, out);
+            emit_semantic_tokens(content, src, out);
         }
 
         AstContent::LetCall {
@@ -2509,26 +2530,26 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
         // Containers: recurse.
         AstContent::Block(stmts) | AstContent::ExprList(stmts) | AstContent::List(stmts) => {
             for s in stmts {
-                emit_semantic_tokens(s, out);
+                emit_semantic_tokens(s, src, out);
             }
         }
 
         AstContent::Map(pairs) => {
             for (k, v) in pairs {
-                emit_semantic_tokens(k, out);
-                emit_semantic_tokens(v, out);
+                emit_semantic_tokens(k, src, out);
+                emit_semantic_tokens(v, src, out);
             }
         }
 
         AstContent::Subscript { object, key } => {
-            emit_semantic_tokens(object, out);
-            emit_semantic_tokens(key, out);
+            emit_semantic_tokens(object, src, out);
+            emit_semantic_tokens(key, src, out);
         }
 
         AstContent::SubscriptAssign { object, key, value } => {
-            emit_semantic_tokens(object, out);
-            emit_semantic_tokens(key, out);
-            emit_semantic_tokens(value, out);
+            emit_semantic_tokens(object, src, out);
+            emit_semantic_tokens(key, src, out);
+            emit_semantic_tokens(value, src, out);
         }
 
         AstContent::ExternDeclaration { name, .. } => {
@@ -2541,7 +2562,7 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
                     token_type: SemanticTokenType::Keyword,
                 });
             }
-            emit_semantic_tokens(name, out);
+            emit_semantic_tokens(name, src, out);
         }
     }
 }
@@ -3407,7 +3428,7 @@ mod tests {
     #[test]
     fn semantic_tokens_sorted_by_offset() {
         let ast = parse("let x = 1\nlabel a {\n  end!()\n}\n");
-        let toks = semantic_tokens(&ast);
+        let toks = semantic_tokens(&ast, "");
         for window in toks.windows(2) {
             assert!(
                 window[0].start <= window[1].start,
@@ -3419,7 +3440,7 @@ mod tests {
     #[test]
     fn semantic_tokens_includes_number() {
         let ast = parse("let x = 42\n");
-        let toks = semantic_tokens(&ast);
+        let toks = semantic_tokens(&ast, "");
         let has_number = toks
             .iter()
             .any(|t| t.token_type == SemanticTokenType::Number);
@@ -3427,6 +3448,30 @@ mod tests {
             has_number,
             "expected at least one Number token, got {toks:?}"
         );
+    }
+
+    #[test]
+    fn semantic_tokens_binop_operator_span_trimmed() {
+        let src = "let x = 1 + 2\n";
+        let ast = parse(src);
+        let toks = semantic_tokens(&ast, src);
+        let ops: Vec<_> = toks
+            .iter()
+            .filter(|t| t.token_type == SemanticTokenType::Operator)
+            .collect();
+        assert_eq!(
+            ops.len(),
+            1,
+            "expected exactly 1 operator token, got {ops:?}"
+        );
+        let op = ops[0];
+        // The operator `+` should be exactly 1 byte, not 3 (` + ` with spaces).
+        assert_eq!(
+            op.length, 1,
+            "operator span should cover just `+` (1 byte), got {}",
+            op.length
+        );
+        assert_eq!(&src[op.start..op.start + op.length], "+");
     }
 
     // ── doc comment tests ────────────────────────────────────────────────
@@ -3693,7 +3738,7 @@ mod tests {
     fn semantic_tokens_fn_def_emits_function_token() {
         // "greet" has length 5 — can only come from the FnDef name arm, not from end!().
         let ast = parse("fn greet() {\n  end!()\n}\n");
-        let toks = semantic_tokens(&ast);
+        let toks = semantic_tokens(&ast, "");
         let fn_name_tok = toks
             .iter()
             .find(|t| t.token_type == SemanticTokenType::Function && t.length == 5);
@@ -3819,7 +3864,7 @@ mod tests {
         // "label start" emits Label("start"); "jump target" should emit Label("target").
         // So we expect at least 2 Label tokens — not just 1.
         let ast = parse("label start {\n  jump target\n}\n");
-        let toks = semantic_tokens(&ast);
+        let toks = semantic_tokens(&ast, "");
         let label_toks: Vec<_> = toks
             .iter()
             .filter(|t| t.token_type == SemanticTokenType::Label)
@@ -3838,7 +3883,7 @@ mod tests {
     #[test]
     fn semantic_tokens_enum_emits_per_variant_token() {
         let ast = parse("enum Color { Red, Green, Blue }\n");
-        let toks = semantic_tokens(&ast);
+        let toks = semantic_tokens(&ast, "");
         let variant_toks: Vec<_> = toks
             .iter()
             .filter(|t| t.token_type == SemanticTokenType::EnumMember)
@@ -3853,7 +3898,7 @@ mod tests {
     #[test]
     fn semantic_tokens_struct_emits_per_field_token() {
         let ast = parse("struct Point { x: int, y: int }\n");
-        let toks = semantic_tokens(&ast);
+        let toks = semantic_tokens(&ast, "");
         let field_toks: Vec<_> = toks
             .iter()
             .filter(|t| t.token_type == SemanticTokenType::Property)

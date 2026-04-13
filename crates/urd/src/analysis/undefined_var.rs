@@ -33,10 +33,33 @@
 //!   `let` declaration in the same label body is NOT flagged because the pass
 //!   collects all label-local names before checking any references.  The runtime
 //!   will still fail with [`VmError::UndefinedVariable`].
-//! - **Cross-branch scope**: a variable declared inside an `if` branch is
-//!   treated as "in scope" for the entire label body, even for sibling branches.
+//! - **Cross-branch scope leakage**: a variable declared inside one branch of
+//!   an `if`/`else` is treated as "in scope" for the entire enclosing block,
+//!   including sibling branches and subsequent statements.  This affects both
+//!   label bodies and `fn` bodies because both use [`collect_block_local_names`],
+//!   which flattens all declarations without regard to control flow.  At runtime
+//!   the VM will fail with [`VmError::UndefinedVariable`] when the branch that
+//!   declares the variable was not taken.
 //!
-//! A future pass can add statement-order tracking to catch these cases.
+//!   Example that passes this analysis but crashes at runtime:
+//!   ```urd
+//!   if false {
+//!       let x = 1
+//!   } else {
+//!       y = x      // `x` never declared on this path
+//!   }
+//!   ```
+//!
+//! Two potential fix strategies (requires design discussion):
+//!
+//! 1. **Statement-order tracking per scope** — the proper fix. Each scope
+//!    carries an ordered list of declarations, and a reference is only valid if
+//!    it appears after the declaration *and* in the same branch or a subsequent
+//!    statement.  Significant implementation effort.
+//! 2. **Branch-awareness warning** — lighter-weight: emit a warning when a
+//!    variable is declared in only one branch of an `if`/`else` but referenced
+//!    outside or in a sibling branch.  Lower effort, catches the most common
+//!    case.
 
 use std::collections::HashSet;
 
@@ -941,5 +964,88 @@ label start {
 "#,
         );
         assert_undefined(&errs, "mystery");
+    }
+
+    // ── Known false negatives (cross-branch scope leakage) ────────────
+
+    #[test]
+    fn known_false_negative_cross_branch_label_body() {
+        // KNOWN FALSE NEGATIVE — see module-level "Cross-branch scope leakage".
+        //
+        // `x` is declared only in the `if` branch, yet the analysis treats it
+        // as in-scope for the `else` branch because `collect_block_local_names`
+        // flattens all declarations in the label body.  At runtime, taking the
+        // else path will crash with VmError::UndefinedVariable.
+        //
+        // This test documents the current (incorrect) behaviour.  When the
+        // false negative is fixed, this test should be updated to
+        // `assert_undefined(&errs, "x")`.
+        let errs = errors(
+            r#"
+let flag = false
+label start {
+    if flag {
+        let x = 1
+    } else {
+        let y = x
+    }
+    end!()
+}
+"#,
+        );
+        // Should ideally flag `x` as undefined in the else branch, but
+        // currently does not (false negative).
+        assert_no_errors(&errs);
+    }
+
+    #[test]
+    fn known_false_negative_cross_branch_fn_body() {
+        // KNOWN FALSE NEGATIVE — same issue inside a fn body.
+        //
+        // The fn scope builder also uses `collect_block_local_names`, so the
+        // same leakage applies.
+        let errs = errors(
+            r#"
+fn example(flag: bool) -> int {
+    if flag {
+        let x: int = 42
+    } else {
+        return x
+    }
+    return 0
+}
+label start {
+    end!()
+}
+"#,
+        );
+        // Should ideally flag `x` as undefined in the else branch, but
+        // currently does not (false negative).
+        assert_no_errors(&errs);
+    }
+
+    #[test]
+    fn known_false_negative_use_after_if_branch() {
+        // KNOWN FALSE NEGATIVE — variable declared in only one branch is
+        // visible after the entire if/else because `walk_decls` recurses
+        // the full subtree.
+        //
+        // At runtime, if `flag` is false the `let x` never executes, so
+        // `x + 1` will crash.
+        let errs = errors(
+            r#"
+let flag = true
+label start {
+    if flag {
+        let x = 10
+    }
+    let y = x + 1
+    end!()
+}
+"#,
+        );
+        // Should ideally flag `x` as potentially undefined after the if,
+        // but currently does not (false negative).
+        assert_no_errors(&errs);
     }
 }

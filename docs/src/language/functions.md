@@ -128,7 +128,13 @@ narrator: "You deal {damage} damage!"
 
 ### Calling Without Capturing
 
-You can call a function for its side effects without capturing the return value:
+Urd does **not** support bare expression statements. A standalone function call
+like `log_event("Player entered the dungeon")` is a parse error — every
+statement must be a declaration, assignment, jump, dialogue line, or other
+explicitly recognised form.
+
+If you want to call a function for its side effects and discard the return
+value, capture the result in a named variable:
 
 ```urd
 fn log_event(message: str) {
@@ -136,8 +142,16 @@ fn log_event(message: str) {
     narrator: "LOG: {message}"
 }
 
-log_event("Player entered the dungeon")
+let _result = log_event("Player entered the dungeon")
 ```
+
+> **Why?** Urd is a dialogue scripting language — functions are pure and cannot
+> mutate ambient state. A bare `add(1, 2)` would have no observable effect, so
+> requiring an explicit binding keeps intent clear and prevents "do-nothing"
+> lines that are almost always bugs in a narrative context.
+>
+> Note: bare `_` is a wildcard token in Urd, not an identifier, so
+> `let _ = …` is a parse error — use a named variable like `_result` instead.
 
 ---
 

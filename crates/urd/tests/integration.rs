@@ -56,3 +56,6 @@ mod example_smoke;
 
 #[path = "integration/extern_object.rs"]
 mod extern_object;
+
+#[path = "integration/localiser_e2e.rs"]
+mod localiser_e2e;

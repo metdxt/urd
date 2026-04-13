@@ -41,15 +41,17 @@ use crate::runtime::value::RuntimeValue;
 ///
 /// # Example
 ///
-/// ```no_run
-/// // FIXME(L-14): enable this doc test once ParsedString/Ast constructors are
-/// // re-exported or made available for doc tests.
-/// # fn main() {}
-/// // let ps = ParsedString::new_from_parts(vec![
-/// //     StringPart::Interpolation(Interpolation { path: "gold".into(), format: None }),
-/// // ]);
-/// // let ast = Ast::value(RuntimeValue::Str(ps));
-/// // assert_eq!(collect_interpolation_paths(&ast), vec!["gold".to_string()]);
+/// ```
+/// use urd::lexer::strings::{Interpolation, ParsedString, StringPart};
+/// use urd::parser::ast::Ast;
+/// use urd::RuntimeValue;
+/// use urd::loc::ftl::collect_interpolation_paths;
+///
+/// let ps = ParsedString::new_from_parts(vec![
+///     StringPart::Interpolation(Interpolation { path: "gold".into(), format: None }),
+/// ]);
+/// let ast = Ast::value(RuntimeValue::Str(ps));
+/// assert_eq!(collect_interpolation_paths(&ast), vec!["gold".to_string()]);
 /// ```
 pub fn collect_interpolation_paths(ast: &Ast) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
@@ -89,15 +91,15 @@ fn collect_paths_inner(ast: &Ast, paths: &mut Vec<String>) {
 ///
 /// # Example
 ///
-/// ```no_run
-/// // FIXME(L-14): enable this doc test once ParsedString constructors are
-/// // re-exported or made available for doc tests.
-/// # fn main() {}
-/// // let ps = ParsedString::new_from_parts(vec![
-/// //     StringPart::Literal("hello ".into()),
-/// //     StringPart::Interpolation(Interpolation { path: "user.name".into(), format: None }),
-/// // ]);
-/// // assert_eq!(render_parsed_string_as_ftl(&ps), "hello { $user-name }");
+/// ```
+/// use urd::lexer::strings::{Interpolation, ParsedString, StringPart};
+/// use urd::loc::ftl::render_parsed_string_as_ftl;
+///
+/// let ps = ParsedString::new_from_parts(vec![
+///     StringPart::Literal("hello ".into()),
+///     StringPart::Interpolation(Interpolation { path: "user.name".into(), format: None }),
+/// ]);
+/// assert_eq!(render_parsed_string_as_ftl(&ps), "hello { $user-name }");
 /// ```
 /// Converts a menu option label string (already rendered via [`ParsedString`]'s
 /// `Display` impl, so interpolations appear as `{var}`) into a Fluent message
@@ -174,12 +176,14 @@ pub fn render_parsed_string_as_ftl(ps: &ParsedString) -> String {
 ///
 /// # Example
 ///
-/// ```no_run
-/// // FIXME(L-14): enable this doc test once Ast::value / ParsedString
-/// // constructors are re-exported or made available for doc tests.
-/// # fn main() {}
-/// // let ast = Ast::value(RuntimeValue::Str(ParsedString::new_plain("Hello")));
-/// // assert_eq!(render_lines_ast_as_ftl(&ast), "Hello");
+/// ```
+/// use urd::lexer::strings::ParsedString;
+/// use urd::parser::ast::Ast;
+/// use urd::RuntimeValue;
+/// use urd::loc::ftl::render_lines_ast_as_ftl;
+///
+/// let ast = Ast::value(RuntimeValue::Str(ParsedString::new_plain("Hello")));
+/// assert_eq!(render_lines_ast_as_ftl(&ast), "Hello");
 /// ```
 pub fn render_lines_ast_as_ftl(ast: &Ast) -> String {
     match ast.content() {

@@ -41,6 +41,7 @@ pub mod empty_dialogue;
 pub mod exhaustiveness;
 pub mod fluent_decorator;
 pub mod id_decorator;
+pub mod imports;
 pub mod labels;
 pub mod loop_detection;
 pub mod menu_structure;
@@ -470,70 +471,406 @@ pub enum AnalysisError {
     },
 }
 
+// ---------------------------------------------------------------------------
+// `analysis_error_dispatch!` — generates `span()`, `is_warning()`,
+// `message()`, and `label_message()` from a single declaration table so that
+// adding a new `AnalysisError` variant only requires one entry here instead
+// of updating four separate match blocks.
+// ---------------------------------------------------------------------------
+
+macro_rules! analysis_error_dispatch {
+    (
+        $(
+            $(#[$arm_meta:meta])*
+            $variant:ident { $( $field:ident ),* $(,)? } => {
+                span: $span_expr:expr,
+                warning: $is_warning:expr,
+                message: $msg_expr:expr,
+                label: $lbl_expr:expr,
+            }
+        )*
+    ) => {
+        /// Returns the source span associated with this error.
+        ///
+        /// For AST nodes built in tests (without a real parser span) this
+        /// will be a zero span `0..0`.
+        pub fn span(&self) -> SimpleSpan {
+            match self {
+                $(
+                    $(#[$arm_meta])*
+                    #[allow(unused_variables)]
+                    Self::$variant { $( $field, )* } => $span_expr,
+                )*
+            }
+        }
+
+        /// Returns `true` if this diagnostic is a warning rather than a
+        /// hard error.
+        pub fn is_warning(&self) -> bool {
+            match self {
+                $(
+                    $(#[$arm_meta])*
+                    #[allow(unused_variables)]
+                    Self::$variant { $( $field, )* } => $is_warning,
+                )*
+            }
+        }
+
+        /// Returns a short human-readable message for this error (used in
+        /// `Display` and as the ariadne report message).
+        fn message(&self) -> String {
+            match self {
+                $(
+                    $(#[$arm_meta])*
+                    #[allow(unused_variables)]
+                    Self::$variant { $( $field, )* } => $msg_expr,
+                )*
+            }
+        }
+
+        /// Returns a short label string suitable for an ariadne `Label`.
+        fn label_message(&self) -> String {
+            match self {
+                $(
+                    $(#[$arm_meta])*
+                    #[allow(unused_variables)]
+                    Self::$variant { $( $field, )* } => $lbl_expr,
+                )*
+            }
+        }
+    };
+}
+
 impl AnalysisError {
-    /// Returns the source span associated with this error.
-    ///
-    /// For AST nodes built in tests (without a real parser span) this will be
-    /// a zero span `0..0`.
-    // NOTE: When adding a new `AnalysisError` variant, update all four methods:
-    // `span()`, `is_warning()`, `message()`, and `label_message()`.
-    pub fn span(&self) -> SimpleSpan {
-        match self {
-            AnalysisError::NonExhaustiveMatch { span, .. } => *span,
-            AnalysisError::TypeMismatch { span, .. } => *span,
-            AnalysisError::StructMismatch { span, .. } => *span,
-            AnalysisError::UndefinedLabel { span, .. } => *span,
-            AnalysisError::DeadEnd { span, .. } => *span,
-            AnalysisError::TopLevelFlow { span, .. } => *span,
-            AnalysisError::ConstReassignment { span, .. } => *span,
-            AnalysisError::EmptyMenu { span, .. } => *span,
-            AnalysisError::UnreachableLabel { span, .. } => *span,
-            AnalysisError::SingleOptionMenu { span, .. } => *span,
-            AnalysisError::MultipleMenuDefaults { span, .. } => *span,
-            AnalysisError::EmptyDialogue { span, .. } => *span,
-            AnalysisError::DuplicateMenuDestination { span, .. } => *span,
-            AnalysisError::OverwrittenAssignment { span, .. } => *span,
-            AnalysisError::UnusedVariable { span, .. } => *span,
-            AnalysisError::AlwaysDeadBranch { span, .. } => *span,
-            AnalysisError::PossibleTypo { span, .. } => *span,
-            #[cfg(feature = "spellcheck")]
-            AnalysisError::Misspelling { span, .. } => *span,
-            AnalysisError::InfiniteDialogueLoop { span, .. } => *span,
-            AnalysisError::UndefinedVariable { span, .. } => *span,
-            AnalysisError::InvalidIdDecorator { span, .. } => *span,
-            AnalysisError::DuplicateId { second_span, .. } => *second_span,
-            AnalysisError::IdOnUnsupportedNode { span, .. } => *span,
-            AnalysisError::InvalidFluentDecorator { span, .. } => *span,
-            AnalysisError::FluentOnUnsupportedNode { span, .. } => *span,
-            AnalysisError::NonExhaustiveDiceMatch { span, .. } => *span,
-            AnalysisError::DiceMatchRequiresWildcard { span, .. } => *span,
-            AnalysisError::DeadDicePattern { span, .. } => *span,
+    // ── Adding a new `AnalysisError` variant ───────────────────────────
+    // 1. Add the variant to the `AnalysisError` enum above.
+    // 2. Add an entry below — the macro generates `span()`, `is_warning()`,
+    //    `message()`, and `label_message()` from this single declaration.
+    analysis_error_dispatch! {
+        NonExhaustiveMatch { enum_name, missing_variants, span } => {
+            span: *span,
+            warning: false,
+            message: format!(
+                "Non-exhaustive match on enum '{enum_name}': \
+                 missing variants: {}",
+                missing_variants.join(", ")
+            ),
+            label: format!(
+                "match on '{enum_name}' is missing: {}",
+                missing_variants.join(", ")
+            ),
+        }
+        TypeMismatch { variable, expected, got, span } => {
+            span: *span,
+            warning: false,
+            message: format!(
+                "Type mismatch for '{variable}': expected {expected:?}, got {got}"
+            ),
+            label: format!("'{variable}' expects {expected:?} but got {got}"),
+        }
+        StructMismatch { variable, struct_name, field_errors, span } => {
+            span: *span,
+            warning: false,
+            message: {
+                let details: Vec<String> = field_errors
+                    .iter()
+                    .map(|fe| match fe {
+                        StructFieldError::MissingField {
+                            field_name,
+                            expected_type,
+                        } => format!("missing field '{field_name}': {expected_type:?}"),
+                        StructFieldError::WrongFieldType {
+                            field_name,
+                            expected_type,
+                            got,
+                        } => {
+                            format!(
+                                "field '{field_name}': expected {expected_type:?}, got {got}"
+                            )
+                        }
+                    })
+                    .collect();
+                format!(
+                    "Struct mismatch for '{variable}': expected struct \
+                     '{struct_name}': {}",
+                    details.join("; ")
+                )
+            },
+            label: format!(
+                "'{variable}' expects struct '{struct_name}' but has {} field error(s)",
+                field_errors.len()
+            ),
+        }
+        UndefinedLabel { label, suggestion, span } => {
+            span: *span,
+            warning: true,
+            message: match suggestion {
+                Some(s) => format!("Undefined label '{label}' — did you mean '{s}'?"),
+                None => format!("Undefined label '{label}'"),
+            },
+            label: match suggestion {
+                Some(s) => {
+                    format!("jump to undefined label '{label}' — did you mean '{s}'?")
+                }
+                None => format!("jump to undefined label '{label}'"),
+            },
+        }
+        DeadEnd { span, description } => {
+            span: *span,
+            warning: false,
+            message: format!(
+                "Dead end in {description}: execution path has no terminator \
+                 (use `end!`, `todo!`, `return`, or `jump`)"
+            ),
+            label: format!("{description}: no terminator on this path"),
+        }
+        TopLevelFlow { description, span } => {
+            span: *span,
+            warning: false,
+            message: format!(
+                "Top-level {description} is not allowed; \
+                 only definitions (let/const/global, enum, struct, decorator, \
+                 import, label) may appear at the top level"
+            ),
+            label: format!("{description} not allowed at top level"),
+        }
+        ConstReassignment { name, span } => {
+            span: *span,
+            warning: false,
+            message: format!(
+                "Constant reassignment: '{name}' is declared as `const` \
+                 and cannot be reassigned"
+            ),
+            label: format!("'{name}' is a constant and cannot be reassigned"),
+        }
+        EmptyMenu { span } => {
+            span: *span,
+            warning: false,
+            message: "Empty menu: the player can never make a choice \
+                      (menu has no options)"
+                .to_owned(),
+            label: "this menu has no options".to_owned(),
+        }
+        NonExhaustiveDiceMatch { dice, missing_display, span } => {
+            span: *span,
+            warning: false,
+            message: format!(
+                "Non-exhaustive dice match on `{dice}`: \
+                 missing coverage for sums {missing_display}"
+            ),
+            label: format!("`{dice}` match is missing sums: {missing_display}"),
+        }
+        DiceMatchRequiresWildcard { dice, span } => {
+            span: *span,
+            warning: false,
+            message: format!(
+                "Dice match on `{dice}` with array patterns requires a `_` \
+                 wildcard arm (array-pattern exhaustiveness cannot be \
+                 statically verified)"
+            ),
+            label: format!(
+                "`{dice}` match with array patterns needs a `_` arm"
+            ),
+        }
+        DeadDicePattern { pattern_display, dice, valid_min, valid_max, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "Dead pattern `{pattern_display}` in dice match on `{dice}`: \
+                 achievable sums are {valid_min}..={valid_max}"
+            ),
+            label: format!(
+                "`{pattern_display}` can never match \
+                 (valid sums: {valid_min}..={valid_max})"
+            ),
+        }
+        UnreachableLabel { label, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "Unreachable label '{label}': no `jump`, `let-call`, or \
+                 `@entry` can reach this label"
+            ),
+            label: format!("label '{label}' is never jumped to"),
+        }
+        SingleOptionMenu { span } => {
+            span: *span,
+            warning: true,
+            message: "Single-option menu: the player has no real choice \
+                      (only one option)"
+                .to_owned(),
+            label: "this menu has only one option".to_owned(),
+        }
+        MultipleMenuDefaults { span } => {
+            span: *span,
+            warning: false,
+            message: "Multiple default options: a menu can have at most one \
+                      `_` wildcard option"
+                .to_owned(),
+            label: "this menu has more than one `_` default option".to_owned(),
+        }
+        EmptyDialogue { speaker, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "Empty dialogue for speaker '{speaker}': the dialogue \
+                 content is blank"
+            ),
+            label: format!("'{speaker}' says nothing here"),
+        }
+        DuplicateMenuDestination { first_option, second_option, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "Duplicate menu destination: options '{first_option}' and \
+                 '{second_option}' have identical bodies"
+            ),
+            label: format!(
+                "'{second_option}' has the same body as '{first_option}'"
+            ),
+        }
+        OverwrittenAssignment { name, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "Overwritten assignment: '{name}' is assigned a value that \
+                 is immediately overwritten without being read"
+            ),
+            label: format!(
+                "'{name}' is overwritten here without being read first"
+            ),
+        }
+        UnusedVariable { name, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "Unused variable: '{name}' is declared but never read"
+            ),
+            label: format!("'{name}' is declared here but never read"),
+        }
+        AlwaysDeadBranch { dead_branch_is_then, span } => {
+            span: *span,
+            warning: true,
+            message: {
+                if *dead_branch_is_then {
+                    "Always-dead branch: condition is always `false`, the \
+                     `then` branch is never executed"
+                        .to_owned()
+                } else {
+                    "Always-dead branch: condition is always `true`, the \
+                     `else` branch is never executed"
+                        .to_owned()
+                }
+            },
+            label: {
+                if *dead_branch_is_then {
+                    "the `then` branch is always dead \
+                     (condition is always `false`)"
+                        .to_owned()
+                } else {
+                    "the `else` branch is always dead \
+                     (condition is always `true`)"
+                        .to_owned()
+                }
+            },
+        }
+        PossibleTypo { written, suggestion, kind, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "Possible typo: '{written}' looks like it could be the \
+                 {kind} '{suggestion}'"
+            ),
+            label: format!(
+                "'{written}' — did you mean the {kind} '{suggestion}'?"
+            ),
+        }
+        #[cfg(feature = "spellcheck")]
+        Misspelling { word, suggestion, span } => {
+            span: *span,
+            warning: true,
+            message: match suggestion {
+                Some(s) => format!(
+                    "Spelling: '{word}' may be misspelled — did you mean '{s}'?"
+                ),
+                None => format!("Spelling: '{word}' may be misspelled"),
+            },
+            label: match suggestion {
+                Some(s) => format!("'{word}' — did you mean '{s}'?"),
+                None => format!("'{word}' may be misspelled"),
+            },
+        }
+        UndefinedVariable { name, suggestion, span } => {
+            span: *span,
+            warning: false,
+            message: match suggestion {
+                Some(s) => format!(
+                    "Undefined variable '{name}': not declared in any \
+                     visible scope — did you mean '{s}'?"
+                ),
+                None => format!(
+                    "Undefined variable '{name}': not declared in any \
+                     visible scope"
+                ),
+            },
+            label: match suggestion {
+                Some(s) => format!("'{name}' — did you mean '{s}'?"),
+                None => format!("'{name}' is not declared"),
+            },
+        }
+        InfiniteDialogueLoop { label, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "Infinite dialogue loop: label '{label}' is part of a cycle \
+                 with no escaping path to a terminator"
+            ),
+            label: format!("label '{label}' anchors an infinite loop"),
+        }
+        InvalidIdDecorator { reason, span } => {
+            span: *span,
+            warning: false,
+            message: format!("invalid @id decorator: {reason}"),
+            label: format!("invalid @id: {reason}"),
+        }
+        DuplicateId { id, first_span, second_span } => {
+            span: *second_span,
+            warning: false,
+            message: format!(
+                "duplicate @id value `{id}` in the same scope"
+            ),
+            label: format!(
+                "`{id}` is already used as an @id in this scope"
+            ),
+        }
+        IdOnUnsupportedNode { node_kind, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "@id has no effect on `{node_kind}` nodes"
+            ),
+            label: format!(
+                "@id has no effect on `{node_kind}` nodes"
+            ),
+        }
+        InvalidFluentDecorator { reason, span } => {
+            span: *span,
+            warning: false,
+            message: format!("invalid @fluent decorator: {reason}"),
+            label: format!("invalid @fluent: {reason}"),
+        }
+        FluentOnUnsupportedNode { node_kind, span } => {
+            span: *span,
+            warning: true,
+            message: format!(
+                "@fluent has no effect on `{node_kind}` nodes"
+            ),
+            label: format!(
+                "@fluent has no effect on `{node_kind}` nodes"
+            ),
         }
     }
 
-    /// Returns `true` if this diagnostic is a warning rather than a hard error.
-    // NOTE: When adding a new `AnalysisError` variant, update all four methods:
-    // `span()`, `is_warning()`, `message()`, and `label_message()`.
-    pub fn is_warning(&self) -> bool {
-        match self {
-            Self::UnreachableLabel { .. }
-            | Self::SingleOptionMenu { .. }
-            | Self::EmptyDialogue { .. }
-            | Self::DuplicateMenuDestination { .. }
-            | Self::OverwrittenAssignment { .. }
-            | Self::UnusedVariable { .. }
-            | Self::AlwaysDeadBranch { .. }
-            | Self::PossibleTypo { .. }
-            | Self::InfiniteDialogueLoop { .. }
-            | Self::UndefinedLabel { .. }
-            | Self::IdOnUnsupportedNode { .. }
-            | Self::FluentOnUnsupportedNode { .. }
-            | Self::DeadDicePattern { .. } => true,
-            #[cfg(feature = "spellcheck")]
-            Self::Misspelling { .. } => true,
-            _ => false,
-        }
-    }
 
     /// Returns `true` if the span is a zero span (i.e. no real source location).
     fn is_zero_span(span: &SimpleSpan) -> bool {
@@ -552,396 +889,7 @@ impl AnalysisError {
         }
     }
 
-    /// Returns a short human-readable message for this error (used in `Display`
-    /// and as the ariadne report message).
-    // NOTE: When adding a new `AnalysisError` variant, update all four methods:
-    // `span()`, `is_warning()`, `message()`, and `label_message()`.
-    fn message(&self) -> String {
-        match self {
-            AnalysisError::NonExhaustiveMatch {
-                enum_name,
-                missing_variants,
-                ..
-            } => {
-                format!(
-                    "Non-exhaustive match on enum '{enum_name}': \
-                     missing variants: {}",
-                    missing_variants.join(", ")
-                )
-            }
 
-            AnalysisError::TypeMismatch {
-                variable,
-                expected,
-                got,
-                ..
-            } => {
-                format!("Type mismatch for '{variable}': expected {expected:?}, got {got}")
-            }
-
-            AnalysisError::StructMismatch {
-                variable,
-                struct_name,
-                field_errors,
-                ..
-            } => {
-                let details: Vec<String> = field_errors
-                    .iter()
-                    .map(|fe| match fe {
-                        StructFieldError::MissingField {
-                            field_name,
-                            expected_type,
-                        } => format!("missing field '{field_name}': {expected_type:?}"),
-                        StructFieldError::WrongFieldType {
-                            field_name,
-                            expected_type,
-                            got,
-                        } => format!("field '{field_name}': expected {expected_type:?}, got {got}"),
-                    })
-                    .collect();
-                format!(
-                    "Struct mismatch for '{variable}': expected struct '{struct_name}': {}",
-                    details.join("; ")
-                )
-            }
-
-            AnalysisError::UndefinedLabel {
-                label, suggestion, ..
-            } => match suggestion {
-                Some(s) => format!("Undefined label '{label}' — did you mean '{s}'?"),
-                None => format!("Undefined label '{label}'"),
-            },
-
-            AnalysisError::DeadEnd { description, .. } => {
-                format!(
-                    "Dead end in {description}: execution path has no terminator \
-                     (use `end!`, `todo!`, `return`, or `jump`)"
-                )
-            }
-
-            AnalysisError::TopLevelFlow { description, .. } => {
-                format!(
-                    "Top-level {description} is not allowed; \
-                     only definitions (let/const/global, enum, struct, decorator, import, label) \
-                     may appear at the top level"
-                )
-            }
-
-            AnalysisError::ConstReassignment { name, .. } => {
-                format!(
-                    "Constant reassignment: '{name}' is declared as `const` and cannot be reassigned"
-                )
-            }
-
-            AnalysisError::EmptyMenu { .. } => {
-                "Empty menu: the player can never make a choice (menu has no options)".to_owned()
-            }
-
-            AnalysisError::UnreachableLabel { label, .. } => {
-                format!(
-                    "Unreachable label '{label}': no `jump`, `let-call`, or `@entry` can reach this label"
-                )
-            }
-
-            AnalysisError::SingleOptionMenu { .. } => {
-                "Single-option menu: the player has no real choice (only one option)".to_owned()
-            }
-
-            AnalysisError::MultipleMenuDefaults { .. } => {
-                "Multiple default options: a menu can have at most one `_` wildcard option"
-                    .to_owned()
-            }
-
-            AnalysisError::EmptyDialogue { speaker, .. } => {
-                format!("Empty dialogue for speaker '{speaker}': the dialogue content is blank")
-            }
-
-            AnalysisError::DuplicateMenuDestination {
-                first_option,
-                second_option,
-                ..
-            } => {
-                format!(
-                    "Duplicate menu destination: options '{first_option}' and '{second_option}' \
-                     have identical bodies"
-                )
-            }
-
-            AnalysisError::OverwrittenAssignment { name, .. } => {
-                format!(
-                    "Overwritten assignment: '{name}' is assigned a value that is immediately \
-                     overwritten without being read"
-                )
-            }
-
-            AnalysisError::UnusedVariable { name, .. } => {
-                format!("Unused variable: '{name}' is declared but never read")
-            }
-
-            AnalysisError::AlwaysDeadBranch {
-                dead_branch_is_then,
-                ..
-            } => {
-                if *dead_branch_is_then {
-                    "Always-dead branch: condition is always `false`, the `then` branch is never executed".to_owned()
-                } else {
-                    "Always-dead branch: condition is always `true`, the `else` branch is never executed".to_owned()
-                }
-            }
-
-            AnalysisError::PossibleTypo {
-                written,
-                suggestion,
-                kind,
-                ..
-            } => {
-                format!(
-                    "Possible typo: '{written}' looks like it could be the {kind} '{suggestion}'"
-                )
-            }
-
-            #[cfg(feature = "spellcheck")]
-            AnalysisError::Misspelling {
-                word, suggestion, ..
-            } => match suggestion {
-                Some(s) => format!("Spelling: '{word}' may be misspelled — did you mean '{s}'?"),
-                None => format!("Spelling: '{word}' may be misspelled"),
-            },
-
-            AnalysisError::InfiniteDialogueLoop { label, .. } => {
-                format!(
-                    "Infinite dialogue loop: label '{label}' is part of a cycle with no \
-                     escaping path to a terminator"
-                )
-            }
-
-            AnalysisError::UndefinedVariable {
-                name, suggestion, ..
-            } => match suggestion {
-                Some(s) => format!(
-                    "Undefined variable '{name}': not declared in any visible scope — did you mean '{s}'?"
-                ),
-                None => format!("Undefined variable '{name}': not declared in any visible scope"),
-            },
-
-            AnalysisError::InvalidIdDecorator { reason, .. } => {
-                format!("invalid @id decorator: {reason}")
-            }
-
-            AnalysisError::DuplicateId { id, .. } => {
-                format!("duplicate @id value `{id}` in the same scope")
-            }
-
-            AnalysisError::IdOnUnsupportedNode { node_kind, .. } => {
-                format!("@id has no effect on `{node_kind}` nodes")
-            }
-
-            AnalysisError::InvalidFluentDecorator { reason, .. } => {
-                format!("invalid @fluent decorator: {reason}")
-            }
-
-            AnalysisError::FluentOnUnsupportedNode { node_kind, .. } => {
-                format!("@fluent has no effect on `{node_kind}` nodes")
-            }
-
-            AnalysisError::NonExhaustiveDiceMatch {
-                dice,
-                missing_display,
-                ..
-            } => {
-                format!(
-                    "Non-exhaustive dice match on `{dice}`: \
-                     missing coverage for sums {missing_display}"
-                )
-            }
-
-            AnalysisError::DiceMatchRequiresWildcard { dice, .. } => {
-                format!(
-                    "Dice match on `{dice}` with array patterns requires a `_` wildcard arm \
-                     (array-pattern exhaustiveness cannot be statically verified)"
-                )
-            }
-
-            AnalysisError::DeadDicePattern {
-                pattern_display,
-                dice,
-                valid_min,
-                valid_max,
-                ..
-            } => {
-                format!(
-                    "Dead pattern `{pattern_display}` in dice match on `{dice}`: \
-                     achievable sums are {valid_min}..={valid_max}"
-                )
-            }
-        }
-    }
-
-    /// Returns a short label string suitable for an ariadne `Label`.
-    // NOTE: When adding a new `AnalysisError` variant, update all four methods:
-    // `span()`, `is_warning()`, `message()`, and `label_message()`.
-    fn label_message(&self) -> String {
-        match self {
-            AnalysisError::NonExhaustiveMatch {
-                enum_name,
-                missing_variants,
-                ..
-            } => format!(
-                "match on '{enum_name}' is missing: {}",
-                missing_variants.join(", ")
-            ),
-
-            AnalysisError::TypeMismatch {
-                variable,
-                expected,
-                got,
-                ..
-            } => format!("'{variable}' expects {expected:?} but got {got}"),
-
-            AnalysisError::StructMismatch {
-                variable,
-                struct_name,
-                field_errors,
-                ..
-            } => format!(
-                "'{variable}' expects struct '{struct_name}' but has {} field error(s)",
-                field_errors.len()
-            ),
-
-            AnalysisError::UndefinedLabel {
-                label, suggestion, ..
-            } => match suggestion {
-                Some(s) => format!("jump to undefined label '{label}' — did you mean '{s}'?"),
-                None => format!("jump to undefined label '{label}'"),
-            },
-
-            AnalysisError::DeadEnd { description, .. } => {
-                format!("{description}: no terminator on this path")
-            }
-
-            AnalysisError::TopLevelFlow { description, .. } => {
-                format!("{description} not allowed at top level")
-            }
-
-            AnalysisError::ConstReassignment { name, .. } => {
-                format!("'{name}' is a constant and cannot be reassigned")
-            }
-
-            AnalysisError::EmptyMenu { .. } => "this menu has no options".to_owned(),
-
-            AnalysisError::UnreachableLabel { label, .. } => {
-                format!("label '{label}' is never jumped to")
-            }
-
-            AnalysisError::SingleOptionMenu { .. } => "this menu has only one option".to_owned(),
-
-            AnalysisError::MultipleMenuDefaults { .. } => {
-                "this menu has more than one `_` default option".to_owned()
-            }
-
-            AnalysisError::EmptyDialogue { speaker, .. } => {
-                format!("'{speaker}' says nothing here")
-            }
-
-            AnalysisError::DuplicateMenuDestination {
-                first_option,
-                second_option,
-                ..
-            } => {
-                format!("'{second_option}' has the same body as '{first_option}'")
-            }
-
-            AnalysisError::OverwrittenAssignment { name, .. } => {
-                format!("'{name}' is overwritten here without being read first")
-            }
-
-            AnalysisError::UnusedVariable { name, .. } => {
-                format!("'{name}' is declared here but never read")
-            }
-
-            AnalysisError::AlwaysDeadBranch {
-                dead_branch_is_then,
-                ..
-            } => {
-                if *dead_branch_is_then {
-                    "the `then` branch is always dead (condition is always `false`)".to_owned()
-                } else {
-                    "the `else` branch is always dead (condition is always `true`)".to_owned()
-                }
-            }
-
-            AnalysisError::PossibleTypo {
-                written,
-                suggestion,
-                kind,
-                ..
-            } => {
-                format!("'{written}' — did you mean the {kind} '{suggestion}'?")
-            }
-
-            #[cfg(feature = "spellcheck")]
-            AnalysisError::Misspelling {
-                word, suggestion, ..
-            } => match suggestion {
-                Some(s) => format!("'{word}' — did you mean '{s}'?"),
-                None => format!("'{word}' may be misspelled"),
-            },
-
-            AnalysisError::InfiniteDialogueLoop { label, .. } => {
-                format!("label '{label}' anchors an infinite loop")
-            }
-
-            AnalysisError::UndefinedVariable {
-                name, suggestion, ..
-            } => match suggestion {
-                Some(s) => format!("'{name}' — did you mean '{s}'?"),
-                None => format!("'{name}' is not declared"),
-            },
-
-            AnalysisError::InvalidIdDecorator { reason, .. } => {
-                format!("invalid @id: {reason}")
-            }
-
-            AnalysisError::DuplicateId { id, .. } => {
-                format!("`{id}` is already used as an @id in this scope")
-            }
-
-            AnalysisError::IdOnUnsupportedNode { node_kind, .. } => {
-                format!("@id has no effect on `{node_kind}` nodes")
-            }
-
-            AnalysisError::InvalidFluentDecorator { reason, .. } => {
-                format!("invalid @fluent: {reason}")
-            }
-
-            AnalysisError::FluentOnUnsupportedNode { node_kind, .. } => {
-                format!("@fluent has no effect on `{node_kind}` nodes")
-            }
-
-            AnalysisError::NonExhaustiveDiceMatch {
-                dice,
-                missing_display,
-                ..
-            } => {
-                format!("`{dice}` match is missing sums: {missing_display}")
-            }
-
-            AnalysisError::DiceMatchRequiresWildcard { dice, .. } => {
-                format!("`{dice}` match with array patterns needs a `_` arm")
-            }
-
-            AnalysisError::DeadDicePattern {
-                pattern_display,
-                valid_min,
-                valid_max,
-                ..
-            } => {
-                format!(
-                    "`{pattern_display}` can never match (valid sums: {valid_min}..={valid_max})"
-                )
-            }
-        }
-    }
 }
 
 impl std::fmt::Display for AnalysisError {
@@ -1073,7 +1021,7 @@ fn run_passes_with_semantic(
 
     // ── Warnings ──────────────────────────────────────────────────────────
     errors.extend(labels::check(ast, ctx, semantic));
-    errors.extend(unreachable_label::check(ast));
+    errors.extend(unreachable_label::check(ast, &std::collections::HashSet::new()));
     errors.extend(empty_dialogue::check(ast));
     errors.extend(duplicate_menu_dest::check(ast));
     errors.extend(overwritten_assign::check(ast));
@@ -1163,15 +1111,168 @@ pub fn analyze_with_imports_and_semantic(
 mod is_warning_tests {
     use chumsky::span::{SimpleSpan, Span};
 
-    use super::AnalysisError;
+    use super::{AnalysisError, TypoKind};
+    use crate::parser::ast::TypeAnnotation;
+
+    /// Helper: build a dummy span for test variants.
+    fn dummy_span() -> SimpleSpan {
+        SimpleSpan::new((), 0..1)
+    }
+
+    // ── Warning variants (is_warning == true) ─────────────────────────────
 
     #[test]
     fn undefined_label_is_a_warning() {
         let err = AnalysisError::UndefinedLabel {
-            span: SimpleSpan::new((), 0..1),
+            span: dummy_span(),
             label: "x".into(),
             suggestion: None,
         };
         assert!(err.is_warning());
+    }
+
+    #[test]
+    fn unreachable_label_is_a_warning() {
+        let err = AnalysisError::UnreachableLabel {
+            label: "unused".into(),
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn single_option_menu_is_a_warning() {
+        let err = AnalysisError::SingleOptionMenu {
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn empty_dialogue_is_a_warning() {
+        let err = AnalysisError::EmptyDialogue {
+            speaker: "narrator".into(),
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn duplicate_menu_destination_is_a_warning() {
+        let err = AnalysisError::DuplicateMenuDestination {
+            first_option: "Go left".into(),
+            second_option: "Go right".into(),
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn overwritten_assignment_is_a_warning() {
+        let err = AnalysisError::OverwrittenAssignment {
+            name: "x".into(),
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn unused_variable_is_a_warning() {
+        let err = AnalysisError::UnusedVariable {
+            name: "tmp".into(),
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn always_dead_branch_is_a_warning() {
+        let err = AnalysisError::AlwaysDeadBranch {
+            dead_branch_is_then: true,
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn possible_typo_is_a_warning() {
+        let err = AnalysisError::PossibleTypo {
+            written: "narator".into(),
+            suggestion: "narrator".into(),
+            kind: TypoKind::Speaker,
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn infinite_dialogue_loop_is_a_warning() {
+        let err = AnalysisError::InfiniteDialogueLoop {
+            label: "loop_start".into(),
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn id_on_unsupported_node_is_a_warning() {
+        let err = AnalysisError::IdOnUnsupportedNode {
+            node_kind: "Declaration".into(),
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn fluent_on_unsupported_node_is_a_warning() {
+        let err = AnalysisError::FluentOnUnsupportedNode {
+            node_kind: "Dialogue".into(),
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    #[test]
+    fn dead_dice_pattern_is_a_warning() {
+        let err = AnalysisError::DeadDicePattern {
+            pattern_display: "25".into(),
+            dice: "1d20".into(),
+            valid_min: 1,
+            valid_max: 20,
+            span: dummy_span(),
+        };
+        assert!(err.is_warning());
+    }
+
+    // ── Error variants (is_warning == false) ──────────────────────────────
+
+    #[test]
+    fn type_mismatch_is_not_a_warning() {
+        let err = AnalysisError::TypeMismatch {
+            variable: "x".into(),
+            expected: TypeAnnotation::Int,
+            got: "str".into(),
+            span: dummy_span(),
+        };
+        assert!(!err.is_warning());
+    }
+
+    #[test]
+    fn non_exhaustive_match_is_not_a_warning() {
+        let err = AnalysisError::NonExhaustiveMatch {
+            enum_name: "Direction".into(),
+            missing_variants: vec!["North".into()],
+            span: dummy_span(),
+        };
+        assert!(!err.is_warning());
+    }
+
+    #[test]
+    fn const_reassignment_is_not_a_warning() {
+        let err = AnalysisError::ConstReassignment {
+            name: "MAX".into(),
+            span: dummy_span(),
+        };
+        assert!(!err.is_warning());
     }
 }
