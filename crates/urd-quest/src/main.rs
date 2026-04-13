@@ -137,11 +137,13 @@ struct CharacterDisplay {
 /// otherwise the value is formatted with [`display_value`] and color is reset.
 fn extract_character(val: &RuntimeValue) -> CharacterDisplay {
     if let RuntimeValue::Map(map) = val {
-        let name = map.borrow()
+        let name = map
+            .borrow()
             .get("name")
             .map(|v| display_value(v))
             .unwrap_or_else(|| "???".to_string());
-        let color = map.borrow()
+        let color = map
+            .borrow()
             .get("name_color")
             .map(|v| ansi_color(&display_value(v)))
             .unwrap_or(RESET);
@@ -267,7 +269,10 @@ fn locale_display_name(tag: &str) -> &str {
 /// Render the locale picker menu with `selected` highlighted.
 fn render_locale_menu(locales: &[String], selected: usize) -> u16 {
     let mut out = std::io::stdout();
-    let term_width = std::cmp::max(1, crossterm::terminal::size().unwrap_or((80, 24)).0 as usize);
+    let term_width = std::cmp::max(
+        1,
+        crossterm::terminal::size().unwrap_or((80, 24)).0 as usize,
+    );
     let mut printed_rows = 0;
 
     for (i, tag) in locales.iter().enumerate() {
@@ -279,13 +284,17 @@ fn render_locale_menu(locales: &[String], selected: usize) -> u16 {
         .ok();
         let name = locale_display_name(tag);
         let has_name = name != tag;
-        
+
         let prefix_len = 5; // e.g. "  ▶  "
         let tag_len = tag.chars().count();
-        let name_len = if has_name { name.chars().count() + 2 } else { 0 }; // +2 for "  "
+        let name_len = if has_name {
+            name.chars().count() + 2
+        } else {
+            0
+        }; // +2 for "  "
         let total_len = prefix_len + tag_len + name_len;
-        
-        let rows = (total_len + term_width - 1) / term_width;
+
+        let rows = total_len.div_ceil(term_width);
         let rows = std::cmp::max(1, rows);
         printed_rows += rows as u16;
 
@@ -485,7 +494,10 @@ fn handle_dialogue(
 /// Shows `localized_label` when available, falling back to `label`.
 fn render_menu(options: &[urd::ir::ChoiceEvent], selected: usize) -> u16 {
     let mut out = std::io::stdout();
-    let term_width = std::cmp::max(1, crossterm::terminal::size().unwrap_or((80, 24)).0 as usize);
+    let term_width = std::cmp::max(
+        1,
+        crossterm::terminal::size().unwrap_or((80, 24)).0 as usize,
+    );
     let mut printed_rows = 0;
 
     for (i, opt) in options.iter().enumerate() {
@@ -498,10 +510,10 @@ fn render_menu(options: &[urd::ir::ChoiceEvent], selected: usize) -> u16 {
         )
         .ok();
         let display = opt.localized_label.as_deref().unwrap_or(&opt.label);
-        
+
         let prefix_len = 5; // e.g. "  ▶  " or "     "
         let total_len = prefix_len + display.chars().count();
-        let rows = (total_len + term_width - 1) / term_width;
+        let rows = total_len.div_ceil(term_width);
         let rows = std::cmp::max(1, rows);
         printed_rows += rows as u16;
 
@@ -669,7 +681,12 @@ fn run_analysis(
             &mut visited,
         );
 
-        let errors = analysis::analyze_with_imports(&curr_ast, imported_structs, imported_enums, imported_labels);
+        let errors = analysis::analyze_with_imports(
+            &curr_ast,
+            imported_structs,
+            imported_enums,
+            imported_labels,
+        );
         if !errors.is_empty() {
             analysis::render_errors_stderr(&errors, &curr_src, &curr_filename);
             eprintln!(
@@ -775,8 +792,6 @@ fn collect_analysis_imports(
         _ => {}
     }
 }
-
-
 
 /// Load, lex, parse, analyse and compile the script at `path` into an [`IrGraph`].
 ///
@@ -986,9 +1001,8 @@ fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) -> Result<(), Str
         parent.join("i18n").join("en-US")
     });
 
-    std::fs::create_dir_all(&out_dir).map_err(|e| {
-        format!("could not create '{}': {}", out_dir.display(), e)
-    })?;
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("could not create '{}': {}", out_dir.display(), e))?;
 
     // Collect the distinct source modules.  For multi-file scripts this
     // returns one entry per source file ("" = root, "common.urd" = import);
@@ -1023,9 +1037,8 @@ fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) -> Result<(), Str
 /// returning an error.
 fn write_ftl(dir: &Path, slug: &str, content: &str) -> Result<(), String> {
     let out_file = dir.join(format!("{slug}.ftl"));
-    std::fs::write(&out_file, content).map_err(|e| {
-        format!("could not write '{}': {}", out_file.display(), e)
-    })?;
+    std::fs::write(&out_file, content)
+        .map_err(|e| format!("could not write '{}': {}", out_file.display(), e))?;
     eprintln!(
         "Generated Fluent file: \x1b[32m{}\x1b[0m",
         out_file.display()
@@ -1037,7 +1050,11 @@ fn write_ftl(dir: &Path, slug: &str, content: &str) -> Result<(), String> {
 //  Subcommand: export
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn cmd_export(script_path: &Path, format: ExportFormat, output: Option<&Path>) -> Result<(), String> {
+fn cmd_export(
+    script_path: &Path,
+    format: ExportFormat,
+    output: Option<&Path>,
+) -> Result<(), String> {
     let graph = build_graph(script_path)?;
 
     let rendered = match format {
@@ -1047,9 +1064,8 @@ fn cmd_export(script_path: &Path, format: ExportFormat, output: Option<&Path>) -
 
     match output {
         Some(path) => {
-            std::fs::write(path, &rendered).map_err(|e| {
-                format!("could not write '{}': {}", path.display(), e)
-            })?;
+            std::fs::write(path, &rendered)
+                .map_err(|e| format!("could not write '{}': {}", path.display(), e))?;
 
             let fmt_label = match format {
                 ExportFormat::Dot => "DOT",
@@ -1080,19 +1096,13 @@ fn main() {
             // No subcommand — default to running the demo script.
             cmd_run(Path::new("examples/quest/cave.urd"), None)
         }
-        Some(Command::Run { script, locale }) => {
-            cmd_run(&script, locale.as_deref())
-        }
+        Some(Command::Run { script, locale }) => cmd_run(&script, locale.as_deref()),
         Some(Command::Export {
             script,
             format,
             output,
-        }) => {
-            cmd_export(&script, format, output.as_deref())
-        }
-        Some(Command::GenL10n { script, output }) => {
-            cmd_gen_l10n(&script, output.as_deref())
-        }
+        }) => cmd_export(&script, format, output.as_deref()),
+        Some(Command::GenL10n { script, output }) => cmd_gen_l10n(&script, output.as_deref()),
     };
 
     if let Err(msg) = result {
@@ -1145,7 +1155,15 @@ label start {
         let mut queue = std::collections::VecDeque::new();
         let mut visited = HashSet::new();
 
-        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels, &mut queue, &mut visited);
+        collect_analysis_imports(
+            &ast,
+            &loader,
+            &mut structs,
+            &mut enums,
+            &mut labels,
+            &mut queue,
+            &mut visited,
+        );
 
         assert!(
             labels.contains("greet"),
@@ -1189,7 +1207,15 @@ label start { jump hello }
         let mut queue = std::collections::VecDeque::new();
         let mut visited = HashSet::new();
 
-        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels, &mut queue, &mut visited);
+        collect_analysis_imports(
+            &ast,
+            &loader,
+            &mut structs,
+            &mut enums,
+            &mut labels,
+            &mut queue,
+            &mut visited,
+        );
 
         assert!(
             labels.contains("hello"),
@@ -1204,12 +1230,12 @@ label start { jump hello }
     #[test]
     fn test_display_value_formatting() {
         use crate::display_value;
-        use urd::runtime::value::RuntimeValue;
         use urd::lexer::strings::ParsedString;
-        
+        use urd::runtime::value::RuntimeValue;
+
         let s = RuntimeValue::Str(ParsedString::new_plain("\x1b[31mred\x1b[0m"));
         assert_eq!(display_value(&s), "\x1b[31mred\x1b[0m");
-        
+
         let i = RuntimeValue::Int(42);
         assert_eq!(display_value(&i), "42");
     }
@@ -1231,41 +1257,59 @@ label start { jump hello }
         // Write identical filenames in different directories
         fs::write(foo_dir.join("common.urd"), "label test1 { }\n").unwrap();
         fs::write(bar_dir.join("common.urd"), "label test2 { }\n").unwrap();
-        
+
         // Write main script importing both
         let main_script = temp_dir.join("main.urd");
-        fs::write(&main_script, r#"
+        fs::write(
+            &main_script,
+            r#"
 import (test1) from "foo/common.urd"
 import (test2) from "bar/common.urd"
 
 label start {
     jump test1
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let out_dir = temp_dir.join("out_ftl");
         cmd_gen_l10n(&main_script, Some(&out_dir)).expect("gen-l10n failed");
 
-        assert!(out_dir.join("foo_common.ftl").exists(), "foo_common.ftl missing");
-        assert!(out_dir.join("bar_common.ftl").exists(), "bar_common.ftl missing");
+        assert!(
+            out_dir.join("foo_common.ftl").exists(),
+            "foo_common.ftl missing"
+        );
+        assert!(
+            out_dir.join("bar_common.ftl").exists(),
+            "bar_common.ftl missing"
+        );
         assert!(out_dir.join("main.ftl").exists(), "main.ftl missing");
-        assert!(!out_dir.join("common.ftl").exists(), "collision occurred: common.ftl created");
+        assert!(
+            !out_dir.join("common.ftl").exists(),
+            "collision occurred: common.ftl created"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir); // clean up after
     }
 
     #[test]
     fn test_static_analysis_pipeline() {
-        use crate::{run_analysis, collect_analysis_imports};
-        use urd::vm::loader::MemLoader;
+        use crate::{collect_analysis_imports, run_analysis};
         use std::collections::{HashMap, HashSet, VecDeque};
+        use urd::vm::loader::MemLoader;
 
         let mut loader = MemLoader::new();
-        loader.add("missing_import.urd", r#"import (foo) from "nonexistent.urd"
-label start {}"#);
+        loader.add(
+            "missing_import.urd",
+            r#"import (foo) from "nonexistent.urd"
+label start {}"#,
+        );
 
-        let ast = parse(r#"import (foo) from "nonexistent.urd"
-label start {}"#);
+        let ast = parse(
+            r#"import (foo) from "nonexistent.urd"
+label start {}"#,
+        );
 
         let mut structs = HashMap::new();
         let mut enums = HashMap::new();
@@ -1274,17 +1318,35 @@ label start {}"#);
         let mut visited = HashSet::new();
 
         // Testing that collect_analysis_imports doesn't panic on missing files
-        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels, &mut queue, &mut visited);
-        
+        collect_analysis_imports(
+            &ast,
+            &loader,
+            &mut structs,
+            &mut enums,
+            &mut labels,
+            &mut queue,
+            &mut visited,
+        );
+
         // Run full analysis on a multiple file setup
-        loader.add("root.urd", r#"import (hello) from "child.urd"
-label start { jump hello }"#);
+        loader.add(
+            "root.urd",
+            r#"import (hello) from "child.urd"
+label start { jump hello }"#,
+        );
         loader.add("child.urd", r#"label hello {}"#);
 
-        let root_ast = parse(r#"import (hello) from "child.urd"
-label start { jump hello }"#);
+        let root_ast = parse(
+            r#"import (hello) from "child.urd"
+label start { jump hello }"#,
+        );
 
         // Run run_analysis
-        run_analysis(&root_ast, "import (hello) from \"child.urd\"\nlabel start { jump hello }", "root.urd", &loader);
+        run_analysis(
+            &root_ast,
+            "import (hello) from \"child.urd\"\nlabel start { jump hello }",
+            "root.urd",
+            &loader,
+        );
     }
 }

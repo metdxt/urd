@@ -28,9 +28,8 @@ use super::aliases::{BoxedUrdParser, UrdInput, UrdParser};
 /// - Two segments:   `module.label` (dot-joined for cross-module jumps)
 /// - Three or more segments: emits a diagnostic and recovers by truncating to the
 ///   first two segments.
-fn label_path_parser<'tok, I: UrdInput<'tok>>(
-) -> impl Parser<'tok, I, (String, SimpleSpan), extra::Err<Rich<'tok, Token, SimpleSpan>>> + Clone
-{
+fn label_path_parser<'tok, I: UrdInput<'tok>>()
+-> impl Parser<'tok, I, (String, SimpleSpan), extra::Err<Rich<'tok, Token, SimpleSpan>>> + Clone {
     select! {
         Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
         Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),

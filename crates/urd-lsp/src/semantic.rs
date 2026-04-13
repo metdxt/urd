@@ -1305,10 +1305,12 @@ fn hover_from_ast(
         AstContent::Value(RuntimeValue::IdentPath(parts)) => {
             let name = parts.join(".");
             let def_span = find_definition_recursive(root, &name);
-            if let Some(def_span) = def_span {
-                if let Some(sym) = symbols.iter().find(|s| s.span == def_span && s.name == name) {
-                    return Some(hover_for_symbol(sym, root, symbols));
-                }
+            if let Some(def_span) = def_span
+                && let Some(sym) = symbols
+                    .iter()
+                    .find(|s| s.span == def_span && s.name == name)
+            {
+                return Some(hover_for_symbol(sym, root, symbols));
             }
             let sym = symbols
                 .iter()

@@ -22,8 +22,8 @@
 use urd::{
     analysis,
     compiler::{
-        loader::{compile_recursive_with_root_path, parse_source},
         Compiler, CompilerError,
+        loader::{compile_recursive_with_root_path, parse_source},
     },
     loc::ftl::generate_ftl,
     vm::loader::FsLoader,
@@ -72,10 +72,7 @@ fn read_example(relative: &str) -> String {
 /// `dir` is relative to the workspace `examples/` directory
 /// (e.g. `"circular"`).  `filename` is the entry-point file within that
 /// directory (e.g. `"main.urd"`).
-fn try_compile_multifile(
-    dir: &str,
-    filename: &str,
-) -> Result<urd::IrGraph, CompilerError> {
+fn try_compile_multifile(dir: &str, filename: &str) -> Result<urd::IrGraph, CompilerError> {
     let base = example_path(dir);
     let loader = FsLoader::new(&base);
     let src = std::fs::read_to_string(base.join(filename))
@@ -354,9 +351,7 @@ fn circular_compile_fails_with_missing_symbol_import() {
                 "expected MissingImportedSymbol for narrator/hero/Character, got: {symbol}"
             );
         }
-        other => panic!(
-            "expected CompilerError::MissingImportedSymbol, got: {other:?}"
-        ),
+        other => panic!("expected CompilerError::MissingImportedSymbol, got: {other:?}"),
     }
 }
 
@@ -404,15 +399,16 @@ fn localization_compile_fails_with_missing_symbol_import() {
         CompilerError::MissingImportedSymbol { symbol, module } => {
             assert_eq!(module, "bazaar.urd", "error should reference bazaar.urd");
             assert!(
-                symbol == "narrator" || symbol == "elara"
-                    || symbol == "gold" || symbol == "price"
-                    || symbol == "has_potion" || symbol == "haggled",
+                symbol == "narrator"
+                    || symbol == "elara"
+                    || symbol == "gold"
+                    || symbol == "price"
+                    || symbol == "has_potion"
+                    || symbol == "haggled",
                 "expected MissingImportedSymbol for a bazaar.urd const/global, got: {symbol}"
             );
         }
-        other => panic!(
-            "expected CompilerError::MissingImportedSymbol, got: {other:?}"
-        ),
+        other => panic!("expected CompilerError::MissingImportedSymbol, got: {other:?}"),
     }
 }
 
@@ -501,17 +497,21 @@ fn multifile_compile_fails_with_missing_symbol_import() {
     let err = result.unwrap_err();
     match &err {
         CompilerError::MissingImportedSymbol { symbol, module } => {
-            assert_eq!(module, "characters.urd", "error should reference characters.urd");
+            assert_eq!(
+                module, "characters.urd",
+                "error should reference characters.urd"
+            );
             assert!(
-                symbol == "Character" || symbol == "Faction"
-                    || symbol == "narrator" || symbol == "hero"
-                    || symbol == "merchant" || symbol == "villain",
+                symbol == "Character"
+                    || symbol == "Faction"
+                    || symbol == "narrator"
+                    || symbol == "hero"
+                    || symbol == "merchant"
+                    || symbol == "villain",
                 "expected MissingImportedSymbol for a characters.urd item, got: {symbol}"
             );
         }
-        other => panic!(
-            "expected CompilerError::MissingImportedSymbol, got: {other:?}"
-        ),
+        other => panic!("expected CompilerError::MissingImportedSymbol, got: {other:?}"),
     }
 }
 

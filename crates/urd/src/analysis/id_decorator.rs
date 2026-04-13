@@ -219,8 +219,6 @@ fn extract_valid_id_override(decorators: &[Decorator]) -> Option<String> {
     crate::loc::extract_id_override(decorators)
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -197,7 +197,14 @@ fn interpolation_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result
 
     let (path_str, format) = if let Some((p, f)) = inner_content.split_once(':') {
         let fmt = f.trim();
-        (p.trim(), if fmt.is_empty() { None } else { Some(fmt.to_string()) })
+        (
+            p.trim(),
+            if fmt.is_empty() {
+                None
+            } else {
+                Some(fmt.to_string())
+            },
+        )
     } else {
         (inner_content, None)
     };

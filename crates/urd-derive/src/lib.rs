@@ -144,13 +144,13 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
         })?;
     }
 
-    if skip && (readonly || rename.is_some()) {
-        if let Some(attr) = attrs.first() {
-            return Err(syn::Error::new_spanned(
-                attr,
-                "skipped fields cannot have `readonly` or `rename` attributes"
-            ));
-        }
+    if skip && (readonly || rename.is_some())
+        && let Some(attr) = attrs.first()
+    {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "skipped fields cannot have `readonly` or `rename` attributes",
+        ));
     }
 
     Ok(FieldAttrs {
@@ -204,7 +204,10 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
             continue;
         }
         let Some(ident) = field.ident.clone() else {
-            return Err(syn::Error::new_spanned(field, "named field must have an ident"));
+            return Err(syn::Error::new_spanned(
+                field,
+                "named field must have an ident",
+            ));
         };
         let script_name = attrs.rename.unwrap_or_else(|| ident.to_string());
         field_infos.push(FieldInfo {
@@ -237,9 +240,9 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
             };
             quote! {
                 #comma
-                ::std::write!(&mut s, "{}: {}", #name, ::urd::runtime::extern_object::display_brief(
+                let _ = ::std::write!(&mut s, "{}: {}", #name, ::urd::runtime::extern_object::display_brief(
                     &::urd::runtime::extern_object::IntoRuntimeValue::to_runtime_value(&self.#ident)
-                )).unwrap();
+                ));
             }
         })
         .collect();
@@ -255,7 +258,7 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
             fn display(&self) -> String {
                 use ::std::fmt::Write;
                 let mut s = String::new();
-                ::std::write!(&mut s, "{} {{ ", #type_name_str).unwrap();
+                let _ = ::std::write!(&mut s, "{} {{ ", #type_name_str);
                 #(#display_fields)*
                 s.push_str(" }");
                 s
@@ -338,8 +341,12 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
 
     let mut generics = input.generics.clone();
     for param in generics.type_params_mut() {
-        param.bounds.push(syn::parse_quote!(::urd::runtime::extern_object::IntoRuntimeValue));
-        param.bounds.push(syn::parse_quote!(::urd::runtime::extern_object::FromRuntimeValue));
+        param.bounds.push(syn::parse_quote!(
+            ::urd::runtime::extern_object::IntoRuntimeValue
+        ));
+        param.bounds.push(syn::parse_quote!(
+            ::urd::runtime::extern_object::FromRuntimeValue
+        ));
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 

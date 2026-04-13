@@ -6,10 +6,7 @@
 
 #![allow(missing_docs)]
 
-use urd::{
-    Event, RuntimeValue, VmError, VmStep,
-    compiler::loader::parse_source,
-};
+use urd::{Event, RuntimeValue, VmError, VmStep, compiler::loader::parse_source};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

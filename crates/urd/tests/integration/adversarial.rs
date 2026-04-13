@@ -62,29 +62,12 @@ fn first_error(steps: &[VmStep]) -> Option<&VmError> {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// ## BUG: `//` for `Int // Int` uses Euclidean division, not floor division.
+/// `//` (floor-div) uses true floor division for both Int and Float.
 ///
-/// `(-7) // (-2)` with integer operands calls [`i64::div_euclid`], which
-/// returns `4` because `-7 = (-2) * 4 + 1` satisfies the Euclidean remainder
-/// constraint `0 ≤ r < |divisor|`.
-///
-/// Python (and most languages that have a floor-division operator) define `//`
-/// as `floor(a / b)`, which for `(-7) / (-2) = 3.5` gives `3`.
-///
-/// The Float path in `numeric_floordiv` correctly uses `(a / b).floor()` and
-/// therefore returns `3.0` for `(-7.0) // (-2.0)`.  The two code paths
-/// implement **different mathematical operations** behind the same operator.
-///
-/// ### Correct expected result
-/// `(-7) // (-2)` should be `3` (floor), matching Python semantics and the
-/// Float implementation of the same operator.
-///
-/// ### Why this test FAILS
-/// The VM currently evaluates the expression to `4` (Euclidean), so the `if`
-/// takes the `"euclidean"` branch and the dialogue emitted is `["euclidean"]`,
-/// not `["floor"]`.
+/// `(-7) // (-2)` with integer operands evaluates to `3`, matching Python
+/// and `(-7.0) // (-2.0)`.
 #[test]
-fn test_floordiv_int_int_uses_euclid_not_floor() {
+fn test_floordiv_int_int_is_correct() {
     let src = r#"
 @entry
 label start {
@@ -102,39 +85,16 @@ label start {
     let steps = run_script(src);
     let texts = dialogue_texts(&steps);
 
-    // Correct floor-division semantics: floor(-7 / -2) = floor(3.5) = 3.
-    // This assertion will FAIL: the VM emits ["euclidean"] because it calls
-    // div_euclid instead of floor division.
     assert_eq!(
         texts,
         vec!["floor"],
-        "(-7) // (-2) should yield 3 under floor semantics; \
-         got {texts:?} — the Int path uses div_euclid instead of floor"
+        "(-7) // (-2) should yield 3 under floor semantics"
     );
 }
 
-/// ## BUG: `//` produces inconsistent results for identical Int vs Float operands.
-///
-/// Both `(-7) // (-2)` and `(-7.0) // (-2.0)` represent the same mathematical
-/// floor-division expression.  They should produce the same numeric result.
-/// Instead:
-///
-/// - `Int // Int` calls [`i64::div_euclid`]  → `Int(4)`
-/// - `Float // Float` calls `(a / b).floor()` → `Float(3.0)`
-///
-/// When these values are compared with `==`, the cross-type arm of
-/// `values_equal` casts the integer to `f64`: `(4i64 as f64) == 3.0` → `false`.
-/// The observable effect is that `int_result == float_result` evaluates to
-/// `false` even though both operands encoded the same real-valued division.
-///
-/// ### Correct expected result
-/// A floor-division operator with a consistent definition should produce `3`
-/// for both pairs of operands; `int_result == float_result` should be `true`.
-///
-/// ### Why this test FAILS
-/// The VM emits `["inconsistent floor_div"]` because `Int(4) != Float(3.0)`.
+/// `//` produces consistent results for identical Int vs Float operands.
 #[test]
-fn test_floordiv_int_int_and_float_float_give_different_results() {
+fn test_floordiv_int_int_and_float_float_give_consistent_results() {
     let src = r#"
 @entry
 label start {
@@ -151,43 +111,16 @@ label start {
     let steps = run_script(src);
     let texts = dialogue_texts(&steps);
 
-    // Both expressions should yield the same value under any consistent
-    // definition of floor-division.  This assertion FAILS: the VM returns
-    // Int(4) for the integer case and Float(3.0) for the float case.
     assert_eq!(
         texts,
         vec!["consistent"],
-        "(-7) // (-2) and (-7.0) // (-2.0) should agree; \
-         got {texts:?} — Int uses div_euclid (→4), Float uses floor (→3.0)"
+        "(-7) // (-2) and (-7.0) // (-2.0) should agree"
     );
 }
 
-/// ## BUG: `Int == Float` comparison loses bits for integers larger than 2^53.
-///
-/// `values_equal` handles the cross-type case with:
-///
-/// ```urd/crates/urd/src/vm/eval.rs#L781-782
-/// (RuntimeValue::Int(x), RuntimeValue::Float(y)) => (*x as f64) == *y,
-/// ```
-///
-/// Casting an `i64` to `f64` is a lossy operation for values whose magnitude
-/// exceeds 2^53 (the f64 mantissa width).  In particular,
-/// `9_007_199_254_740_993i64` (= 2^53 + 1) rounds to `9_007_199_254_740_992.0`
-/// when stored as `f64`, making it indistinguishable from `9_007_199_254_740_992i64`.
-///
-/// The script therefore tests a comparison that **should** be `false` —
-/// `9007199254740993 != 9007199254740992.0` — but the cast makes both sides
-/// equal at the `f64` level.
-///
-/// ### Correct expected result
-/// The two values are mathematically distinct integers; `==` should return
-/// `false` and the script should emit `"correctly not equal"`.
-///
-/// ### Why this test FAILS
-/// The VM casts the `Int` to `f64` before comparing, producing `true`, and
-/// the dialogue emitted is `["falsely equal"]`.
+/// `Int == Float` comparison correctly handles integers larger than 2^53.
 #[test]
-fn test_int_float_equality_precision_loss() {
+fn test_int_float_equality_precision_preservation() {
     let src = r#"
 @entry
 label start {
@@ -204,40 +137,16 @@ label start {
     let steps = run_script(src);
     let texts = dialogue_texts(&steps);
 
-    // 9007199254740993 (2^53 + 1) != 9007199254740992.0 (2^53) — they differ
-    // by exactly 1.  This assertion FAILS: the VM casts the Int to f64 first,
-    // losing the low-order bit, and the comparison returns true.
     assert_eq!(
         texts,
         vec!["correctly not equal"],
-        "9007199254740993 and 9007199254740992.0 are distinct values; \
-         got {texts:?} — i64-to-f64 cast drops the +1 bit, making them appear equal"
+        "9007199254740993 and 9007199254740992.0 are distinct values"
     );
 }
 
-/// ## BUG: Two `Map` values with identical content never compare equal under `==`.
-///
-/// `values_equal` exhaustively matches known value pairs, but `Map` is not
-/// listed.  The trailing `_ => false` catch-all handles it instead, so any
-/// two maps — including structurally identical ones — always compare as
-/// **not equal**.
-///
-/// This violates value-type semantics: if maps are compared by content (as
-/// integers, strings, and lists are), identical maps must be equal.  If maps
-/// are intended to be compared by identity, that constraint should be
-/// documented and the equality operator should not be usable on them at all
-/// (ideally a type error).  Silently returning `false` is the worst of both
-/// worlds.
-///
-/// ### Correct expected result
-/// `:{score: 42} == :{score: 42}` should evaluate to `true` under value
-/// semantics.  The script should emit `"equal"`.
-///
-/// ### Why this test FAILS
-/// The `_ => false` arm in `values_equal` swallows the Map case.  The script
-/// emits `["not equal"]`.
+/// Two `Map` values with identical content compare equal under `==`.
 #[test]
-fn test_map_equality_always_false_for_identical_maps() {
+fn test_map_equality_for_identical_maps() {
     let src = r#"
 @entry
 label start {
@@ -254,14 +163,10 @@ label start {
     let steps = run_script(src);
     let texts = dialogue_texts(&steps);
 
-    // Two maps with identical structure and values should be equal under value
-    // semantics.  This assertion FAILS: values_equal has no Map arm and the
-    // _ => false catch-all always returns false for maps.
     assert_eq!(
         texts,
         vec!["equal"],
-        "two maps with identical content should compare equal; \
-         got {texts:?} — the _ => false catch-all in values_equal swallows Map comparisons"
+        "two maps with identical content should compare equal"
     );
 }
 

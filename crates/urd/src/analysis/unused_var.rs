@@ -135,7 +135,11 @@ fn check_block(block: &Ast, errors: &mut Vec<AnalysisError>) {
 /// Walk `node`, updating the `unread` map as declarations and reads are found.
 ///
 /// Does NOT recurse into nested `LabeledBlock` nodes — those are separate scopes.
-fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>, errors: &mut Vec<AnalysisError>) {
+fn collect_in_block(
+    node: &Ast,
+    unread: &mut HashMap<String, SimpleSpan>,
+    errors: &mut Vec<AnalysisError>,
+) {
     match node.content() {
         // ── Nested labeled blocks are independent — skip ─────────────────
         AstContent::LabeledBlock { .. } => {}

@@ -79,13 +79,15 @@ pub(super) fn eval_subscript_assign(
                     )));
                 }
             };
-            if fields.contains_key(&key_str) {
-                fields.insert(key_str, new_val);
-                Ok(())
-            } else {
-                Err(VmError::UndefinedVariable(format!(
+            use std::collections::hash_map::Entry;
+            match fields.entry(key_str.clone()) {
+                Entry::Occupied(mut o) => {
+                    o.insert(new_val);
+                    Ok(())
+                }
+                Entry::Vacant(_) => Err(VmError::UndefinedVariable(format!(
                     "field '{key_str}' not found on struct"
-                )))
+                ))),
             }
         }
         RuntimeValue::Extern(handle) => {
@@ -147,7 +149,11 @@ pub(super) fn refresh_event_snapshot(
         .iter()
         .map(|(k, v)| (k.clone(), Box::new(v.clone())))
         .collect();
-    env.set("event", RuntimeValue::Map(crate::runtime::value::shared(snapshot)), &DeclKind::Variable)
+    env.set(
+        "event",
+        RuntimeValue::Map(crate::runtime::value::shared(snapshot)),
+        &DeclKind::Variable,
+    )
 }
 
 /// Executes a single AST statement inside a decorator body.

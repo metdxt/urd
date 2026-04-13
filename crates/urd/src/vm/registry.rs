@@ -106,11 +106,9 @@ impl DecoratorRegistry {
                         | RuntimeValue::Function { .. }
                         | RuntimeValue::ScriptDecorator { .. }
                         | RuntimeValue::Struct { .. }
-                        | RuntimeValue::Map(_) => {
-                            RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain(
-                                &format!("{:?}", v),
-                            ))
-                        }
+                        | RuntimeValue::Map(_) => RuntimeValue::Str(
+                            crate::lexer::strings::ParsedString::new_plain(&format!("{:?}", v)),
+                        ),
                         other => other.clone(),
                     })
                     .collect();
@@ -163,7 +161,11 @@ impl DecoratorRegistry {
                         Ok(RuntimeValue::Map(m)) => {
                             // Convert HashMap<String, Box<RuntimeValue>> →
                             // HashMap<String, RuntimeValue>.
-                            Ok(m.borrow().clone().into_iter().map(|(k, v)| (k, *v)).collect())
+                            Ok(m.borrow()
+                                .clone()
+                                .into_iter()
+                                .map(|(k, v)| (k, *v))
+                                .collect())
                         }
                         // Body returned something other than a Map — treat as
                         // no additional event fields.

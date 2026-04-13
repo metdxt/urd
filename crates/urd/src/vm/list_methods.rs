@@ -58,7 +58,7 @@ pub(super) fn dispatch(
             let idx = require_int(&args[0], "get", "index")?;
             let pos = resolve_index(idx, list.borrow().len())?;
             // SAFETY: `resolve_index` guarantees `pos < list.borrow().len()`.
-            list.borrow().iter().cloned().nth(pos).ok_or_else(|| {
+            list.borrow().get(pos).cloned().ok_or_else(|| {
                 super::VmError::TypeError(
                     "list.get(): index out of bounds (resolve_index guarantee violated)"
                         .to_string(),
@@ -68,14 +68,14 @@ pub(super) fn dispatch(
 
         "first" => {
             require_args("first", args, 0)?;
-            list.borrow().iter().cloned().next().ok_or_else(|| {
+            list.borrow().iter().next().cloned().ok_or_else(|| {
                 super::VmError::TypeError("list.first() called on empty list".to_string())
             })
         }
 
         "last" => {
             require_args("last", args, 0)?;
-            list.borrow().iter().cloned().last().ok_or_else(|| {
+            list.borrow().iter().next_back().cloned().ok_or_else(|| {
                 super::VmError::TypeError("list.last() called on empty list".to_string())
             })
         }
@@ -174,7 +174,9 @@ pub(super) fn dispatch(
                 start..start
             };
 
-            Ok(RuntimeValue::List(crate::runtime::value::shared(list.borrow()[range].to_vec())))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(
+                list.borrow()[range].to_vec(),
+            )))
         }
 
         // ── String conversion ─────────────────────────────────────────────────
@@ -479,7 +481,8 @@ pub(super) fn dispatch(
             let len = list.borrow().len().min(other.borrow().len());
             let result = list
                 .borrow()
-                .iter().cloned()
+                .iter()
+                .cloned()
                 .zip(other.borrow().iter().cloned())
                 .take(len)
                 .map(|(a, b)| RuntimeValue::List(crate::runtime::value::shared(vec![a, b])))
@@ -493,7 +496,10 @@ pub(super) fn dispatch(
             if list.borrow().is_empty() {
                 return Ok(RuntimeValue::Null);
             }
-            let has_float = list.borrow().iter().any(|el| matches!(el, RuntimeValue::Float(_)));
+            let has_float = list
+                .borrow()
+                .iter()
+                .any(|el| matches!(el, RuntimeValue::Float(_)));
             if has_float {
                 let mut result: f64 = f64::INFINITY;
                 for el in list.borrow().iter() {
@@ -520,7 +526,10 @@ pub(super) fn dispatch(
             if list.borrow().is_empty() {
                 return Ok(RuntimeValue::Null);
             }
-            let has_float = list.borrow().iter().any(|el| matches!(el, RuntimeValue::Float(_)));
+            let has_float = list
+                .borrow()
+                .iter()
+                .any(|el| matches!(el, RuntimeValue::Float(_)));
             if has_float {
                 let mut result: f64 = f64::NEG_INFINITY;
                 for el in list.borrow().iter() {
@@ -556,7 +565,7 @@ pub(super) fn dispatch(
             for el in list.borrow().iter() {
                 match (&mut acc, el) {
                     (Acc::Int(total), RuntimeValue::Int(i)) => {
-                        *total = total.checked_add(i.clone()).ok_or_else(|| {
+                        *total = total.checked_add(*i).ok_or_else(|| {
                             super::VmError::TypeError("list.sum(): integer overflow".into())
                         })?;
                     }
@@ -577,7 +586,7 @@ pub(super) fn dispatch(
                         acc = Acc::Float(widened);
                     }
                     (Acc::Float(total), RuntimeValue::Int(i)) => {
-                        *total += i.clone() as f64;
+                        *total += *i as f64;
                         if !total.is_finite() {
                             return Err(super::VmError::TypeError(
                                 "list.sum(): float overflow (result is not finite)".into(),
@@ -757,8 +766,8 @@ fn format_for_join(val: &RuntimeValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::env::Environment;
+    use super::*;
 
     // ── Convenience constructors ──────────────────────────────────────────────
 
@@ -769,7 +778,6 @@ mod tests {
     fn str_val(s: &str) -> RuntimeValue {
         RuntimeValue::Str(ParsedString::new_plain(s))
     }
-
 
     fn dispatch(
         list: Vec<RuntimeValue>,
@@ -1056,7 +1064,13 @@ mod tests {
             body,
         };
         let env = Environment::new();
-        let result = dispatch(vec![int(1), int(2), int(3), int(4)], "filter", &[pred], &env).unwrap();
+        let result = dispatch(
+            vec![int(1), int(2), int(3), int(4)],
+            "filter",
+            &[pred],
+            &env,
+        )
+        .unwrap();
         assert_eq!(result, list_of([int(3), int(4)]));
     }
 

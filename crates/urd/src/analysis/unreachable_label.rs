@@ -672,10 +672,7 @@ label main {
         ext.insert("nonexistent".to_owned());
 
         let errors = check(&ast, &ext);
-        assert!(
-            errors.is_empty(),
-            "expected no errors, got: {errors:?}"
-        );
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
     #[test]

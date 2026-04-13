@@ -6,11 +6,11 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use urd::compiler::loader::parse_source;
 use urd::compiler::Compiler;
+use urd::compiler::loader::parse_source;
 use urd::ir::VmStep;
-use urd::vm::registry::DecoratorRegistry;
 use urd::vm::Vm;
+use urd::vm::registry::DecoratorRegistry;
 
 /// The example script used for all benchmarks.
 const CAVE_SRC: &str = include_str!("../../../examples/quest/cave.urd");

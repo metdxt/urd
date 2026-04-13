@@ -418,14 +418,21 @@ impl<T: FromRuntimeValue> FromRuntimeValue for Option<T> {
 
 impl<T: IntoRuntimeValue> IntoRuntimeValue for Vec<T> {
     fn to_runtime_value(&self) -> RuntimeValue {
-        RuntimeValue::List(crate::runtime::value::shared(self.iter().map(|v| v.to_runtime_value()).collect()))
+        RuntimeValue::List(crate::runtime::value::shared(
+            self.iter().map(|v| v.to_runtime_value()).collect(),
+        ))
     }
 }
 
 impl<T: FromRuntimeValue> FromRuntimeValue for Vec<T> {
     fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         match value {
-            RuntimeValue::List(items) => items.borrow().iter().cloned().map(T::from_runtime_value).collect(),
+            RuntimeValue::List(items) => items
+                .borrow()
+                .iter()
+                .cloned()
+                .map(T::from_runtime_value)
+                .collect(),
             other => Err(format!("expected List, got {other:?}")),
         }
     }
@@ -581,7 +588,10 @@ mod tests {
     fn vec_round_trip() {
         let v = vec![1i64, 2, 3];
         let rv = v.to_runtime_value();
-        assert_eq!(Vec::<i64>::from_runtime_value(rv.clone()).unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            Vec::<i64>::from_runtime_value(rv.clone()).unwrap(),
+            vec![1, 2, 3]
+        );
     }
 
     #[test]

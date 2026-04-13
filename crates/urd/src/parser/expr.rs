@@ -807,11 +807,7 @@ mod tests {
     fn deeply_nested_balanced_brackets_still_parse() {
         // Build `[[[...[1]...]]]` with 20 levels of nesting.
         let depth = 20;
-        let src = format!(
-            "{}1{}",
-            "[".repeat(depth),
-            "]".repeat(depth),
-        );
+        let src = format!("{}1{}", "[".repeat(depth), "]".repeat(depth),);
         let result = parse_test!(expr(), &src);
         assert!(
             result.is_ok(),

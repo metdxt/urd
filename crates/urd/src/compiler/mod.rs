@@ -25,10 +25,7 @@ use std::collections::HashSet;
 
 use thiserror::Error;
 
-use crate::{
-    ir::IrGraph,
-    parser::ast::Ast,
-};
+use crate::{ir::IrGraph, parser::ast::Ast};
 
 use state::CompilerState;
 

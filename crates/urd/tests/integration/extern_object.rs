@@ -790,7 +790,10 @@ fn conversion_round_trip_f64() {
 fn conversion_round_trip_option_some() {
     let val: Option<i64> = Some(7);
     let rv = val.to_runtime_value();
-    assert_eq!(Option::<i64>::from_runtime_value(rv.clone()).unwrap(), Some(7));
+    assert_eq!(
+        Option::<i64>::from_runtime_value(rv.clone()).unwrap(),
+        Some(7)
+    );
 }
 
 #[test]
@@ -804,7 +807,10 @@ fn conversion_round_trip_option_none() {
 fn conversion_round_trip_vec() {
     let val: Vec<i64> = vec![1, 2, 3];
     let rv = val.to_runtime_value();
-    assert_eq!(Vec::<i64>::from_runtime_value(rv.clone()).unwrap(), vec![1, 2, 3]);
+    assert_eq!(
+        Vec::<i64>::from_runtime_value(rv.clone()).unwrap(),
+        vec![1, 2, 3]
+    );
 }
 
 #[test]

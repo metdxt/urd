@@ -82,7 +82,10 @@ pub(super) fn dispatch(
             // Iterate in sorted key order so the result is deterministic.
             let mut pairs: Vec<(&String, &Box<RuntimeValue>)> = map.iter().collect::<Vec<_>>();
             pairs.sort_by_key(|(k, _)| k.as_str());
-            let list = pairs.into_iter().map(|(_, v)| *v.clone()).collect::<Vec<_>>();
+            let list = pairs
+                .into_iter()
+                .map(|(_, v)| *v.clone())
+                .collect::<Vec<_>>();
             Ok(RuntimeValue::List(crate::runtime::value::shared(list)))
         }
 
@@ -263,14 +266,21 @@ mod tests {
         let m = make_map(&[("z", int(3)), ("a", int(1)), ("m", int(2))]);
         assert_eq!(
             call(m, "keys", &[]).unwrap(),
-            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("a"), str_val("m"), str_val("z")]))
+            RuntimeValue::List(crate::runtime::value::shared(vec![
+                str_val("a"),
+                str_val("m"),
+                str_val("z")
+            ]))
         );
     }
 
     #[test]
     fn test_keys_empty_map() {
         let m = make_map(&[]);
-        assert_eq!(call(m, "keys", &[]).unwrap(), RuntimeValue::List(crate::runtime::value::shared(vec![])));
+        assert_eq!(
+            call(m, "keys", &[]).unwrap(),
+            RuntimeValue::List(crate::runtime::value::shared(vec![]))
+        );
     }
 
     // ── values ────────────────────────────────────────────────────────────────

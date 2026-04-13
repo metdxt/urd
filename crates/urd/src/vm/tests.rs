@@ -2505,22 +2505,42 @@ fn test_list_contains_cross_type_numeric_equality() {
 
     // Int 1 should match Float 1.0
     let env = Environment::new();
-    let result =
-        list_methods::dispatch(crate::runtime::value::shared(list.clone()), "contains", &[RuntimeValue::Int(1)], &env).unwrap();
-    assert_eq!(result, RuntimeValue::Bool(true), "[1.0,2.0,3.0].contains(1)");
+    let result = list_methods::dispatch(
+        crate::runtime::value::shared(list.clone()),
+        "contains",
+        &[RuntimeValue::Int(1)],
+        &env,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        RuntimeValue::Bool(true),
+        "[1.0,2.0,3.0].contains(1)"
+    );
 
     // Int 4 should not match anything
-    let result =
-        list_methods::dispatch(crate::runtime::value::shared(list.clone()), "contains", &[RuntimeValue::Int(4)], &env).unwrap();
-    assert_eq!(result, RuntimeValue::Bool(false), "[1.0,2.0,3.0].contains(4)");
+    let result = list_methods::dispatch(
+        crate::runtime::value::shared(list.clone()),
+        "contains",
+        &[RuntimeValue::Int(4)],
+        &env,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        RuntimeValue::Bool(false),
+        "[1.0,2.0,3.0].contains(4)"
+    );
 
     // Symmetric: list of ints, searching with a float
-    let int_list = vec![
-        RuntimeValue::Int(10),
-        RuntimeValue::Int(20),
-    ];
-    let result =
-        list_methods::dispatch(crate::runtime::value::shared(int_list), "contains", &[RuntimeValue::Float(20.0)], &env).unwrap();
+    let int_list = vec![RuntimeValue::Int(10), RuntimeValue::Int(20)];
+    let result = list_methods::dispatch(
+        crate::runtime::value::shared(int_list),
+        "contains",
+        &[RuntimeValue::Float(20.0)],
+        &env,
+    )
+    .unwrap();
     assert_eq!(result, RuntimeValue::Bool(true), "[10,20].contains(20.0)");
 }
 
@@ -2541,7 +2561,9 @@ fn test_is_truthy_empty_string_is_falsy() {
 fn test_is_truthy_empty_map_is_falsy() {
     use super::eval::is_truthy;
 
-    let empty_map = RuntimeValue::Map(crate::runtime::value::shared(std::collections::HashMap::new()));
+    let empty_map = RuntimeValue::Map(crate::runtime::value::shared(
+        std::collections::HashMap::new(),
+    ));
     assert!(!is_truthy(&empty_map), "empty map should be falsy");
 
     let mut m = std::collections::HashMap::new();
@@ -2567,7 +2589,10 @@ fn test_is_truthy_empty_struct_is_falsy() {
         name: "Point".to_string(),
         fields: crate::runtime::value::shared(fields),
     };
-    assert!(is_truthy(&non_empty_struct), "non-empty struct should be truthy");
+    assert!(
+        is_truthy(&non_empty_struct),
+        "non-empty struct should be truthy"
+    );
 }
 
 // ── Edge-case tests ───────────────────────────────────────────────────────
@@ -2711,10 +2736,7 @@ fn test_decorator_param_named_event_is_rejected() {
     // Apply the decorator to a dialogue node, passing one argument.
     let speakers = Ast::expr_list(vec![str_lit("Alice")]);
     let lines = Ast::expr_list(vec![str_lit("Hello")]);
-    let deco = Decorator::new(
-        "bad_deco".to_string(),
-        Ast::expr_list(vec![int(1)]),
-    );
+    let deco = Decorator::new("bad_deco".to_string(), Ast::expr_list(vec![int(1)]));
     let dialogue = Ast::new_decorated(
         AstContent::Dialogue {
             speakers: Box::new(speakers),
@@ -2736,8 +2758,6 @@ fn test_decorator_param_named_event_is_rejected() {
         VmStep::Event(e) => {
             panic!("expected TypeError for reserved param name 'event', but got event: {e:?}")
         }
-        other => panic!(
-            "expected TypeError for reserved param name 'event', got: {other:?}"
-        ),
+        other => panic!("expected TypeError for reserved param name 'event', got: {other:?}"),
     }
 }

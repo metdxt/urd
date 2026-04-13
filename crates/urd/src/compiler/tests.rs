@@ -64,8 +64,7 @@ fn test_decorator_def_then_dialogue_chains() {
     };
 
     // Follow the Next edge from DefineScriptDecorator to find Dialogue.
-    let next_idx =
-        next_of(&graph, entry_idx).expect("DefineScriptDecorator must have a Next edge");
+    let next_idx = next_of(&graph, entry_idx).expect("DefineScriptDecorator must have a Next edge");
     assert!(
         matches!(node_kind(&graph, next_idx), IrNodeKind::Dialogue { .. }),
         "expected Dialogue after DefineScriptDecorator, got {:?}",
@@ -242,10 +241,10 @@ fn test_if_without_else_branch_else_is_merge() {
     let entry = graph.entry.expect("entry");
     match node_kind(&graph, entry) {
         IrNodeKind::Branch { .. } => {
-            let then_idx = edge_target(&graph, entry, &IrEdge::Then)
-                .expect("Branch must have a Then edge");
-            let else_idx = edge_target(&graph, entry, &IrEdge::Else)
-                .expect("Branch must have an Else edge");
+            let then_idx =
+                edge_target(&graph, entry, &IrEdge::Then).expect("Branch must have a Then edge");
+            let else_idx =
+                edge_target(&graph, entry, &IrEdge::Else).expect("Branch must have an Else edge");
 
             // else_idx must be the merge Nop itself (no else body was compiled).
             match node_kind(&graph, else_idx) {
@@ -277,8 +276,8 @@ fn test_if_without_else_branch_else_is_merge() {
                         IrNodeKind::PopScope => {}
                         other => panic!("expected PopScope after then-body, got {:?}", other),
                     }
-                    let pop_next = next_of(&graph, pop_idx)
-                        .expect("PopScope must have a Next edge to merge");
+                    let pop_next =
+                        next_of(&graph, pop_idx).expect("PopScope must have a Next edge to merge");
                     assert_eq!(
                         pop_next, else_idx,
                         "PopScope's Next must point at the merge Nop"
@@ -296,8 +295,7 @@ fn test_if_without_else_branch_else_is_merge() {
 fn test_labeled_block_and_jump_resolve() {
     // label scene1 { let x = 42 }
     // jump scene1
-    let labeled =
-        Ast::labeled_block("scene1".to_string(), Ast::block(vec![decl("x", int(42))]));
+    let labeled = Ast::labeled_block("scene1".to_string(), Ast::block(vec![decl("x", int(42))]));
     let jump = Ast::jump_stmt("scene1".to_string(), false);
     let ast = Ast::block(vec![labeled, jump]);
 
@@ -651,8 +649,7 @@ fn test_circular_symbol_import_compiles_successfully() {
         "import (show_items) from \"items.urd\"\nlabel greet {\n  jump show_items\n}\n",
     );
 
-    let main_src =
-        "import (show_items) from \"items.urd\"\nlabel start {\n  jump show_items\n}\n";
+    let main_src = "import (show_items) from \"items.urd\"\nlabel start {\n  jump show_items\n}\n";
     let main_ast = crate::compiler::loader::parse_source(main_src).expect("parse");
     let result = Compiler::compile_with_loader(&main_ast, &loader);
     assert!(
@@ -1118,8 +1115,7 @@ fn test_two_dialogues_in_same_block_get_source_order_ids() {
     let graph = Compiler::compile_named(&ast, "merchant").expect("compile failed");
 
     // Collect (first-string-content, loc_id) for every Dialogue node.
-    let mut id_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for idx in graph.graph.node_indices() {
         if let IrNodeKind::Dialogue {
             loc_id: Some(id),
@@ -1212,9 +1208,8 @@ fn test_max_compiler_depth_exceeded_returns_error() {
     // Wrap in a top-level block so it looks like a normal script.
     let script = Ast::block(vec![ast]);
 
-    let err = Compiler::compile(&script).expect_err(
-        "compiling a script nested beyond MAX_COMPILER_DEPTH must fail",
-    );
+    let err = Compiler::compile(&script)
+        .expect_err("compiling a script nested beyond MAX_COMPILER_DEPTH must fail");
 
     match &err {
         CompilerError::Internal(msg) => {
@@ -1223,8 +1218,6 @@ fn test_max_compiler_depth_exceeded_returns_error() {
                 "unexpected Internal message: {msg}",
             );
         }
-        other => panic!(
-            "expected CompilerError::Internal for depth overflow, got: {other}",
-        ),
+        other => panic!("expected CompilerError::Internal for depth overflow, got: {other}",),
     }
 }

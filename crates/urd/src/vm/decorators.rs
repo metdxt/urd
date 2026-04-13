@@ -11,11 +11,11 @@ use petgraph::stable_graph::NodeIndex;
 use crate::parser::ast::{AstContent, DeclKind, Decorator, EventConstraint};
 use crate::runtime::value::RuntimeValue;
 
+use super::VmError;
 use super::env::Environment;
 use super::eval::eval_expr;
 use super::exec::exec_block_sync;
 use super::registry::DecoratorRegistry;
-use super::VmError;
 
 // ─── Decorator validation helper ─────────────────────────────────────────────
 

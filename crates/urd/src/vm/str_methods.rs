@@ -481,7 +481,11 @@ mod tests {
     fn test_split_comma() {
         assert_eq!(
             call(s("a,b,c"), "split", &[str_val(",")]).unwrap(),
-            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("a"), str_val("b"), str_val("c")]))
+            RuntimeValue::List(crate::runtime::value::shared(vec![
+                str_val("a"),
+                str_val("b"),
+                str_val("c")
+            ]))
         );
     }
 
@@ -667,7 +671,11 @@ mod tests {
     fn test_chars_ascii() {
         assert_eq!(
             call(s("abc"), "chars", &[]).unwrap(),
-            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("a"), str_val("b"), str_val("c")]))
+            RuntimeValue::List(crate::runtime::value::shared(vec![
+                str_val("a"),
+                str_val("b"),
+                str_val("c")
+            ]))
         );
     }
 
@@ -725,7 +733,11 @@ mod tests {
     fn test_lines_basic() {
         assert_eq!(
             call(s("a\nb\nc"), "lines", &[]).unwrap(),
-            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("a"), str_val("b"), str_val("c")]))
+            RuntimeValue::List(crate::runtime::value::shared(vec![
+                str_val("a"),
+                str_val("b"),
+                str_val("c")
+            ]))
         );
     }
 
@@ -734,7 +746,10 @@ mod tests {
         // Rust's `str::lines` strips both `\n` and `\r\n`.
         assert_eq!(
             call(s("x\r\ny"), "lines", &[]).unwrap(),
-            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("x"), str_val("y")]))
+            RuntimeValue::List(crate::runtime::value::shared(vec![
+                str_val("x"),
+                str_val("y")
+            ]))
         );
     }
 

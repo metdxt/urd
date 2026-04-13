@@ -4,6 +4,7 @@
 //! verify the generated trait implementation behaves correctly at runtime.
 
 #![allow(missing_docs, dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use urd::{ExternObject, RuntimeValue};
 
@@ -248,10 +249,7 @@ fn kitchen_sink_fields_lists_all_seven() {
         "list_ints",
         "list_strings",
     ] {
-        assert!(
-            fields.contains(&name.to_string()),
-            "missing field: {name}"
-        );
+        assert!(fields.contains(&name.to_string()), "missing field: {name}");
     }
 }
 
@@ -265,7 +263,10 @@ fn get_bare_f64() {
         x: 2.5,
         name: "test".into(),
     };
-    assert_eq!(ExternObject::get(&b, "x").unwrap(), RuntimeValue::Float(2.5));
+    assert_eq!(
+        ExternObject::get(&b, "x").unwrap(),
+        RuntimeValue::Float(2.5)
+    );
 }
 
 #[test]
@@ -320,9 +321,7 @@ fn get_unknown_field_errors() {
 
 #[test]
 fn get_renamed_field_uses_script_name() {
-    let w = WithRename {
-        internal_name: 7.7,
-    };
+    let w = WithRename { internal_name: 7.7 };
     assert_eq!(
         ExternObject::get(&w, "public_name").unwrap(),
         RuntimeValue::Float(7.7)
@@ -331,9 +330,7 @@ fn get_renamed_field_uses_script_name() {
 
 #[test]
 fn get_renamed_field_rejects_rust_name() {
-    let w = WithRename {
-        internal_name: 1.0,
-    };
+    let w = WithRename { internal_name: 1.0 };
     assert!(
         ExternObject::get(&w, "internal_name").is_err(),
         "Rust ident must not be usable as a script field name"
@@ -413,7 +410,10 @@ fn set_bare_field() {
         name: "old".into(),
     };
     ExternObject::set(&mut b, "x", RuntimeValue::Float(9.9)).unwrap();
-    assert_eq!(ExternObject::get(&b, "x").unwrap(), RuntimeValue::Float(9.9));
+    assert_eq!(
+        ExternObject::get(&b, "x").unwrap(),
+        RuntimeValue::Float(9.9)
+    );
 }
 
 #[test]
@@ -523,9 +523,7 @@ fn set_wrong_type_errors() {
 
 #[test]
 fn set_renamed_field_uses_script_name() {
-    let mut w = WithRename {
-        internal_name: 0.0,
-    };
+    let mut w = WithRename { internal_name: 0.0 };
     ExternObject::set(&mut w, "public_name", RuntimeValue::Float(42.0)).unwrap();
     assert_eq!(
         ExternObject::get(&w, "public_name").unwrap(),
@@ -535,9 +533,7 @@ fn set_renamed_field_uses_script_name() {
 
 #[test]
 fn set_renamed_field_rejects_rust_name() {
-    let mut w = WithRename {
-        internal_name: 0.0,
-    };
+    let mut w = WithRename { internal_name: 0.0 };
     assert!(
         ExternObject::set(&mut w, "internal_name", RuntimeValue::Float(1.0)).is_err(),
         "Rust ident must not be usable as a script field name"
@@ -612,16 +608,20 @@ fn set_multi_readonly_rejects_all_readonly() {
         b: "x".into(),
         writable: 0.0,
     };
-    assert!(ExternObject::set(&mut mr, "a", RuntimeValue::Int(2))
+    assert!(
+        ExternObject::set(&mut mr, "a", RuntimeValue::Int(2))
+            .unwrap_err()
+            .contains("read-only")
+    );
+    assert!(
+        ExternObject::set(
+            &mut mr,
+            "b",
+            RuntimeValue::Str(urd::lexer::strings::ParsedString::new_plain("y"))
+        )
         .unwrap_err()
-        .contains("read-only"));
-    assert!(ExternObject::set(
-        &mut mr,
-        "b",
-        RuntimeValue::Str(urd::lexer::strings::ParsedString::new_plain("y"))
-    )
-    .unwrap_err()
-    .contains("read-only"));
+        .contains("read-only")
+    );
     // The writable field should succeed.
     ExternObject::set(&mut mr, "writable", RuntimeValue::Float(3.15)).unwrap();
     assert_eq!(
@@ -704,10 +704,7 @@ fn display_renamed_field_uses_script_name() {
 fn display_all_skipped_is_minimal() {
     let g = AllSkipped { secret: 42 };
     let d = ExternObject::display(&g);
-    assert!(
-        d.contains("Ghost"),
-        "display should contain type name: {d}"
-    );
+    assert!(d.contains("Ghost"), "display should contain type name: {d}");
     assert!(
         !d.contains("secret"),
         "display must not contain skipped field: {d}"
@@ -724,7 +721,10 @@ fn display_full_combo() {
         position_x: 3.5,
     };
     let d = ExternObject::display(&p);
-    assert!(d.contains("Player"), "display should contain type name: {d}");
+    assert!(
+        d.contains("Player"),
+        "display should contain type name: {d}"
+    );
     assert!(d.contains("hp: 100"), "display should contain hp: {d}");
     assert!(
         d.contains("name: \"Hero\""),

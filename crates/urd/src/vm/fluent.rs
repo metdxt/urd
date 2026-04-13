@@ -14,8 +14,8 @@ use crate::runtime::value::RuntimeValue;
 
 use super::decorators::apply_decorator;
 use super::env::Environment;
-use super::registry::DecoratorRegistry;
 use super::eval;
+use super::registry::DecoratorRegistry;
 
 // ─── Fluent variable helpers ──────────────────────────────────────────────────
 

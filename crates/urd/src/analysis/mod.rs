@@ -885,7 +885,6 @@ impl AnalysisError {
         }
     }
 
-
     /// Returns `true` if the span is a zero span (i.e. no real source location).
     fn is_zero_span(span: &SimpleSpan) -> bool {
         span.start == 0 && span.end == 0
@@ -902,8 +901,6 @@ impl AnalysisError {
             format!("byte {}..{}", span.start, span.end)
         }
     }
-
-
 }
 
 impl std::fmt::Display for AnalysisError {
@@ -1035,7 +1032,10 @@ fn run_passes_with_semantic(
 
     // ── Warnings ──────────────────────────────────────────────────────────
     errors.extend(labels::check(ast, ctx, semantic));
-    errors.extend(unreachable_label::check(ast, &std::collections::HashSet::new()));
+    errors.extend(unreachable_label::check(
+        ast,
+        &std::collections::HashSet::new(),
+    ));
     errors.extend(empty_dialogue::check(ast));
     errors.extend(duplicate_menu_dest::check(ast));
     errors.extend(overwritten_assign::check(ast));
@@ -1156,9 +1156,7 @@ mod is_warning_tests {
 
     #[test]
     fn single_option_menu_is_a_warning() {
-        let err = AnalysisError::SingleOptionMenu {
-            span: dummy_span(),
-        };
+        let err = AnalysisError::SingleOptionMenu { span: dummy_span() };
         assert!(err.is_warning());
     }
 

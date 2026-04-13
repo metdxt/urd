@@ -23,12 +23,12 @@ impl<T> Clone for Shared<T> {
 impl<T> Shared<T> {
     /// Acquires a read lock on the shared value.
     pub fn borrow(&self) -> std::sync::RwLockReadGuard<'_, T> {
-        self.0.read().unwrap()
+        self.0.read().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Acquires a write lock on the shared value.
     pub fn borrow_mut(&self) -> std::sync::RwLockWriteGuard<'_, T> {
-        self.0.write().unwrap()
+        self.0.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 

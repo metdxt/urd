@@ -767,6 +767,7 @@ pub fn decorator_doc(name: &str) -> Option<String> {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

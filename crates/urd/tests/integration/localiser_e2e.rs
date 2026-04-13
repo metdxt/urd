@@ -85,7 +85,9 @@ impl Localizer for FluentLocalizer {
         }
 
         let mut errors = vec![];
-        let result = self.bundle.format_pattern(pattern, Some(&args), &mut errors);
+        let result = self
+            .bundle
+            .format_pattern(pattern, Some(&args), &mut errors);
         Some(result.into_owned())
     }
 }
@@ -455,7 +457,9 @@ fn vm_with_translated_ftl_produces_translated_output() {
 
     // Narrator line should be the French translation.
     let (_, ref text_0) = dialogues[0];
-    let text_0 = text_0.as_deref().expect("narrator must have localized_text");
+    let text_0 = text_0
+        .as_deref()
+        .expect("narrator must have localized_text");
     assert!(
         text_0.contains("approchez") && text_0.contains("marchand"),
         "narrator line should be French; got: {text_0}"
@@ -547,9 +551,7 @@ fn vm_without_localizer_has_no_localized_text() {
 
     for _ in 0..50 {
         match vm.next(None) {
-            VmStep::Event(Event::Dialogue {
-                localized_text, ..
-            }) => {
+            VmStep::Event(Event::Dialogue { localized_text, .. }) => {
                 assert!(
                     localized_text.is_none(),
                     "without a localizer, localized_text must be None"
@@ -667,6 +669,12 @@ fn generated_ftl_roundtrip_all_keys_resolve() {
         }
     }
 
-    assert!(seen_dialogue, "test must have encountered at least one Dialogue event");
-    assert!(seen_choice, "test must have encountered at least one Choice event");
+    assert!(
+        seen_dialogue,
+        "test must have encountered at least one Dialogue event"
+    );
+    assert!(
+        seen_choice,
+        "test must have encountered at least one Choice event"
+    );
 }

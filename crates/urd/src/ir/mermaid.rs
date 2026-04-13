@@ -960,8 +960,6 @@ fn write_mermaid_edge(
     }
 }
 
-
-
 // ─── Mermaid-specific helpers ─────────────────────────────────────────────────
 
 /// Escapes text for use inside a Mermaid double-quoted node label.

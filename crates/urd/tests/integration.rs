@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[path = "integration/fixtures.rs"]
 mod fixtures;

@@ -91,7 +91,7 @@ fn first_error(steps: &[VmStep]) -> Option<&VmError> {
 /// `vm.next()` panics.  `catch_unwind` catches the panic and the test
 /// re-panics with a descriptive BUG message.
 #[test]
-fn test_int_modulo_by_zero_panics_instead_of_erroring() {
+fn test_int_modulo_by_zero_errors() {
     let src = r#"
 @entry
 label start {
@@ -141,7 +141,7 @@ label start {
 /// Every non-zero or zero value `% 0` panics; this variant confirms the guard
 /// must trigger for any divisor of zero regardless of the dividend.
 #[test]
-fn test_zero_modulo_zero_panics_instead_of_erroring() {
+fn test_zero_modulo_zero_errors() {
     let src = r#"
 @entry
 label start {
@@ -444,7 +444,7 @@ label start {
 /// The closure panics.  `catch_unwind` catches the panic and this test
 /// re-panics with a descriptive BUG message.
 #[test]
-fn test_integer_addition_overflow_panics_instead_of_erroring() {
+fn test_integer_addition_overflow_errors() {
     // 9223372036854775807 = i64::MAX
     let src = r#"
 @entry
@@ -493,7 +493,7 @@ label start {
 
 /// ## BUG E (multiplication): `i64::MAX * 2` panics in debug mode.
 #[test]
-fn test_integer_multiplication_overflow_panics_instead_of_erroring() {
+fn test_integer_multiplication_overflow_errors() {
     let src = r#"
 @entry
 label start {
@@ -543,7 +543,7 @@ label start {
 /// Subtracting 2 from that yields `i64::MIN - 1`, which is not representable
 /// in `i64` and panics.
 #[test]
-fn test_integer_subtraction_underflow_panics_instead_of_erroring() {
+fn test_integer_subtraction_underflow_errors() {
     let src = r#"
 @entry
 label start {
@@ -611,7 +611,7 @@ label start {
 /// ### Why this test FAILS
 /// The VM ends before `Narrator: "after match"` runs; no error is emitted.
 #[test]
-fn test_match_zero_arms_silently_terminates_vm() {
+fn test_match_zero_arms_errors() {
     let src = r#"
 @entry
 label start {
@@ -647,7 +647,7 @@ label start {
 /// ### Why this test FAILS
 /// x = 99 matches none of the arms; `Narrator: "after match"` is never reached.
 #[test]
-fn test_match_non_exhaustive_value_arms_silently_terminate_vm() {
+fn test_match_non_exhaustive_value_arms_errors() {
     let src = r#"
 @entry
 label start {
@@ -679,7 +679,7 @@ label start {
 /// `score = 50` falls outside both covered ranges (1–10, 90–100) and there is
 /// no wildcard.  Same silent-termination path as the value variant above.
 #[test]
-fn test_match_non_exhaustive_range_arms_silently_terminate_vm() {
+fn test_match_non_exhaustive_range_arms_errors() {
     let src = r#"
 @entry
 label start {

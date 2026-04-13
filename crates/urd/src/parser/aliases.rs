@@ -6,7 +6,10 @@ use crate::{lexer::Token, parser::ast::Ast};
 
 /// Sealed super-trait for chumsky inputs compatible with urd's token/span types.
 pub trait UrdInput<'tokens>: ValueInput<'tokens, Token = Token, Span = SimpleSpan> {}
-impl<'tokens, T> UrdInput<'tokens> for T where T: ValueInput<'tokens, Token = Token, Span = SimpleSpan> {}
+impl<'tokens, T> UrdInput<'tokens> for T where
+    T: ValueInput<'tokens, Token = Token, Span = SimpleSpan>
+{
+}
 
 /// Sealed super-trait for chumsky parsers that produce [`Ast`] nodes for urd.
 pub trait UrdParser<'tokens, I>:
