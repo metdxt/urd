@@ -24,6 +24,7 @@ use crate::parser::ast::{Ast, AstContent, walk_ast};
 /// When `semantic` is `Some`, it is consulted as a fallback suggestion source
 /// whenever Levenshtein edit distance produces no close match (distance > 2).
 /// When `None`, only Levenshtein is used.
+#[must_use]
 pub fn check(
     ast: &Ast,
     ctx: &AnalysisContext,

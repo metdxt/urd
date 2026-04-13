@@ -84,6 +84,7 @@ const BUILTINS: &[&str] = &["end!", "todo!"];
 /// Returns one [`AnalysisError::UndefinedVariable`] for every single-segment
 /// identifier used in a read position that cannot be resolved to any declaration
 /// visible in the current scope.
+#[must_use]
 pub fn check(
     ast: &Ast,
     ctx: &AnalysisContext,

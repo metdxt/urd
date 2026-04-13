@@ -57,6 +57,7 @@ use crate::parser::ast::{Ast, AstContent, walk_ast};
 ///   this set will **not** be flagged as unreachable even if no local `jump`
 ///   or `@entry` targets them.  Pass an empty set when cross-module
 ///   information is unavailable.
+#[must_use]
 pub fn check(ast: &Ast, externally_reachable: &HashSet<String>) -> Vec<AnalysisError> {
     // ── Step 1: collect all locally-defined labels and their spans ──────────
     let defined = collect_defined(ast);

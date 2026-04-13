@@ -45,6 +45,10 @@ thread_local! {
     /// search space.  Must be reset to [`MAX_PARSE_FUEL`] before each parse
     /// via [`reset_expr_fuel`].
     static EXPR_FUEL: Cell<usize> = const { Cell::new(MAX_PARSE_FUEL) };
+
+    /// Nesting depth counter to prevent stack overflow.
+    /// Incremented on every recursive entry into `expr`.
+    static NESTING_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Reset the expression-recursion fuel to its maximum.
@@ -54,6 +58,7 @@ thread_local! {
 /// Test helpers and fuzz targets must call it explicitly.
 pub fn reset_expr_fuel() {
     EXPR_FUEL.with(|f| f.set(MAX_PARSE_FUEL));
+    NESTING_DEPTH.with(|d| d.set(0));
 }
 
 /// Represents a value, including anonymous function literals.
@@ -179,15 +184,32 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> BoxedUrdParser<'tokens, I> {
         //
         // The counter must be reset to `MAX_PARSE_FUEL` before every
         // top-level parse via `reset_expr_fuel()`.
-        let fuel_guard = empty().filter(move |_| {
-            EXPR_FUEL.with(|f| {
+        let fuel_guard = empty().try_map(move |_, span| {
+            let fuel_ok = EXPR_FUEL.with(|f| {
                 let remaining = f.get();
                 if remaining == 0 {
                     return false;
                 }
                 f.set(remaining - 1);
                 true
-            })
+            });
+            if !fuel_ok {
+                return Err(chumsky::error::Rich::custom(span, "Parse fuel exhausted"));
+            }
+
+            let depth_ok = NESTING_DEPTH.with(|d| {
+                let val = d.get();
+                if val >= 128 {
+                    return false;
+                }
+                d.set(val + 1);
+                true
+            });
+            if !depth_ok {
+                return Err(chumsky::error::Rich::custom(span, "Nesting depth limit exceeded"));
+            }
+
+            Ok(())
         });
 
         let term = fuel_guard.ignore_then(
@@ -195,7 +217,7 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> BoxedUrdParser<'tokens, I> {
                 .or(expr.delimited_by(just(Token::LeftParen), just(Token::RightParen))),
         );
 
-        term.pratt((
+        let pratt = term.pratt((
             // Unary operators (precedence 11)
             prefix(11, just(Token::BitwiseNot), |_, r, _| {
                 Ast::bitwise_not_op(r)
@@ -278,7 +300,12 @@ pub fn expr<'tokens, I: UrdInput<'tokens>>() -> BoxedUrdParser<'tokens, I> {
                 Ast::assign_op(l, r)
             }),
         ))
-        .map_with(|ast, extra| ast.with_span(extra.span()))
+        .map_with(|ast, extra| ast.with_span(extra.span()));
+
+        pratt.map(|ast| {
+            NESTING_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+            ast
+        })
     })
     .labelled("expression")
     .boxed()

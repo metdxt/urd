@@ -36,6 +36,7 @@ use super::AnalysisError;
 /// This pass is intentionally best-effort:
 /// - If IR compilation fails, it returns no diagnostics (other passes will
 ///   already report the underlying issues).
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let opt_in = collect_opt_in_labels(ast);
     if opt_in.is_empty() {

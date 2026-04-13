@@ -36,6 +36,7 @@ use crate::parser::ast::{Ast, AstContent, walk_ast};
 /// (via [`Ast`]'s `PartialEq` impl, which ignores spans), a
 /// [`AnalysisError::DuplicateMenuDestination`] is emitted for the *second*
 /// (later) option, referencing the label text of both options.
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
 

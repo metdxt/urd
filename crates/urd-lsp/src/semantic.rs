@@ -448,7 +448,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
 
         // ── Function definitions ─────────────────────────────────────────
         AstContent::FnDef {
-            name: Some(fn_name),
+            name: fn_name_opt,
             name_span,
             params,
             ret_type,
@@ -469,14 +469,29 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 .as_ref()
                 .map(|ta| format!(" -> {}", format_type_annotation(ta)))
                 .unwrap_or_default();
-            out.push(make_symbol(
-                fn_name.clone(),
-                SymbolKind::Function,
-                name_span.map(|ns| ns.0).unwrap_or_else(|| ast.span()),
-                ret_type.clone(),
-                Some(format!("fn {fn_name}({}){ret_str}", param_list.join(", "))),
-                ast.doc_comment.clone(),
-            ));
+            
+            if let Some(fn_name) = fn_name_opt {
+                out.push(make_symbol(
+                    fn_name.clone(),
+                    SymbolKind::Function,
+                    name_span.map(|ns| ns.0).unwrap_or_else(|| ast.span()),
+                    ret_type.clone(),
+                    Some(format!("fn {fn_name}({}){ret_str}", param_list.join(", "))),
+                    ast.doc_comment.clone(),
+                ));
+            }
+
+            for p in params {
+                out.push(make_symbol(
+                    p.name.clone(),
+                    SymbolKind::Variable,
+                    p.span,
+                    p.type_annotation.clone(),
+                    Some(format!("(parameter) {}", p.name)),
+                    None,
+                ));
+            }
+
             collect_symbols_recursive(body, out);
         }
 
@@ -513,6 +528,18 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 )),
                 ast.doc_comment.clone(),
             ));
+
+            for p in params {
+                out.push(make_symbol(
+                    p.name.clone(),
+                    SymbolKind::Variable,
+                    p.span,
+                    p.type_annotation.clone(),
+                    Some(format!("(parameter) {}", p.name)),
+                    None,
+                ));
+            }
+
             collect_symbols_recursive(body, out);
         }
 
@@ -724,27 +751,37 @@ fn find_definition_recursive(ast: &Ast, name: &str) -> Option<SimpleSpan> {
             None
         }
 
+        AstContent::FnDef {
+            name: fn_name_opt,
+            name_span,
+            body,
+            params,
+            ..
+        } => {
+            if let Some(fn_name) = fn_name_opt
+                && fn_name == name
+            {
+                // Prefer the name_span (just the function name token) over
+                // the whole FnDef span.
+                return name_span.map(|ns| ns.0).or_else(|| Some(ast.span()));
+            }
+            if let Some(param) = params.iter().find(|p| p.name == name) {
+                return Some(param.span);
+            }
+            find_definition_recursive(body, name)
+        }
+
         AstContent::DecoratorDef {
             name: dec_name,
             body,
+            params,
             ..
         } => {
             if dec_name == name {
                 return Some(ast.span());
             }
-            find_definition_recursive(body, name)
-        }
-
-        AstContent::FnDef {
-            name: Some(fn_name),
-            name_span,
-            body,
-            ..
-        } => {
-            if fn_name == name {
-                // Prefer the name_span (just the function name token) over
-                // the whole FnDef span.
-                return name_span.map(|ns| ns.0).or_else(|| Some(ast.span()));
+            if let Some(param) = params.iter().find(|p| p.name == name) {
+                return Some(param.span);
             }
             find_definition_recursive(body, name)
         }

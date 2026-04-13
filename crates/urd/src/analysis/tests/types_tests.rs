@@ -904,7 +904,7 @@ fn fn_param_type_mismatch_on_reassignment_is_rejected() {
     let body = Ast::block(vec![Ast::assign_op(ident("x"), bool_lit(true))]);
     let f = Ast::fn_def(
         Some("f".to_owned()),
-        vec![FnParam {
+        vec![FnParam { span: (0..0).into(),
             name: "x".to_owned(),
             type_annotation: Some(TypeAnnotation::Int),
         }],
@@ -922,7 +922,7 @@ fn fn_param_type_propagates_to_local_decl() {
     let body = Ast::block(vec![typed_decl("y", TypeAnnotation::Int, ident("x"))]);
     let f = Ast::fn_def(
         Some("f".to_owned()),
-        vec![FnParam {
+        vec![FnParam { span: (0..0).into(),
             name: "x".to_owned(),
             type_annotation: Some(TypeAnnotation::Int),
         }],
@@ -952,7 +952,7 @@ fn anonymous_fn_param_type_mismatch_is_rejected() {
     let body = Ast::block(vec![Ast::assign_op(ident("x"), str_lit("hello"))]);
     let f = Ast::fn_def(
         None,
-        vec![FnParam {
+        vec![FnParam { span: (0..0).into(),
             name: "x".to_owned(),
             type_annotation: Some(TypeAnnotation::Int),
         }],

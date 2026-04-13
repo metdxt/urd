@@ -30,6 +30,11 @@ impl<T> Shared<T> {
     pub fn borrow_mut(&self) -> std::sync::RwLockWriteGuard<'_, T> {
         self.0.write().unwrap_or_else(|e| e.into_inner())
     }
+
+    /// Returns the address of the underlying Arc for pointer equality.
+    pub fn as_ptr(&self) -> usize {
+        Arc::as_ptr(&self.0) as *const _ as usize
+    }
 }
 
 impl<T: PartialEq> PartialEq for Shared<T> {

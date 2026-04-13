@@ -29,6 +29,7 @@ use crate::parser::ast::{Ast, AstContent, walk_ast};
 ///   exactly one non-default option **and** no default fallback.
 /// - [`AnalysisError::MultipleMenuDefaults`] for every [`AstContent::Menu`]
 ///   with more than one `_` wildcard option.
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
 

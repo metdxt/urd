@@ -58,6 +58,7 @@ enum Termination {
 ///
 /// A root [`AstContent::LabeledBlock`] *does* carry flow and is checked
 /// normally.  All other root shapes are silently skipped.
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors: Vec<AnalysisError> = Vec::new();
 
@@ -101,9 +102,8 @@ pub fn check(ast: &Ast) -> Vec<AnalysisError> {
 /// per-option diagnostics only when the menu is known to be in a terminal
 /// position (i.e. nothing after it provides a terminator).
 fn last_menu_in_block(block: &Ast) -> Option<&Ast> {
-    let stmts = match block.content() {
-        AstContent::Block(s) => s,
-        _ => return None,
+    let AstContent::Block(stmts) = block.content() else {
+        return None;
     };
     // Walk forward, skipping trailing LabeledBlock nodes (they are jump
     // targets, not inline flow), and return the last inline statement if it
@@ -133,9 +133,8 @@ fn emit_terminal_menu_errors(
     parent_span: SimpleSpan,
     location: &NodeDescription,
 ) {
-    let options = match menu_node.content() {
-        AstContent::Menu { options } => options,
-        _ => return,
+    let AstContent::Menu { options } = menu_node.content() else {
+        return;
     };
     for opt in options {
         let opt_label: &str = match opt.content() {
@@ -197,7 +196,7 @@ fn termination_of(
 
         // `end!` and `todo!` are terminating calls; everything else is open.
         AstContent::Call { func_path, .. } => match extract_call_name(func_path) {
-            Some("end!") | Some("todo!") => Termination::Terminates,
+            Some("end!" | "todo!") => Termination::Terminates,
             _ => Termination::Open,
         },
 

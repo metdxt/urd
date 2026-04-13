@@ -24,6 +24,30 @@ pub mod expr;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_util;
 
+/// Validates that the maximum nesting depth of tokens `[`, `{`, `(` does not exceed `limit`.
+/// Returns an error span matching the first token that exceeds the limit if the depth is exceeded.
+pub fn check_nesting_depth<'a, I>(tokens: I, limit: usize) -> Result<(), chumsky::error::Rich<'a, crate::lexer::Token, chumsky::span::SimpleSpan>>
+where
+    I: IntoIterator<Item = &'a (crate::lexer::Token, chumsky::span::SimpleSpan)>,
+{
+    let mut depth = 0;
+    for (token, span) in tokens {
+        match token {
+            crate::lexer::Token::LeftBracket | crate::lexer::Token::LeftCurly | crate::lexer::Token::LeftParen => {
+                depth += 1;
+                if depth > limit {
+                    return Err(chumsky::error::Rich::custom(*span, format!("Nesting depth limit exceeded ({})", limit)));
+                }
+            }
+            crate::lexer::Token::RightBracket | crate::lexer::Token::RightCurly | crate::lexer::Token::RightParen => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Helper macro to generate boilerplate for parsing text using Urd lexer.
 ///
 /// Delegates to [`test_util::lex_to_vec`] and [`test_util::make_input`] so the

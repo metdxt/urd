@@ -20,6 +20,7 @@ use super::AnalysisError;
 ///
 /// If the root node is *not* a `Block`, the function returns an empty `Vec`
 /// (nothing to check).
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let children = match ast.content() {
         AstContent::Block(children) => children,

@@ -645,22 +645,31 @@ pub(super) fn interpolate_string(ps: &ParsedString, env: &Environment) -> Parsed
 /// - `".2"` → float to 2 decimal places
 #[allow(clippy::collapsible_if)]
 pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> String {
+    let mut visited = std::collections::HashSet::new();
+    format_runtime_value_inner(val, format, &mut visited)
+}
+
+fn format_runtime_value_inner(
+    val: &RuntimeValue,
+    format: Option<&str>,
+    visited: &mut std::collections::HashSet<usize>,
+) -> String {
     match (val, format) {
         (RuntimeValue::Int(i), Some(fmt)) => {
-            if let Some(width_str) = fmt.strip_prefix('0') {
-                if let Ok(width) = width_str.parse::<usize>() {
-                    let width = width.min(64);
-                    return format!("{:0>width$}", i, width = width);
-                }
+            if let Some(width_str) = fmt.strip_prefix('0')
+                && let Ok(width) = width_str.parse::<usize>()
+            {
+                let width = width.min(64);
+                return format!("{:0>width$}", i, width = width);
             }
             i.to_string()
         }
         (RuntimeValue::Float(f), Some(fmt)) => {
-            if let Some(prec_str) = fmt.strip_prefix('.') {
-                if let Ok(prec) = prec_str.parse::<usize>() {
-                    let prec = prec.min(64);
-                    return format!("{:.prec$}", f, prec = prec);
-                }
+            if let Some(prec_str) = fmt.strip_prefix('.')
+                && let Ok(prec) = prec_str.parse::<usize>()
+            {
+                let prec = prec.min(64);
+                return format!("{:.prec$}", f, prec = prec);
             }
             f.to_string()
         }
@@ -682,11 +691,17 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
             RuntimeValue::IdentPath(path) => path.join("."),
             RuntimeValue::Map(m) => format!("map({})", m.borrow().len()),
             RuntimeValue::List(items) => {
+                let ptr = items.as_ptr();
+                if visited.contains(&ptr) {
+                    return "[...]".to_string();
+                }
+                visited.insert(ptr);
                 let parts: Vec<String> = items
                     .borrow()
                     .iter()
-                    .map(|v| format_runtime_value(v, None))
+                    .map(|v| format_runtime_value_inner(v, None, visited))
                     .collect();
+                visited.remove(&ptr);
                 format!("[{}]", parts.join(", "))
             }
             RuntimeValue::Range {
@@ -1179,6 +1194,15 @@ pub(super) fn is_truthy(v: &RuntimeValue) -> bool {
 
 /// Returns `true` if two [`RuntimeValue`]s are structurally equal.
 pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    values_equal_inner(a, b, &mut visited)
+}
+
+fn values_equal_inner(
+    a: &RuntimeValue,
+    b: &RuntimeValue,
+    visited: &mut std::collections::HashSet<(usize, usize)>,
+) -> bool {
     match (a, b) {
         (RuntimeValue::Null, RuntimeValue::Null) => true,
         (RuntimeValue::Bool(x), RuntimeValue::Bool(y)) => x == y,
@@ -1208,14 +1232,28 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
         }
         (RuntimeValue::Str(x), RuntimeValue::Str(y)) => x.to_string() == y.to_string(),
         (RuntimeValue::List(xs), RuntimeValue::List(ys)) => {
-            xs.borrow().len() == ys.borrow().len() && xs.borrow().iter().zip(ys.borrow().iter()).all(|(a, b)| values_equal(a, b))
+            let ptr_pair = (xs.as_ptr(), ys.as_ptr());
+            if visited.contains(&ptr_pair) {
+                return true; // Assume equal to break cycle
+            }
+            visited.insert(ptr_pair);
+            let eq = xs.borrow().len() == ys.borrow().len() && xs.borrow().iter().zip(ys.borrow().iter()).all(|(a, b)| values_equal_inner(a, b, visited));
+            visited.remove(&ptr_pair);
+            eq
         }
         (RuntimeValue::Map(xs), RuntimeValue::Map(ys)) => {
-            xs.borrow().len() == ys.borrow().len()
+            let ptr_pair = (xs.as_ptr(), ys.as_ptr());
+            if visited.contains(&ptr_pair) {
+                return true;
+            }
+            visited.insert(ptr_pair);
+            let eq = xs.borrow().len() == ys.borrow().len()
                 && xs
                     .borrow()
                     .iter()
-                    .all(|(k, v)| ys.borrow().get(k).is_some_and(|yv| values_equal(v, yv)))
+                    .all(|(k, v)| ys.borrow().get(k).is_some_and(|yv| values_equal_inner(v, yv, visited)));
+            visited.remove(&ptr_pair);
+            eq
         }
         (
             RuntimeValue::Struct {
@@ -1227,12 +1265,19 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
                 fields: f2,
             },
         ) => {
-            n1 == n2
+            let ptr_pair = (f1.as_ptr(), f2.as_ptr());
+            if visited.contains(&ptr_pair) {
+                return true;
+            }
+            visited.insert(ptr_pair);
+            let eq = n1 == n2
                 && f1.borrow().len() == f2.borrow().len()
                 && f1
                     .borrow()
                     .iter()
-                    .all(|(k, v)| f2.borrow().get(k).is_some_and(|fv| values_equal(v, fv)))
+                    .all(|(k, v)| f2.borrow().get(k).is_some_and(|fv| values_equal_inner(v, fv, visited)));
+            visited.remove(&ptr_pair);
+            eq
         }
         (
             RuntimeValue::Range {

@@ -42,6 +42,7 @@ use super::context::extract_decl_name;
 // ---------------------------------------------------------------------------
 
 /// Run the unused-variable pass over `ast` and return any diagnostics.
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
     find_labeled_blocks(ast, &mut errors);

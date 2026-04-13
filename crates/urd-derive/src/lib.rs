@@ -101,12 +101,12 @@ struct FieldAttrs {
     rename: Option<String>,
 }
 
-fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
+fn parse_field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
     let mut skip = false;
     let mut readonly = false;
     let mut rename = None;
 
-    for attr in attrs {
+    for attr in &field.attrs {
         if !attr.path().is_ident("extern_object") {
             continue;
         }
@@ -144,11 +144,9 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
         })?;
     }
 
-    if skip && (readonly || rename.is_some())
-        && let Some(attr) = attrs.first()
-    {
+    if skip && (readonly || rename.is_some()) {
         return Err(syn::Error::new_spanned(
-            attr,
+            field,
             "skipped fields cannot have `readonly` or `rename` attributes",
         ));
     }
@@ -165,6 +163,8 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
 struct FieldInfo {
     /// The Rust field identifier (for `self.field_name`).
     ident: syn::Ident,
+    /// The type of the field.
+    ty: syn::Type,
     /// The script-visible name (after rename).
     script_name: String,
     /// Whether the field is read-only from scripts.
@@ -199,7 +199,7 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
     // Collect field metadata, filtering out skipped fields.
     let mut field_infos: Vec<FieldInfo> = Vec::new();
     for field in fields {
-        let attrs = parse_field_attrs(&field.attrs)?;
+        let attrs = parse_field_attrs(field)?;
         if attrs.skip {
             continue;
         }
@@ -212,6 +212,7 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
         let script_name = attrs.rename.unwrap_or_else(|| ident.to_string());
         field_infos.push(FieldInfo {
             ident,
+            ty: field.ty.clone(),
             script_name,
             readonly: attrs.readonly,
         });
@@ -249,15 +250,15 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
 
     let display_impl = if display_fields.is_empty() {
         quote! {
-            fn display(&self) -> String {
-                format!("{} {{}}", #type_name_str)
+            fn display(&self) -> ::std::string::String {
+                ::std::format!("{} {{}}", #type_name_str)
             }
         }
     } else {
         quote! {
-            fn display(&self) -> String {
+            fn display(&self) -> ::std::string::String {
                 use ::std::fmt::Write;
-                let mut s = String::new();
+                let mut s = ::std::string::String::new();
                 let _ = ::std::write!(&mut s, "{} {{ ", #type_name_str);
                 #(#display_fields)*
                 s.push_str(" }");
@@ -282,11 +283,11 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
         .collect();
 
     let get_impl = quote! {
-        fn get(&self, field: &str) -> ::std::result::Result<::urd::RuntimeValue, String> {
+        fn get(&self, field: &str) -> ::std::result::Result<::urd::RuntimeValue, ::std::string::String> {
             match field {
                 #(#get_arms)*
                 other => ::std::result::Result::Err(
-                    format!("no field '{}' on {}", other, #type_name_str)
+                    ::std::format!("no field '{}' on {}", other, #type_name_str)
                 ),
             }
         }
@@ -302,7 +303,7 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
             if fi.readonly {
                 quote! {
                     #name => ::std::result::Result::Err(
-                        format!("field '{}' on {} is read-only", #name, #type_name_str)
+                        ::std::format!("field '{}' on {} is read-only", #name, #type_name_str)
                     ),
                 }
             } else {
@@ -316,12 +317,19 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
         })
         .collect();
 
+    let all_readonly = field_infos.iter().all(|fi| fi.readonly);
+    let value_param = if all_readonly {
+        quote! { _value: ::urd::RuntimeValue }
+    } else {
+        quote! { value: ::urd::RuntimeValue }
+    };
+
     let set_impl = quote! {
-        fn set(&mut self, field: &str, value: ::urd::RuntimeValue) -> ::std::result::Result<(), String> {
+        fn set(&mut self, field: &str, #value_param) -> ::std::result::Result<(), ::std::string::String> {
             match field {
                 #(#set_arms)*
                 other => ::std::result::Result::Err(
-                    format!("no field '{}' on {}", other, #type_name_str)
+                    ::std::format!("no field '{}' on {}", other, #type_name_str)
                 ),
             }
         }
@@ -332,23 +340,39 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
     let field_names: Vec<&String> = field_infos.iter().map(|fi| &fi.script_name).collect();
 
     let fields_impl = quote! {
-        fn fields(&self) -> Vec<String> {
-            vec![#(#field_names.to_string()),*]
+        fn fields(&self) -> ::std::vec::Vec<::std::string::String> {
+            ::std::vec![#(::std::string::ToString::to_string(#field_names)),*]
         }
     };
 
     // ── Assemble ──────────────────────────────────────────────────────────
 
     let mut generics = input.generics.clone();
-    for param in generics.type_params_mut() {
-        param.bounds.push(syn::parse_quote!(
-            ::urd::runtime::extern_object::IntoRuntimeValue
-        ));
-        param.bounds.push(syn::parse_quote!(
-            ::urd::runtime::extern_object::FromRuntimeValue
+    let mut where_clause = generics.where_clause.take().unwrap_or_else(|| syn::WhereClause {
+        where_token: Default::default(),
+        predicates: Default::default(),
+    });
+
+    for param in generics.type_params() {
+        let ident = &param.ident;
+        where_clause.predicates.push(syn::parse_quote!(
+            #ident: ::std::marker::Send + ::std::marker::Sync
         ));
     }
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    for fi in &field_infos {
+        let ty = &fi.ty;
+        where_clause.predicates.push(syn::parse_quote!(
+            #ty: ::urd::runtime::extern_object::IntoRuntimeValue
+        ));
+        if !fi.readonly {
+            where_clause.predicates.push(syn::parse_quote!(
+                #ty: ::urd::runtime::extern_object::FromRuntimeValue
+            ));
+        }
+    }
+
+    let (impl_generics, ty_generics, _) = generics.split_for_impl();
 
     let expanded = quote! {
         impl #impl_generics ::urd::ExternObject for #struct_name #ty_generics #where_clause {

@@ -3,6 +3,12 @@
 //! Urd is a scripting language designed specifically for in-game dialogues. It provides a simple yet powerful
 //! syntax for defining dialogue trees, conditional logic, and interactive conversations in games.
 //!
+//! ## ⚠️ Warning: Memory Leaks via Cycles
+//! Urd values (like lists and structs) use reference counting (`Arc`) under the hood but lack a garbage
+//! collector. Scripts can create cyclic references (e.g., `let a = []; a.push(a);`), which will
+//! cause memory leaks that persist until the process exits. Host applications executing arbitrary
+//! or untrusted Urd scripts must be aware of this risk.
+//!
 //! ## Quick Start
 //!
 //! ```rust,ignore

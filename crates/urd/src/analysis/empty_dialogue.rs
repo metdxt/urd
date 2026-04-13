@@ -28,6 +28,7 @@ use crate::runtime::value::RuntimeValue;
 /// Walks the entire AST in DFS order and emits one
 /// [`AnalysisError::EmptyDialogue`] for every [`AstContent::Dialogue`] node
 /// whose content is empty or whitespace-only as defined in the module docs.
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
 

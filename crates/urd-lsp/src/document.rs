@@ -211,27 +211,12 @@ impl Document {
             });
         }
 
-        // Analysis errors carry real byte-offset spans.
-        for err in &self.analysis_errors {
-            let span = err.span();
-            let range = byte_span_to_lsp_range(&src, span);
-            let severity = if err.is_warning() {
-                DiagnosticSeverity::WARNING
-            } else {
-                DiagnosticSeverity::ERROR
-            };
-            diags.push(Diagnostic {
-                range,
-                severity: Some(severity),
-                source: Some("urd".into()),
-                message: err.to_string(),
-                ..Default::default()
-            });
-        }
-
-        // Spellcheck errors are always warnings (Misspelling variant).
+        // Analysis and spellcheck errors carry real byte-offset spans.
+        let mut all_analysis_errors = self.analysis_errors.iter().collect::<Vec<_>>();
         #[cfg(feature = "spellcheck")]
-        for err in &self.spellcheck_errors {
+        all_analysis_errors.extend(self.spellcheck_errors.iter());
+
+        for err in all_analysis_errors {
             let span = err.span();
             let range = byte_span_to_lsp_range(&src, span);
             let severity = if err.is_warning() {
@@ -239,18 +224,24 @@ impl Document {
             } else {
                 DiagnosticSeverity::ERROR
             };
-            let data = if let urd::analysis::AnalysisError::Misspelling {
-                word, suggestion, ..
+            let (source, data) = if let urd::analysis::AnalysisError::Misspelling {
+                word,
+                suggestion,
+                ..
             } = err
             {
-                Some(serde_json::json!({ "word": word, "suggestion": suggestion }))
+                (
+                    "urd-spell",
+                    Some(serde_json::json!({ "word": word, "suggestion": suggestion })),
+                )
             } else {
-                None
+                ("urd", None)
             };
+
             diags.push(Diagnostic {
                 range,
                 severity: Some(severity),
-                source: Some("urd-spell".into()),
+                source: Some(source.into()),
                 message: err.to_string(),
                 data,
                 ..Default::default()
@@ -285,6 +276,11 @@ impl Document {
 pub fn prefix_start_character(src: &str, byte_offset: usize, pos: Position) -> u32 {
     let bytes = src.as_bytes();
     let clamped = byte_offset.min(src.len());
+    let clamped = if src.is_char_boundary(clamped) {
+        clamped
+    } else {
+        (0..=clamped).rfind(|&i| src.is_char_boundary(i)).unwrap_or(0)
+    };
 
     // Walk backwards over identifier characters.
     let mut start = clamped;
@@ -326,6 +322,11 @@ pub fn byte_span_to_lsp_range(src: &str, span: SimpleSpan) -> Range {
 /// `character` is counted in **UTF-16 code units** per the LSP specification.
 pub fn byte_offset_to_position(src: &str, byte_offset: usize) -> Position {
     let clamped = byte_offset.min(src.len());
+    let clamped = if src.is_char_boundary(clamped) {
+        clamped
+    } else {
+        (0..=clamped).rfind(|&i| src.is_char_boundary(i)).unwrap_or(0)
+    };
     let before = &src[..clamped];
 
     let line = before.matches('\n').count() as u32;

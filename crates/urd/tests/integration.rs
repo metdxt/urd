@@ -31,8 +31,8 @@ mod mermaid_render;
 #[path = "integration/vm_decorator.rs"]
 mod vm_decorator;
 
-#[path = "integration/adversarial.rs"]
-mod adversarial;
+#[path = "integration/regression_tests.rs"]
+mod regression_tests;
 
 #[path = "integration/adversarial_new.rs"]
 mod adversarial_new;
@@ -60,3 +60,6 @@ mod extern_object;
 
 #[path = "integration/localiser_e2e.rs"]
 mod localiser_e2e;
+
+#[path = "integration/cycle_test.rs"]
+mod cycle_test;

@@ -59,6 +59,7 @@ use super::{AnalysisError, StructFieldError};
 // ---------------------------------------------------------------------------
 
 /// Run the type-compatibility pass over `ast` and return any diagnostics found.
+#[must_use]
 pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     let mut errors: Vec<AnalysisError> = Vec::new();
     let mut scope = ScopeStack::new(&ctx.top_level_vars);

@@ -62,14 +62,14 @@ fn test_decorator_def_full_dialogue_typed_params() {
     assert_eq!(params.len(), 2, "expected 2 params, got {params:?}");
     assert_eq!(
         params[0],
-        DecoratorParam {
+        DecoratorParam { span: (0..0).into(),
             name: "amount".to_string(),
             type_annotation: Some(TypeAnnotation::Float),
         }
     );
     assert_eq!(
         params[1],
-        DecoratorParam {
+        DecoratorParam { span: (0..0).into(),
             name: "duration".to_string(),
             type_annotation: Some(TypeAnnotation::Float),
         }
@@ -94,7 +94,7 @@ fn test_decorator_def_untyped_param() {
     assert_eq!(params.len(), 1, "expected 1 param, got {params:?}");
     assert_eq!(
         params[0],
-        DecoratorParam {
+        DecoratorParam { span: (0..0).into(),
             name: "msg".to_string(),
             type_annotation: None,
         }
@@ -118,14 +118,14 @@ fn test_decorator_def_mixed_params() {
     assert_eq!(params.len(), 2);
     assert_eq!(
         params[0],
-        DecoratorParam {
+        DecoratorParam { span: (0..0).into(),
             name: "msg".to_string(),
             type_annotation: None,
         }
     );
     assert_eq!(
         params[1],
-        DecoratorParam {
+        DecoratorParam { span: (0..0).into(),
             name: "priority".to_string(),
             type_annotation: Some(TypeAnnotation::Int),
         }

@@ -34,6 +34,7 @@ use crate::runtime::value::RuntimeValue;
 ///
 /// When `semantic` is `Some`, it is used as a fallback for speaker names
 /// whenever Levenshtein edit distance produces no close match.
+#[must_use]
 pub fn check(ast: &Ast, semantic: Option<&dyn SemanticSuggest>) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
     errors.extend(check_speaker_typos(ast, semantic));

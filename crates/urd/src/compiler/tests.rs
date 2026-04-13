@@ -18,7 +18,7 @@ fn test_decorator_def_compiles_to_define_script_decorator() {
     let decorator_ast = Ast::decorator_def(
         "shake".to_string(),
         EventConstraint::Any,
-        vec![DecoratorParam {
+        vec![DecoratorParam { span: (0..0).into(),
             name: "amount".to_string(),
             type_annotation: None,
         }],

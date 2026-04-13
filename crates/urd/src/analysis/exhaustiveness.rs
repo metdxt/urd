@@ -36,6 +36,7 @@ use super::context::{AnalysisContext, ScopeStack, extract_decl_name};
 // ---------------------------------------------------------------------------
 
 /// Run the exhaustiveness pass over `ast` and return any diagnostics found.
+#[must_use]
 pub fn check(ast: &Ast, ctx: &AnalysisContext) -> Vec<AnalysisError> {
     let mut errors: Vec<AnalysisError> = Vec::new();
     let mut scope = ScopeStack::new(&ctx.top_level_vars);
@@ -187,11 +188,7 @@ fn check_node(
             check_node(content, ctx, span, scope, errors);
         }
 
-        AstContent::DecoratorDef { body, .. } => {
-            check_node(body, ctx, span, scope, errors);
-        }
-
-        AstContent::FnDef { body, .. } => {
+        AstContent::DecoratorDef { body, .. } | AstContent::FnDef { body, .. } => {
             check_node(body, ctx, span, scope, errors);
         }
 
@@ -298,8 +295,8 @@ fn check_dice_match(
     errors: &mut Vec<AnalysisError>,
 ) {
     let has_wildcard = arms.iter().any(|arm| arm.pattern == MatchPattern::Wildcard);
-    let min_sum = count as i64;
-    let max_sum = count as i64 * sides as i64;
+    let min_sum = i64::from(count);
+    let max_sum = i64::from(count) * i64::from(sides);
     let dice = format!("{count}d{sides}");
 
     // 1. Array-pattern guard: sum-coverage via arrays is intractable.

@@ -278,6 +278,8 @@ impl LanguageServer for Backend {
                 .and_then(|f| f.uri.to_file_path().ok())
                 .or_else(|| params.root_uri.as_ref().and_then(|u| u.to_file_path().ok()));
 
+            self.workspace.set_workspace_root(workspace_root.clone());
+
             if let Some(root) = workspace_root {
                 let dict_path = root.join(".urd-dict");
                 info!("user-dict: loading from {}", dict_path.display());

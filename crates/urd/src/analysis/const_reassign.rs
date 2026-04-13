@@ -40,6 +40,7 @@ use crate::runtime::value::RuntimeValue;
 ///
 /// Returns one [`AnalysisError::ConstReassignment`] for every bare assignment
 /// (`name = …`) where `name` is a top-level `const` declaration.
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let const_names = collect_const_names(ast);
     if const_names.is_empty() {

@@ -39,20 +39,20 @@ type ImportedTypeDefs = (
 pub struct ImportedModule {
     /// The local alias written in source (`import "foo.urd" as alias` → `"alias"`).
     pub alias: String,
-
     /// Resolved `file://` URI of the imported file (`None` if the file could
     /// not be found or if the importer itself has no file URI).
     pub uri: Option<Url>,
     /// Full source text of the imported file (empty on load failure).
-    pub source: String,
+    pub source: std::sync::Arc<String>,
     /// Symbols defined in the imported file, with their original (unaliased) names.
-    pub symbols: Vec<Symbol>,
+    pub symbols: std::sync::Arc<Vec<Symbol>>,
     /// Parsed AST of the imported file (`None` on load / parse failure).
-    pub ast: Option<Ast>,
+    pub ast: Option<std::sync::Arc<Ast>>,
     /// For symbol imports (`import sym as alias from "path"`): the original name
     /// of the single symbol to expose.  `None` means whole-module import (expose
     /// all symbols prefixed with `alias`).
     pub symbol_filter: Option<String>,
+    pub _cache_handle: Option<std::sync::Arc<CachedFileContent>>,
 }
 
 impl ImportedModule {
@@ -99,16 +99,16 @@ impl ImportedModule {
 /// multiple importers (or imported under different aliases) is only read and
 /// parsed once per mtime change.
 #[derive(Debug, Clone)]
-struct CachedFileContent {
+pub struct CachedFileContent {
     uri: Option<Url>,
-    source: String,
-    symbols: Vec<Symbol>,
-    ast: Option<Ast>,
+    source: std::sync::Arc<String>,
+    symbols: std::sync::Arc<Vec<Symbol>>,
+    ast: Option<std::sync::Arc<Ast>>,
 }
 
 /// Maps a canonical file path to the last-observed mtime and parsed content.
 /// Invalidated automatically when `mtime` changes on the next access.
-type ModuleCache = DashMap<PathBuf, (std::time::SystemTime, CachedFileContent)>;
+type ModuleCache = DashMap<PathBuf, (std::time::SystemTime, std::sync::Weak<CachedFileContent>)>;
 
 // ── WorkspaceIndex ────────────────────────────────────────────────────────────
 
@@ -120,20 +120,39 @@ type ModuleCache = DashMap<PathBuf, (std::time::SystemTime, CachedFileContent)>;
 /// All public methods take `&self` (not `&mut self`) because [`DashMap`]
 /// provides interior mutability, making the index safe to share across async
 /// tasks via `Arc`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WorkspaceIndex {
     /// `importer_uri` → list of modules it directly imports.
     imports: DashMap<Url, Vec<ImportedModule>>,
     /// `canonical_path` → `(mtime, parsed content)` for every module loaded
     /// from disk.  Shared across all importers so the same file is never parsed
     /// twice unless it changes on disk.
-    module_cache: ModuleCache,
+    module_cache: std::sync::Arc<ModuleCache>,
+    /// The root path of the workspace. Used to validate import bounds.
+    workspace_root: std::sync::RwLock<Option<PathBuf>>,
+}
+
+impl Default for WorkspaceIndex {
+    fn default() -> Self {
+        Self {
+            imports: DashMap::new(),
+            module_cache: std::sync::Arc::new(ModuleCache::new()),
+            workspace_root: std::sync::RwLock::new(None),
+        }
+    }
 }
 
 impl WorkspaceIndex {
     /// Create an empty index.
     pub fn new() -> Self {
         WorkspaceIndex::default()
+    }
+
+    /// Set the workspace root for resolving imports safely.
+    pub fn set_workspace_root(&self, path: Option<PathBuf>) {
+        if let Ok(mut guard) = self.workspace_root.write() {
+            *guard = path;
+        }
     }
 
     /// Re-index the imports of the file at `uri`.
@@ -152,15 +171,15 @@ impl WorkspaceIndex {
         {
             visited.insert(c);
         }
-        collect_imports_from_ast(
-            ast,
-            &base_dir,
-            &self.module_cache,
-            &mut modules,
-            &mut errors,
-            &mut visited,
-            None,
-        );
+        let workspace_root = self.workspace_root.read().ok().and_then(|r| r.clone());
+        let mut ctx = CollectImportsCtx {
+            workspace_root: &workspace_root,
+            cache: &self.module_cache,
+            out: &mut modules,
+            errors: &mut errors,
+            visited: &mut visited,
+        };
+        collect_imports_from_ast(ast, &base_dir, &mut ctx, None);
         self.imports.insert(uri.clone(), modules);
 
         let mut active_uris = std::collections::HashSet::new();
@@ -171,13 +190,14 @@ impl WorkspaceIndex {
                 }
             }
         }
-        self.module_cache.retain(|_, content| {
-            content
-                .1
-                .uri
-                .as_ref()
-                .is_some_and(|u| active_uris.contains(u))
-        });
+        let cache = self.module_cache.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::spawn_blocking(move || {
+                cache.retain(|_, content| content.1.strong_count() > 0);
+            });
+        } else {
+            cache.retain(|_, content| content.1.strong_count() > 0);
+        }
 
         errors
     }
@@ -193,13 +213,14 @@ impl WorkspaceIndex {
                 }
             }
         }
-        self.module_cache.retain(|_, content| {
-            content
-                .1
-                .uri
-                .as_ref()
-                .is_some_and(|u| active_uris.contains(u))
-        });
+        let cache = self.module_cache.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::spawn_blocking(move || {
+                cache.retain(|_, content| content.1.strong_count() > 0);
+            });
+        } else {
+            cache.retain(|_, content| content.1.strong_count() > 0);
+        }
     }
 
     /// Return all alias-prefixed symbols visible from `uri` through its direct
@@ -244,7 +265,7 @@ impl WorkspaceIndex {
                 && let Some(span) = crate::semantic::find_definition(ast, local_name)
             {
                 let target_uri = module.uri.clone().unwrap_or_else(|| uri.clone());
-                return Some((target_uri, span, module.source.clone()));
+                return Some((target_uri, span, module.source.to_string()));
             }
         }
 
@@ -398,20 +419,25 @@ impl WorkspaceIndex {
 ///
 /// `cache` is the workspace-level module file cache; hits avoid re-reading and
 /// re-parsing files whose mtime has not changed since the last load.
+struct CollectImportsCtx<'a> {
+    workspace_root: &'a Option<PathBuf>,
+    cache: &'a ModuleCache,
+    out: &'a mut Vec<ImportedModule>,
+    errors: &'a mut Vec<AnalysisError>,
+    visited: &'a mut std::collections::HashSet<PathBuf>,
+}
+
 fn collect_imports_from_ast(
     ast: &Ast,
     base_dir: &Option<PathBuf>,
-    cache: &ModuleCache,
-    out: &mut Vec<ImportedModule>,
-    errors: &mut Vec<AnalysisError>,
-    visited: &mut std::collections::HashSet<PathBuf>,
+    ctx: &mut CollectImportsCtx<'_>,
     parent_alias: Option<&str>,
 ) {
     match ast.content() {
         // Top-level block — walk every statement.
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                collect_imports_from_ast(stmt, base_dir, cache, out, errors, visited, parent_alias);
+                collect_imports_from_ast(stmt, base_dir, ctx, parent_alias);
             }
         }
 
@@ -433,14 +459,15 @@ fn collect_imports_from_ast(
                     &alias,
                     entry.original.as_deref(),
                     base_dir,
-                    cache,
+                    ctx.workspace_root,
+                    ctx.cache,
                     ast.span(),
                 );
 
                 if let Some(e) = err
                     && parent_alias.is_none()
                 {
-                    errors.push(e);
+                    ctx.errors.push(e);
                 }
 
                 if let Some(mod_ast) = &module.ast {
@@ -449,24 +476,21 @@ fn collect_imports_from_ast(
                         None => std::path::PathBuf::from(path).canonicalize().ok(),
                     };
                     if let Some(fp) = full_path
-                        && !visited.contains(&fp)
+                        && !ctx.visited.contains(&fp)
                     {
-                        visited.insert(fp.clone());
+                        ctx.visited.insert(fp.clone());
                         let new_base = fp.parent().map(|p| p.to_path_buf());
                         collect_imports_from_ast(
                             mod_ast,
                             &new_base,
-                            cache,
-                            out,
-                            errors,
-                            visited,
+                            ctx,
                             if alias.is_empty() { None } else { Some(&alias) },
                         );
-                        visited.remove(&fp);
+                        ctx.visited.remove(&fp);
                     }
                 }
 
-                out.push(module);
+                ctx.out.push(module);
             }
         }
 
@@ -477,45 +501,29 @@ fn collect_imports_from_ast(
             else_block,
             ..
         } => {
-            collect_imports_from_ast(
-                then_block,
-                base_dir,
-                cache,
-                out,
-                errors,
-                visited,
-                parent_alias,
-            );
+            collect_imports_from_ast(then_block, base_dir, ctx, parent_alias);
             if let Some(eb) = else_block {
-                collect_imports_from_ast(eb, base_dir, cache, out, errors, visited, parent_alias);
+                collect_imports_from_ast(eb, base_dir, ctx, parent_alias);
             }
         }
         AstContent::LabeledBlock { block, .. } => {
-            collect_imports_from_ast(block, base_dir, cache, out, errors, visited, parent_alias);
+            collect_imports_from_ast(block, base_dir, ctx, parent_alias);
         }
         AstContent::Menu { options } => {
             for opt in options {
-                collect_imports_from_ast(opt, base_dir, cache, out, errors, visited, parent_alias);
+                collect_imports_from_ast(opt, base_dir, ctx, parent_alias);
             }
         }
         AstContent::MenuOption { content, .. } => {
-            collect_imports_from_ast(content, base_dir, cache, out, errors, visited, parent_alias);
+            collect_imports_from_ast(content, base_dir, ctx, parent_alias);
         }
         AstContent::Match { arms, .. } => {
             for arm in arms {
-                collect_imports_from_ast(
-                    &arm.body,
-                    base_dir,
-                    cache,
-                    out,
-                    errors,
-                    visited,
-                    parent_alias,
-                );
+                collect_imports_from_ast(&arm.body, base_dir, ctx, parent_alias);
             }
         }
         AstContent::DecoratorDef { body, .. } => {
-            collect_imports_from_ast(body, base_dir, cache, out, errors, visited, parent_alias);
+            collect_imports_from_ast(body, base_dir, ctx, parent_alias);
         }
 
         // All other node types cannot contain import statements.
@@ -535,6 +543,7 @@ fn load_module(
     alias: &str,
     symbol_filter: Option<&str>,
     base_dir: &Option<PathBuf>,
+    workspace_root: &Option<PathBuf>,
     span: SimpleSpan,
 ) -> (ImportedModule, Option<AnalysisError>) {
     // Build an empty shell for all early-return (security / load / parse) failures.
@@ -544,10 +553,11 @@ fn load_module(
             ImportedModule {
                 alias: alias.to_owned(),
                 uri: None,
-                source: String::new(),
-                symbols: Vec::new(),
+                source: std::sync::Arc::new(String::new()),
+                symbols: std::sync::Arc::new(Vec::new()),
                 ast: None,
                 symbol_filter: symbol_filter.map(str::to_owned),
+                            _cache_handle: None,
             },
             Some(AnalysisError::UnresolvedImport {
                 path: path.to_owned(),
@@ -567,8 +577,10 @@ fn load_module(
         Some(dir) => {
             let candidate = dir.join(path);
             // Canonicalize both ends and verify the resolved file stays inside
-            // the workspace directory.  Catches symlink-based escape attempts.
-            let canonical_base = match dir.canonicalize() {
+            // the workspace directory (or base directory if no workspace is open).
+            // Catches symlink-based escape attempts.
+            let bounding_dir = workspace_root.as_ref().unwrap_or(dir);
+            let canonical_bound = match bounding_dir.canonicalize() {
                 Ok(p) => p,
                 Err(_) => return make_empty(),
             };
@@ -578,7 +590,7 @@ fn load_module(
                 // as a failed read below: return an empty module consistently.
                 Err(_) => return make_empty(),
             };
-            if !canonical_full.starts_with(&canonical_base) {
+            if !canonical_full.starts_with(&canonical_bound) {
                 return make_empty();
             }
             canonical_full
@@ -597,10 +609,11 @@ fn load_module(
                 ImportedModule {
                     alias: alias.to_owned(),
                     uri,
-                    source: String::new(),
-                    symbols: Vec::new(),
+                    source: std::sync::Arc::new(String::new()),
+                    symbols: std::sync::Arc::new(Vec::new()),
                     ast: None,
                     symbol_filter: symbol_filter.map(str::to_owned),
+                            _cache_handle: None,
                 },
                 Some(AnalysisError::UnresolvedImport {
                     path: path.to_owned(),
@@ -617,10 +630,11 @@ fn load_module(
         ImportedModule {
             alias: alias.to_owned(),
             uri,
-            source,
-            symbols,
-            ast,
+            source: std::sync::Arc::new(source),
+            symbols: std::sync::Arc::new(symbols),
+            ast: ast.map(std::sync::Arc::new),
             symbol_filter: symbol_filter.map(str::to_owned),
+                            _cache_handle: None,
         },
         None,
     )
@@ -642,23 +656,27 @@ fn load_module_cached(
     alias: &str,
     symbol_filter: Option<&str>,
     base_dir: &Option<PathBuf>,
+    workspace_root: &Option<PathBuf>,
     cache: &ModuleCache,
     span: SimpleSpan,
 ) -> (ImportedModule, Option<AnalysisError>) {
     if let Some(base) = base_dir {
         // Mirror load_module's security pre-checks so we never attempt I/O on
         // dangerous paths and so the cache is never populated with bad keys.
+        let bounding_dir = workspace_root.as_ref().unwrap_or(base);
         if !std::path::Path::new(path).is_absolute() {
             let candidate = base.join(path);
             if let Ok(canonical) = candidate.canonicalize()
+                && let Ok(canonical_bound) = bounding_dir.canonicalize()
+                && canonical.starts_with(&canonical_bound)
                 && let Ok(meta) = std::fs::metadata(&canonical)
                 && let Ok(mtime) = meta.modified()
             {
                 // ── Cache hit ────────────────────────────────────
                 if let Some(entry) = cache.get(&canonical)
                     && entry.0 == mtime
+                    && let Some(content) = entry.1.upgrade()
                 {
-                    let content = &entry.1;
                     return (
                         ImportedModule {
                             alias: alias.to_owned(),
@@ -667,26 +685,30 @@ fn load_module_cached(
                             symbols: content.symbols.clone(),
                             ast: content.ast.clone(),
                             symbol_filter: symbol_filter.map(str::to_owned),
+                            _cache_handle: Some(content.clone()),
                         },
                         None,
                     );
                 }
                 // ── Cache miss: load, store, return ──────────────
-                let (module, err) = load_module(path, alias, symbol_filter, base_dir, span);
+                let (module, err) = load_module(path, alias, symbol_filter, base_dir, workspace_root, span);
                 let content = CachedFileContent {
                     uri: module.uri.clone(),
                     source: module.source.clone(),
                     symbols: module.symbols.clone(),
                     ast: module.ast.clone(),
                 };
-                cache.insert(canonical, (mtime, content));
-                return (module, err);
+                let arc_content = std::sync::Arc::new(content);
+                cache.insert(canonical, (mtime, std::sync::Arc::downgrade(&arc_content)));
+                let mut ret_module = module;
+                ret_module._cache_handle = Some(arc_content);
+                return (ret_module, err);
             }
         }
     }
     // Fall back to the uncached path: security rejection, no base_dir, or any
     // I/O error that prevented us from reading the mtime.
-    load_module(path, alias, symbol_filter, base_dir, span)
+    load_module(path, alias, symbol_filter, base_dir, workspace_root, span)
 }
 
 // ── URI / path helpers ────────────────────────────────────────────────────────
@@ -1015,6 +1037,7 @@ mod tests {
             "evil",
             None,
             &Some(dir.clone()),
+            &None,
             SimpleSpan::new((), 0..0),
         )
         .0;
@@ -1036,6 +1059,7 @@ mod tests {
             "evil",
             None,
             &Some(dir.clone()),
+            &None,
             SimpleSpan::new((), 0..0),
         )
         .0;

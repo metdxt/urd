@@ -774,7 +774,7 @@ fn test_script_decorator_mutates_event_fields() {
     let decorator_def = Ast::decorator_def(
         "shake".to_string(),
         EventConstraint::Any,
-        vec![DecoratorParam {
+        vec![DecoratorParam { span: (0..0).into(),
             name: "amount".to_string(),
             type_annotation: None,
         }],
@@ -2726,7 +2726,7 @@ fn test_decorator_param_named_event_is_rejected() {
     let decorator_def = Ast::decorator_def(
         "bad_deco".to_string(),
         EventConstraint::Any,
-        vec![DecoratorParam {
+        vec![DecoratorParam { span: (0..0).into(),
             name: "event".to_string(),
             type_annotation: None,
         }],

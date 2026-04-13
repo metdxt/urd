@@ -829,3 +829,39 @@ fn compile_fail_tests() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/*.rs");
 }
+
+#[derive(ExternObject)]
+struct EmptyStruct1 {}
+
+#[test]
+fn test_empty_struct() {
+    let mut e = EmptyStruct1 {};
+    assert_eq!(ExternObject::fields(&e).len(), 0);
+    assert!(ExternObject::get(&e, "x").is_err());
+    assert!(ExternObject::set(&mut e, "x", RuntimeValue::Int(5)).is_err());
+}
+
+#[derive(ExternObject)]
+struct GenericStruct<T> {
+    val: T,
+}
+
+#[test]
+fn test_generic_struct() {
+    let mut g = GenericStruct { val: 5i64 };
+    assert_eq!(ExternObject::get(&g, "val").unwrap(), RuntimeValue::Int(5));
+    ExternObject::set(&mut g, "val", RuntimeValue::Int(10)).unwrap();
+    assert_eq!(g.val, 10);
+}
+
+#[derive(ExternObject)]
+struct LifetimeStruct1<'a> {
+    #[extern_object(skip)]
+    text: &'a str,
+}
+
+#[test]
+fn test_lifetime_struct() {
+    let l = LifetimeStruct1 { text: "hello" };
+    assert_eq!(ExternObject::fields(&l).len(), 0);
+}

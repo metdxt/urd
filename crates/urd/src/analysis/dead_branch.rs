@@ -35,6 +35,7 @@ use super::context::{extract_decl_name, top_level_stmts};
 // ---------------------------------------------------------------------------
 
 /// Run the always-dead-branch pass over `ast` and return any diagnostics.
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let const_vals = collect_top_level_bool_consts(ast);
     let mut errors = Vec::new();

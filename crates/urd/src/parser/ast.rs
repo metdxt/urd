@@ -336,6 +336,8 @@ pub struct DecoratorParam {
     pub name: String,
     /// Optional static type annotation (informational only)
     pub type_annotation: Option<TypeAnnotation>,
+    /// The byte span of the parameter in source code.
+    pub span: chumsky::span::SimpleSpan,
 }
 
 /// A single parameter in a [`AstContent::FnDef`] parameter list.
@@ -345,6 +347,8 @@ pub struct FnParam {
     pub name: String,
     /// Optional type annotation (stripped at compile time; documentation only).
     pub type_annotation: Option<TypeAnnotation>,
+    /// The byte span of the parameter in source code.
+    pub span: chumsky::span::SimpleSpan,
 }
 
 /// A sub-token source span used solely for IDE syntax highlighting.

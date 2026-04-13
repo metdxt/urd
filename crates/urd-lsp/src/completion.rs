@@ -278,6 +278,11 @@ pub fn detect_completion_context(
     symbols: &[Symbol],
 ) -> CompletionContext {
     let offset = byte_offset.min(src.len());
+    let offset = if src.is_char_boundary(offset) {
+        offset
+    } else {
+        (0..=offset).rfind(|&i| src.is_char_boundary(i)).unwrap_or(0)
+    };
     let before = &src[..offset];
 
     tracing::debug!(

@@ -646,6 +646,7 @@ pub fn detect_language(text: &str) -> Option<SpellcheckLanguage> {
 /// Language detection is a single pre-pass over the AST that runs once per
 /// `check` invocation.  SymSpell dictionaries are lazily initialised on first
 /// use and cached for the process lifetime.
+#[must_use]
 pub fn check(
     ast: &Ast,
     source: &str,

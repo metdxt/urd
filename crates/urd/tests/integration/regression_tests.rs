@@ -1,6 +1,6 @@
-//! # Adversarial tests for the Urd VM
+//! # Regression tests for the Urd VM
 //!
-//! These tests are **designed to expose known bugs** in the implementation.
+//! These tests are **designed to prevent regressions of known bugs** in the implementation.
 //! Each test asserts the *correct* expected behavior, and will FAIL against
 //! the current implementation to demonstrate a real defect.
 //!
@@ -220,7 +220,7 @@ label start {
     );
 }
 
-/// ## BUG: Accessing a nonexistent field via a 2-segment `IdentPath` silently
+/// ## FIXED: Accessing a nonexistent field via a 2-segment `IdentPath` silently
 /// returns the **first segment's value** instead of an error.
 ///
 /// When the VM resolves `IdentPath(["counter", "nonexistent"])` it tries, in
@@ -242,10 +242,6 @@ label start {
 /// Attempting to read a field that does not exist on a non-struct value should
 /// yield `VmStep::Error(VmError::UndefinedVariable("counter.nonexistent"))`.
 ///
-/// ### Why this test FAILS
-/// The fallback `env.get(&path[0])` succeeds and the expression quietly
-/// evaluates to `42`.  The dialogue `"silently returned counter value"` is
-/// emitted, no error step is present in the sequence.
 #[test]
 fn test_two_segment_path_fallback_silently_returns_first_segment() {
     let src = r#"
@@ -265,7 +261,7 @@ label start {
 
     // Correct behaviour: accessing a nonexistent field on a non-struct value
     // should propagate VmError::UndefinedVariable("counter.nonexistent").
-    // This assertion FAILS: the fallback path in eval_runtime_value returns
+    // This assertion passes: the fallback path in eval_runtime_value returns
     // env.get("counter") = Int(42), so no error is ever produced.
     let err = first_error(&steps);
     assert!(
@@ -285,7 +281,7 @@ label start {
     }
 }
 
-/// ## BUG: String interpolation `{inv.gold}` silently resolves to an entirely
+/// ## FIXED: String interpolation `{inv.gold}` silently resolves to an entirely
 /// unrelated variable whose name matches the **second** path segment.
 ///
 /// `interpolate_string` resolves a 2-segment placeholder `{inv.gold}` through
@@ -311,9 +307,6 @@ label start {
 /// (a) preserve the placeholder as-is: `"You have {inv.gold} gold"`, or
 /// (b) emit `VmStep::Error` indicating the unresolvable path.
 ///
-/// ### Why this test FAILS
-/// `env.get("gold")` succeeds (returning `Int(999)`), so the text becomes
-/// `"You have 999 gold"` — the wrong variable's value is silently used.
 #[test]
 fn test_string_interpolation_fallback_uses_unrelated_variable() {
     let src = r#"
@@ -329,7 +322,7 @@ label start {
 
     // Correct behaviour: {inv.gold} cannot be resolved to a struct field or
     // module-namespaced variable, so the placeholder should be preserved or
-    // an error emitted.  This assertion FAILS: the fallback path tries
+    // an error emitted.  This assertion passes: the fallback path tries
     // env.get("gold") (the second segment), finds the unrelated local variable
     // `gold = 999`, and substitutes it silently.
     let texts = dialogue_texts(&steps);
@@ -345,4 +338,31 @@ label start {
          the placeholder or raise an error; instead the unrelated variable \
          `gold = 999` was silently substituted, producing: {texts:?}"
     );
+}
+
+#[test]
+fn test_cyclic_collections_do_not_stack_overflow() {
+    let src = r#"
+@entry
+label start {
+    let a = []
+    a.push(a)
+    let s = "{a}"
+    if a == a {
+        Narrator: "equal"
+    }
+    
+    let m = {}
+    m["self"] = m
+    if m == m {
+        Narrator: "m equal"
+    }
+    
+    end!()
+}
+"#;
+    let steps = run_script(src);
+    // Should parse and format cleanly as `[...]` without blowing the stack.
+    let end = steps.last().expect("expected steps");
+    assert!(matches!(end, VmStep::Ended), "expected Ended, got {end:?}");
 }

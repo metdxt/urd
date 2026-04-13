@@ -37,6 +37,7 @@ use super::context::extract_decl_name;
 // ---------------------------------------------------------------------------
 
 /// Run the overwritten-assignment pass over `ast` and return any diagnostics.
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
     visit_node(ast, &mut HashMap::new(), &mut errors);

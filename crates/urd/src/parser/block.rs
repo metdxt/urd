@@ -447,9 +447,10 @@ fn decorator_params_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
     }
     .labelled("parameter name")
     .then(type_annotation().or_not())
-    .map(|(name, type_annotation)| DecoratorParam {
+    .map_with(|(name, type_annotation), e| DecoratorParam {
         name,
         type_annotation,
+        span: e.span(),
     });
 
     param
@@ -471,9 +472,10 @@ pub fn fn_params_parser<'tok, I: UrdInput<'tok>>() -> impl Parser<
     }
     .labelled("parameter name")
     .then(type_annotation().or_not())
-    .map(|(name, type_annotation)| FnParam {
+    .map_with(|(name, type_annotation), e| FnParam {
         name,
         type_annotation,
+        span: e.span(),
     });
 
     param
@@ -949,7 +951,7 @@ mod tests {
 
     #[test]
     fn test_fn_def_parses() {
-        use crate::parser::ast::{FnParam, TypeAnnotation};
+        use crate::parser::ast::TypeAnnotation;
         let result = parse_test!(
             code_block(),
             "{\n  fn add(x: int, y: int) -> int { return x }\n}"
@@ -972,19 +974,11 @@ mod tests {
                 } = stmt.content()
                 {
                     assert_eq!(name.as_deref(), Some("add"));
-                    assert_eq!(
-                        params,
-                        &vec![
-                            FnParam {
-                                name: "x".into(),
-                                type_annotation: Some(TypeAnnotation::Int)
-                            },
-                            FnParam {
-                                name: "y".into(),
-                                type_annotation: Some(TypeAnnotation::Int)
-                            },
-                        ]
-                    );
+                    assert_eq!(params.len(), 2);
+                    assert_eq!(params[0].name, "x");
+                    assert_eq!(params[0].type_annotation, Some(TypeAnnotation::Int));
+                    assert_eq!(params[1].name, "y");
+                    assert_eq!(params[1].type_annotation, Some(TypeAnnotation::Int));
                     assert_eq!(*ret_type, Some(TypeAnnotation::Int));
                 }
             } else {

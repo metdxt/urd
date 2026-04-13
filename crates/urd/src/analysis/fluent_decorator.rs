@@ -40,6 +40,7 @@ use super::context::node_kind_name;
 ///
 /// All checks always run to completion; a problem found on one node does not
 /// suppress checks on sibling nodes.
+#[must_use]
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     let mut errors = Vec::new();
     walk_ast(ast, &mut |node| {
