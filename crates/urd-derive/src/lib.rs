@@ -145,10 +145,12 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
     }
 
     if skip && (readonly || rename.is_some()) {
-        return Err(syn::Error::new_spanned(
-            attrs.first().unwrap(),
-            "skipped fields cannot have `readonly` or `rename` attributes"
-        ));
+        if let Some(attr) = attrs.first() {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "skipped fields cannot have `readonly` or `rename` attributes"
+            ));
+        }
     }
 
     Ok(FieldAttrs {
