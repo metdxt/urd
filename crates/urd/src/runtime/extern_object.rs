@@ -126,48 +126,48 @@ impl ExternHandle {
     /// The type name of the wrapped object.
     pub fn type_name(&self) -> Result<String, String> {
         self.0
-            .read()
+            .try_read()
             .map(|obj| obj.type_name().to_owned())
-            .map_err(|e| format!("extern lock poisoned: {e}"))
+            .map_err(|e| format!("failed to acquire extern read lock: {e}"))
     }
 
     /// Human-readable string representation.
     pub fn display(&self) -> Result<String, String> {
         self.0
-            .read()
+            .try_read()
             .map(|obj| obj.display())
-            .map_err(|e| format!("extern lock poisoned: {e}"))
+            .map_err(|e| format!("failed to acquire extern read lock: {e}"))
     }
 
     /// Read a field value.
     pub fn get(&self, field: &str) -> Result<RuntimeValue, String> {
         self.0
-            .read()
-            .map_err(|e| format!("extern lock poisoned: {e}"))?
+            .try_read()
+            .map_err(|e| format!("failed to acquire extern read lock: {e}"))?
             .get(field)
     }
 
     /// Write a field value.
     pub fn set(&self, field: &str, value: RuntimeValue) -> Result<(), String> {
         self.0
-            .write()
-            .map_err(|e| format!("extern lock poisoned: {e}"))?
+            .try_write()
+            .map_err(|e| format!("failed to acquire extern write lock: {e}"))?
             .set(field, value)
     }
 
     /// List available field names.
     pub fn fields(&self) -> Result<Vec<String>, String> {
         self.0
-            .read()
+            .try_read()
             .map(|obj| obj.fields())
-            .map_err(|e| format!("extern lock poisoned: {e}"))
+            .map_err(|e| format!("failed to acquire extern read lock: {e}"))
     }
 
     /// Try to cast to a [`RuntimeValue`] of the given type.
     pub fn cast(&self, target: &str) -> Result<RuntimeValue, String> {
         self.0
-            .read()
-            .map_err(|e| format!("extern lock poisoned: {e}"))?
+            .try_read()
+            .map_err(|e| format!("failed to acquire extern read lock: {e}"))?
             .cast(target)
     }
 }
@@ -224,14 +224,14 @@ pub fn display_brief(v: &RuntimeValue) -> String {
                 format!("{start}..{end}")
             }
         }
-        RuntimeValue::Map(m) => format!("map({})", m.len()),
+        RuntimeValue::Map(m) => format!("map({})", m.borrow().len()),
         RuntimeValue::List(items) => {
-            let parts: Vec<String> = items.iter().map(display_brief).collect();
+            let parts: Vec<String> = items.borrow().iter().map(display_brief).collect();
             format!("[{}]", parts.join(", "))
         }
         RuntimeValue::Function { params, .. } => format!("fn({})", params.join(", ")),
         RuntimeValue::ScriptDecorator { .. } => "<decorator>".into(),
-        RuntimeValue::Struct { name, fields } => format!("{name}({})", fields.len()),
+        RuntimeValue::Struct { name, fields } => format!("{name}({})", fields.borrow().len()),
         RuntimeValue::Extern(h) => h.display().unwrap_or_else(|e| format!("<extern: {e}>")),
     }
 }
@@ -253,7 +253,7 @@ pub trait IntoRuntimeValue {
 /// object field.
 pub trait FromRuntimeValue: Sized {
     /// Try to extract a value of `Self` from the given [`RuntimeValue`].
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String>;
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String>;
 }
 
 impl IntoRuntimeValue for RuntimeValue {
@@ -263,7 +263,7 @@ impl IntoRuntimeValue for RuntimeValue {
 }
 
 impl FromRuntimeValue for RuntimeValue {
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         Ok(value.clone())
     }
 }
@@ -277,9 +277,9 @@ impl IntoRuntimeValue for bool {
 }
 
 impl FromRuntimeValue for bool {
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         match value {
-            RuntimeValue::Bool(b) => Ok(*b),
+            RuntimeValue::Bool(b) => Ok(b),
             other => Err(format!("expected Bool, got {other:?}")),
         }
     }
@@ -294,9 +294,9 @@ impl IntoRuntimeValue for i64 {
 }
 
 impl FromRuntimeValue for i64 {
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         match value {
-            RuntimeValue::Int(i) => Ok(*i),
+            RuntimeValue::Int(i) => Ok(i),
             other => Err(format!("expected Int, got {other:?}")),
         }
     }
@@ -311,10 +311,10 @@ impl IntoRuntimeValue for f64 {
 }
 
 impl FromRuntimeValue for f64 {
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         match value {
-            RuntimeValue::Float(f) => Ok(*f),
-            RuntimeValue::Int(i) => Ok(*i as f64),
+            RuntimeValue::Float(f) => Ok(f),
+            RuntimeValue::Int(i) => Ok(i as f64),
             other => Err(format!("expected Float, got {other:?}")),
         }
     }
@@ -329,7 +329,7 @@ impl IntoRuntimeValue for String {
 }
 
 impl FromRuntimeValue for String {
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         match value {
             RuntimeValue::Str(ps) => Ok(ps.to_string()),
             other => Err(format!("expected Str, got {other:?}")),
@@ -346,7 +346,7 @@ macro_rules! impl_int_via_i64 {
         }
 
         impl FromRuntimeValue for $ty {
-            fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+            fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
                 let i = i64::from_runtime_value(value)?;
                 <$ty>::try_from(i).map_err(|_| format!(
                     "integer {} out of range for {}",
@@ -371,7 +371,7 @@ impl IntoRuntimeValue for u64 {
 }
 
 impl FromRuntimeValue for u64 {
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         let i = i64::from_runtime_value(value)?;
         u64::try_from(i).map_err(|_| format!("integer {i} out of range for u64"))
     }
@@ -388,7 +388,7 @@ impl FromRuntimeValue for f32 {
     ///
     /// Returns an error if the `f64` value is finite but outside `f32` range
     /// (would become infinite).
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         let f = f64::from_runtime_value(value)?;
         let result = f as f32;
         if result.is_infinite() && f.is_finite() {
@@ -408,7 +408,7 @@ impl<T: IntoRuntimeValue> IntoRuntimeValue for Option<T> {
 }
 
 impl<T: FromRuntimeValue> FromRuntimeValue for Option<T> {
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         match value {
             RuntimeValue::Null => Ok(None),
             other => T::from_runtime_value(other).map(Some),
@@ -418,14 +418,14 @@ impl<T: FromRuntimeValue> FromRuntimeValue for Option<T> {
 
 impl<T: IntoRuntimeValue> IntoRuntimeValue for Vec<T> {
     fn to_runtime_value(&self) -> RuntimeValue {
-        RuntimeValue::List(self.iter().map(|v| v.to_runtime_value()).collect())
+        RuntimeValue::List(crate::runtime::value::shared(self.iter().map(|v| v.to_runtime_value()).collect()))
     }
 }
 
 impl<T: FromRuntimeValue> FromRuntimeValue for Vec<T> {
-    fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
+    fn from_runtime_value(value: RuntimeValue) -> Result<Self, String> {
         match value {
-            RuntimeValue::List(items) => items.iter().map(T::from_runtime_value).collect(),
+            RuntimeValue::List(items) => items.borrow().iter().cloned().map(T::from_runtime_value).collect(),
             other => Err(format!("expected List, got {other:?}")),
         }
     }
@@ -546,14 +546,14 @@ mod tests {
     #[test]
     fn from_runtime_value_i32() {
         assert_eq!(
-            i32::from_runtime_value(&RuntimeValue::Int(42)).unwrap(),
+            i32::from_runtime_value(RuntimeValue::Int(42)).unwrap(),
             42i32
         );
     }
 
     #[test]
     fn from_runtime_value_i32_overflow() {
-        assert!(i32::from_runtime_value(&RuntimeValue::Int(i64::MAX)).is_err());
+        assert!(i32::from_runtime_value(RuntimeValue::Int(i64::MAX)).is_err());
     }
 
     #[test]
@@ -581,12 +581,12 @@ mod tests {
     fn vec_round_trip() {
         let v = vec![1i64, 2, 3];
         let rv = v.to_runtime_value();
-        assert_eq!(Vec::<i64>::from_runtime_value(&rv).unwrap(), vec![1, 2, 3]);
+        assert_eq!(Vec::<i64>::from_runtime_value(rv.clone()).unwrap(), vec![1, 2, 3]);
     }
 
     #[test]
     fn f64_from_int_coerces() {
-        assert_eq!(f64::from_runtime_value(&RuntimeValue::Int(5)).unwrap(), 5.0);
+        assert_eq!(f64::from_runtime_value(RuntimeValue::Int(5)).unwrap(), 5.0);
     }
 
     // ---- u64 saturating conversion ----
@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn f32_from_f64_max_errors() {
         let huge = RuntimeValue::Float(f64::MAX);
-        let err = f32::from_runtime_value(&huge);
+        let err = f32::from_runtime_value(huge.clone());
         assert!(
             err.is_err(),
             "f64::MAX must not silently become f32::INFINITY"
@@ -628,6 +628,6 @@ mod tests {
     #[test]
     fn f32_from_normal_value() {
         let val = RuntimeValue::Float(1.5);
-        assert_eq!(f32::from_runtime_value(&val).unwrap(), 1.5f32);
+        assert_eq!(f32::from_runtime_value(val.clone()).unwrap(), 1.5f32);
     }
 }

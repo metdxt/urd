@@ -58,6 +58,8 @@ pub struct Environment {
     /// script-decorator sub-environments) propagates the roller cheaply rather
     /// than severing it.
     roller: Option<Arc<dyn DiceRoller>>,
+    /// Current function call recursion depth.
+    pub(crate) call_depth: usize,
 }
 
 impl fmt::Debug for Environment {
@@ -71,6 +73,7 @@ impl fmt::Debug for Environment {
             .field("constant_frames", &self.constant_frames)
             .field("externs", &self.externs)
             .field("roller", &self.roller.as_ref().map(|_| "<DiceRoller>"))
+            .field("call_depth", &self.call_depth)
             .finish()
     }
 }
@@ -84,6 +87,7 @@ impl Environment {
             constant_frames: vec![HashSet::new()],
             externs: HashMap::new(),
             roller: Some(Arc::new(DefaultDiceRoller)),
+            call_depth: 0,
             ..Default::default()
         }
     }

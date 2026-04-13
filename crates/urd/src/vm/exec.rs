@@ -14,35 +14,21 @@ use super::eval::eval_expr;
 
 // ─── Subscript-assign helper ──────────────────────────────────────────────────
 
-/// Handles `object[key] = value` mutations by modifying the map stored under
-/// `object`'s identifier path in `env`.
+/// Handles `object[key] = value` mutations by modifying the target object directly.
 pub(super) fn eval_subscript_assign(
     object: &crate::parser::ast::Ast,
     key: &crate::parser::ast::Ast,
     value: &crate::parser::ast::Ast,
     env: &mut Environment,
 ) -> Result<(), VmError> {
-    // Resolve the variable name that holds the map or list.
-    let var_name = match object.content() {
-        AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => path[0].clone(),
-        _ => {
-            return Err(VmError::InvalidExpression(
-                "subscript assign: object must be a simple identifier".into(),
-            ));
-        }
-    };
-
-    // Evaluate the key and new value.
+    // Evaluate the object, key and new value.
+    let obj_val = eval_expr(object, env)?;
     let key_val = eval_expr(key, env)?;
     let new_val = eval_expr(value, env)?;
 
-    // Fetch the current value of the variable.
-    let current = env
-        .get(&var_name)
-        .map_err(|_| VmError::UndefinedVariable(var_name.clone()))?;
-
-    match current {
-        RuntimeValue::Map(mut map) => {
+    match obj_val {
+        RuntimeValue::Map(map) => {
+            let mut map = map.borrow_mut();
             let key_str = match key_val {
                 RuntimeValue::Str(ref ps) => ps.to_string(),
                 RuntimeValue::Int(i) => i.to_string(),
@@ -53,9 +39,10 @@ pub(super) fn eval_subscript_assign(
                 }
             };
             map.insert(key_str, Box::new(new_val));
-            env.set(&var_name, RuntimeValue::Map(map), &DeclKind::Variable)
+            Ok(())
         }
-        RuntimeValue::List(mut list) => {
+        RuntimeValue::List(list) => {
+            let mut list = list.borrow_mut();
             let idx = match key_val {
                 RuntimeValue::Int(i) => i,
                 other => {
@@ -80,7 +67,26 @@ pub(super) fn eval_subscript_assign(
                 pos
             };
             list[actual] = new_val;
-            env.set(&var_name, RuntimeValue::List(list), &DeclKind::Variable)
+            Ok(())
+        }
+        RuntimeValue::Struct { fields, .. } => {
+            let mut fields = fields.borrow_mut();
+            let key_str = match key_val {
+                RuntimeValue::Str(ref ps) => ps.to_string(),
+                other => {
+                    return Err(VmError::TypeError(format!(
+                        "struct field key must be a Str, got {other:?}"
+                    )));
+                }
+            };
+            if fields.contains_key(&key_str) {
+                fields.insert(key_str, new_val);
+                Ok(())
+            } else {
+                Err(VmError::UndefinedVariable(format!(
+                    "field '{key_str}' not found on struct"
+                )))
+            }
         }
         RuntimeValue::Extern(handle) => {
             let key_str = match key_val {
@@ -94,7 +100,7 @@ pub(super) fn eval_subscript_assign(
             handle.set(&key_str, new_val).map_err(VmError::TypeError)
         }
         other => Err(VmError::TypeError(format!(
-            "subscript assign: {var_name} is not a map, list, or extern, got {other:?}"
+            "subscript assign: object is not a map, list, struct, or extern, got {other:?}"
         ))),
     }
 }
@@ -141,7 +147,7 @@ pub(super) fn refresh_event_snapshot(
         .iter()
         .map(|(k, v)| (k.clone(), Box::new(v.clone())))
         .collect();
-    env.set("event", RuntimeValue::Map(snapshot), &DeclKind::Variable)
+    env.set("event", RuntimeValue::Map(crate::runtime::value::shared(snapshot)), &DeclKind::Variable)
 }
 
 /// Executes a single AST statement inside a decorator body.

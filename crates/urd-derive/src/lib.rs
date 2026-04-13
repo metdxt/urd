@@ -73,6 +73,9 @@ fn parse_container_attrs(attrs: &[syn::Attribute]) -> syn::Result<ContainerAttrs
         }
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("type_name") {
+                if type_name.is_some() {
+                    return Err(meta.error("duplicate `type_name` attribute"));
+                }
                 let value = meta.value()?;
                 let lit: Lit = value.parse()?;
                 if let Lit::Str(s) = lit {
@@ -112,12 +115,21 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
         // as well as `#[extern_object(rename = "...")]`.
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("skip") {
+                if skip {
+                    return Err(meta.error("duplicate `skip` attribute"));
+                }
                 skip = true;
                 Ok(())
             } else if meta.path.is_ident("readonly") {
+                if readonly {
+                    return Err(meta.error("duplicate `readonly` attribute"));
+                }
                 readonly = true;
                 Ok(())
             } else if meta.path.is_ident("rename") {
+                if rename.is_some() {
+                    return Err(meta.error("duplicate `rename` attribute"));
+                }
                 let value = meta.value()?;
                 let lit: Lit = value.parse()?;
                 if let Lit::Str(s) = lit {
@@ -130,6 +142,13 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
                 Err(meta.error("unknown extern_object field attribute"))
             }
         })?;
+    }
+
+    if skip && (readonly || rename.is_some()) {
+        return Err(syn::Error::new_spanned(
+            attrs.first().unwrap(),
+            "skipped fields cannot have `readonly` or `rename` attributes"
+        ));
     }
 
     Ok(FieldAttrs {
@@ -205,34 +224,39 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
 
     let display_fields: Vec<proc_macro2::TokenStream> = field_infos
         .iter()
-        .map(|fi| {
+        .enumerate()
+        .map(|(i, fi)| {
             let ident = &fi.ident;
             let name = &fi.script_name;
+            let comma = if i > 0 {
+                quote! { s.push_str(", "); }
+            } else {
+                quote! {}
+            };
             quote! {
-                parts.push(format!(
-                    "{}: {}",
-                    #name,
-                    ::urd::runtime::extern_object::display_brief(
-                        &::urd::runtime::extern_object::IntoRuntimeValue::to_runtime_value(&self.#ident)
-                    )
-                ));
+                #comma
+                ::std::write!(&mut s, "{}: {}", #name, ::urd::runtime::extern_object::display_brief(
+                    &::urd::runtime::extern_object::IntoRuntimeValue::to_runtime_value(&self.#ident)
+                )).unwrap();
             }
         })
         .collect();
 
-    // Check if we have any fields to display to avoid unused variable warning.
     let display_impl = if display_fields.is_empty() {
         quote! {
             fn display(&self) -> String {
-                format!("<{}>", #type_name_str)
+                format!("{} {{}}", #type_name_str)
             }
         }
     } else {
         quote! {
             fn display(&self) -> String {
-                let mut parts: Vec<String> = Vec::new();
+                use ::std::fmt::Write;
+                let mut s = String::new();
+                ::std::write!(&mut s, "{} {{ ", #type_name_str).unwrap();
                 #(#display_fields)*
-                format!("{} {{ {} }}", #type_name_str, parts.join(", "))
+                s.push_str(" }");
+                s
             }
         }
     };
@@ -279,7 +303,7 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
             } else {
                 quote! {
                     #name => {
-                        self.#ident = ::urd::runtime::extern_object::FromRuntimeValue::from_runtime_value(&value)?;
+                        self.#ident = ::urd::runtime::extern_object::FromRuntimeValue::from_runtime_value(value)?;
                         ::std::result::Result::Ok(())
                     }
                 }
@@ -310,7 +334,12 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
 
     // ── Assemble ──────────────────────────────────────────────────────────
 
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let mut generics = input.generics.clone();
+    for param in generics.type_params_mut() {
+        param.bounds.push(syn::parse_quote!(::urd::runtime::extern_object::IntoRuntimeValue));
+        param.bounds.push(syn::parse_quote!(::urd::runtime::extern_object::FromRuntimeValue));
+    }
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let expanded = quote! {
         impl #impl_generics ::urd::ExternObject for #struct_name #ty_generics #where_clause {
@@ -322,23 +351,7 @@ fn impl_extern_object(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStre
         }
     };
 
-    // ── Bonus: auto-derive Send + Sync assertion ──────────────────────────
-    // ExternObject requires Send + Sync.  Rather than emitting a blanket
-    // `unsafe impl`, we just static-assert that the struct already is.
-    // If the user's struct isn't Send + Sync, they'll get a clear error
-    // at the assertion site rather than a cryptic trait-bound failure.
-
-    let assert_send_sync = quote! {
-        const _: () = {
-            fn _assert_send_sync<T: Send + Sync>() {}
-            fn _assert() {
-                _assert_send_sync::<#struct_name>();
-            }
-        };
-    };
-
     Ok(quote! {
         #expanded
-        #assert_send_sync
     })
 }

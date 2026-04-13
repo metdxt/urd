@@ -116,7 +116,7 @@ pub(super) fn dispatch(
                 .split(sep.as_str())
                 .map(|part| RuntimeValue::Str(ParsedString::new_plain(part)))
                 .collect();
-            Ok(RuntimeValue::List(parts))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(parts)))
         }
 
         "replace" => {
@@ -203,7 +203,7 @@ pub(super) fn dispatch(
                     RuntimeValue::Str(ParsedString::new_plain(encoded))
                 })
                 .collect();
-            Ok(RuntimeValue::List(chars))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(chars)))
         }
 
         "repeat" => {
@@ -236,7 +236,7 @@ pub(super) fn dispatch(
                 .lines()
                 .map(|line| RuntimeValue::Str(ParsedString::new_plain(line)))
                 .collect();
-            Ok(RuntimeValue::List(lines))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(lines)))
         }
 
         // ── Unknown ───────────────────────────────────────────────────────────
@@ -481,7 +481,7 @@ mod tests {
     fn test_split_comma() {
         assert_eq!(
             call(s("a,b,c"), "split", &[str_val(",")]).unwrap(),
-            RuntimeValue::List(vec![str_val("a"), str_val("b"), str_val("c")])
+            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("a"), str_val("b"), str_val("c")]))
         );
     }
 
@@ -496,7 +496,7 @@ mod tests {
     fn test_split_no_sep_present() {
         assert_eq!(
             call(s("hello"), "split", &[str_val(",")]).unwrap(),
-            RuntimeValue::List(vec![str_val("hello")])
+            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("hello")]))
         );
     }
 
@@ -667,7 +667,7 @@ mod tests {
     fn test_chars_ascii() {
         assert_eq!(
             call(s("abc"), "chars", &[]).unwrap(),
-            RuntimeValue::List(vec![str_val("a"), str_val("b"), str_val("c")])
+            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("a"), str_val("b"), str_val("c")]))
         );
     }
 
@@ -677,9 +677,9 @@ mod tests {
         let result = call(s("hé"), "chars", &[]).unwrap();
         match result {
             RuntimeValue::List(items) => {
-                assert_eq!(items.len(), 2);
-                assert_eq!(items[0], str_val("h"));
-                assert_eq!(items[1], str_val("é"));
+                assert_eq!(items.borrow().len(), 2);
+                assert_eq!(items.borrow()[0], str_val("h"));
+                assert_eq!(items.borrow()[1], str_val("é"));
             }
             other => panic!("expected List, got {:?}", other),
         }
@@ -689,7 +689,7 @@ mod tests {
     fn test_chars_empty() {
         assert_eq!(
             call(s(""), "chars", &[]).unwrap(),
-            RuntimeValue::List(vec![])
+            RuntimeValue::List(crate::runtime::value::shared(vec![]))
         );
     }
 
@@ -725,7 +725,7 @@ mod tests {
     fn test_lines_basic() {
         assert_eq!(
             call(s("a\nb\nc"), "lines", &[]).unwrap(),
-            RuntimeValue::List(vec![str_val("a"), str_val("b"), str_val("c")])
+            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("a"), str_val("b"), str_val("c")]))
         );
     }
 
@@ -734,7 +734,7 @@ mod tests {
         // Rust's `str::lines` strips both `\n` and `\r\n`.
         assert_eq!(
             call(s("x\r\ny"), "lines", &[]).unwrap(),
-            RuntimeValue::List(vec![str_val("x"), str_val("y")])
+            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("x"), str_val("y")]))
         );
     }
 
@@ -742,7 +742,7 @@ mod tests {
     fn test_lines_single_line() {
         assert_eq!(
             call(s("hello"), "lines", &[]).unwrap(),
-            RuntimeValue::List(vec![str_val("hello")])
+            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("hello")]))
         );
     }
 

@@ -138,11 +138,11 @@ struct CharacterDisplay {
 /// otherwise the value is formatted with [`display_value`] and color is reset.
 fn extract_character(val: &RuntimeValue) -> CharacterDisplay {
     if let RuntimeValue::Map(map) = val {
-        let name = map
+        let name = map.borrow()
             .get("name")
             .map(|v| display_value(v))
             .unwrap_or_else(|| "???".to_string());
-        let color = map
+        let color = map.borrow()
             .get("name_color")
             .map(|v| ansi_color(&display_value(v)))
             .unwrap_or(RESET);

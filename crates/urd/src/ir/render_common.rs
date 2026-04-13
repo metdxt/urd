@@ -111,8 +111,8 @@ pub(super) fn rv_summary(rv: &RuntimeValue) -> String {
         RuntimeValue::Dice(c, s) => format!("{c}d{s}"),
         RuntimeValue::IdentPath(p) => p.join("."),
 
-        RuntimeValue::Map(m) => format!("⟨map({})⟩", m.len()),
-        RuntimeValue::List(items) => format!("⟨list({})⟩", items.len()),
+        RuntimeValue::Map(m) => format!("⟨map({})⟩", m.borrow().len()),
+        RuntimeValue::List(items) => format!("⟨list({})⟩", items.borrow().len()),
         RuntimeValue::Roll(rolls) => format!("⟨roll({})⟩", rolls.len()),
         RuntimeValue::Function { params, .. } => format!("⟨fn({})⟩", params.len()),
         RuntimeValue::ScriptDecorator { .. } => "⟨decorator⟩".into(),
@@ -127,7 +127,7 @@ pub(super) fn rv_summary(rv: &RuntimeValue) -> String {
                 format!("{start}..{end}")
             }
         }
-        RuntimeValue::Struct { name, fields } => format!("⟨{}({})⟩", name, fields.len()),
+        RuntimeValue::Struct { name, fields } => format!("⟨{}({})⟩", name, fields.borrow().len()),
         RuntimeValue::Extern(handle) => {
             let type_name = handle.type_name().unwrap_or_else(|_| "extern".into());
             format!("⟨{type_name}⟩")

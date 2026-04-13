@@ -163,7 +163,7 @@ impl DecoratorRegistry {
                         Ok(RuntimeValue::Map(m)) => {
                             // Convert HashMap<String, Box<RuntimeValue>> →
                             // HashMap<String, RuntimeValue>.
-                            Ok(m.into_iter().map(|(k, v)| (k, *v)).collect())
+                            Ok(m.borrow().clone().into_iter().map(|(k, v)| (k, *v)).collect())
                         }
                         // Body returned something other than a Map — treat as
                         // no additional event fields.

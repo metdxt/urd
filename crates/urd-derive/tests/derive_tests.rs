@@ -374,7 +374,7 @@ fn get_kitchen_sink_all_types() {
     );
     assert_eq!(
         ExternObject::get(&ks, "list_ints").unwrap(),
-        RuntimeValue::List(vec![
+        RuntimeValue::list(vec![
             RuntimeValue::Int(1),
             RuntimeValue::Int(2),
             RuntimeValue::Int(3),
@@ -383,7 +383,7 @@ fn get_kitchen_sink_all_types() {
     // List of strings
     match ExternObject::get(&ks, "list_strings").unwrap() {
         RuntimeValue::List(items) => {
-            assert_eq!(items.len(), 2);
+            assert_eq!(items.borrow().len(), 2);
         }
         other => panic!("expected List, got {other:?}"),
     }
@@ -590,11 +590,11 @@ fn set_kitchen_sink_round_trips() {
         RuntimeValue::Int(255)
     );
 
-    let new_list = RuntimeValue::List(vec![RuntimeValue::Int(10), RuntimeValue::Int(20)]);
+    let new_list = RuntimeValue::list(vec![RuntimeValue::Int(10), RuntimeValue::Int(20)]);
     ExternObject::set(&mut ks, "list_ints", new_list).unwrap();
     assert_eq!(
         ExternObject::get(&ks, "list_ints").unwrap(),
-        RuntimeValue::List(vec![RuntimeValue::Int(10), RuntimeValue::Int(20)])
+        RuntimeValue::list(vec![RuntimeValue::Int(10), RuntimeValue::Int(20)])
     );
 }
 

@@ -1,7 +1,7 @@
 //! # List Methods
 //!
 //! This module implements all built-in methods callable on `RuntimeValue::List`
-//! via method-call syntax (e.g. `list.len()`, `list.append(x)`).
+//! via method-call syntax (e.g. `list.borrow().len()`, `list.append(x)`).
 //!
 //! ## Pure-functional semantics
 //!
@@ -41,24 +41,24 @@ use super::eval::values_equal;
 /// Returns a [`super::VmError`] on type mismatches, out-of-bounds accesses,
 /// wrong argument counts, or unknown method names.
 pub(super) fn dispatch(
-    list: Vec<RuntimeValue>,
+    list: crate::runtime::value::Shared<Vec<RuntimeValue>>,
     method: &str,
     args: &[RuntimeValue],
     env: &super::env::Environment,
-) -> Result<RuntimeValue, super::VmError> {
+) -> Result<RuntimeValue, crate::vm::VmError> {
     match method {
         // ── Queries ───────────────────────────────────────────────────────────
         "len" => {
             require_args("len", args, 0)?;
-            Ok(RuntimeValue::Int(list.len() as i64))
+            Ok(RuntimeValue::Int(list.borrow().len() as i64))
         }
 
         "get" => {
             require_args("get", args, 1)?;
             let idx = require_int(&args[0], "get", "index")?;
-            let pos = resolve_index(idx, list.len())?;
-            // SAFETY: `resolve_index` guarantees `pos < list.len()`.
-            list.into_iter().nth(pos).ok_or_else(|| {
+            let pos = resolve_index(idx, list.borrow().len())?;
+            // SAFETY: `resolve_index` guarantees `pos < list.borrow().len()`.
+            list.borrow().iter().cloned().nth(pos).ok_or_else(|| {
                 super::VmError::TypeError(
                     "list.get(): index out of bounds (resolve_index guarantee violated)"
                         .to_string(),
@@ -68,59 +68,59 @@ pub(super) fn dispatch(
 
         "first" => {
             require_args("first", args, 0)?;
-            list.into_iter().next().ok_or_else(|| {
+            list.borrow().iter().cloned().next().ok_or_else(|| {
                 super::VmError::TypeError("list.first() called on empty list".to_string())
             })
         }
 
         "last" => {
             require_args("last", args, 0)?;
-            list.into_iter().last().ok_or_else(|| {
+            list.borrow().iter().cloned().last().ok_or_else(|| {
                 super::VmError::TypeError("list.last() called on empty list".to_string())
             })
         }
 
         "contains" => {
             require_args("contains", args, 1)?;
-            let found = list.iter().any(|el| values_equal(el, &args[0]));
+            let found = list.borrow().iter().any(|el| values_equal(el, &args[0]));
             Ok(RuntimeValue::Bool(found))
         }
 
         // ── Transformers (all pure — return a new list) ───────────────────────
         "append" => {
             require_args("append", args, 1)?;
-            let mut out = list;
+            let mut out = list.borrow().clone();
             out.push(args[0].clone());
-            Ok(RuntimeValue::List(out))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(out)))
         }
 
         "prepend" => {
             require_args("prepend", args, 1)?;
-            let mut out = Vec::with_capacity(list.len() + 1);
+            let mut out = Vec::with_capacity(list.borrow().len() + 1);
             out.push(args[0].clone());
-            out.extend(list);
-            Ok(RuntimeValue::List(out))
+            out.extend(list.borrow().clone());
+            Ok(RuntimeValue::List(crate::runtime::value::shared(out)))
         }
 
         "pop" => {
             require_args("pop", args, 0)?;
-            if list.is_empty() {
+            if list.borrow().is_empty() {
                 return Err(super::VmError::TypeError(
                     "list.pop() called on empty list".to_string(),
                 ));
             }
-            let mut out = list;
+            let mut out = list.borrow().clone();
             out.pop();
-            Ok(RuntimeValue::List(out))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(out)))
         }
 
         "concat" => {
             require_args("concat", args, 1)?;
             match &args[0] {
                 RuntimeValue::List(other) => {
-                    let mut out = list;
-                    out.extend(other.iter().cloned());
-                    Ok(RuntimeValue::List(out))
+                    let mut out = list.borrow().clone();
+                    out.extend(other.borrow().iter().cloned());
+                    Ok(RuntimeValue::List(crate::runtime::value::shared(out)))
                 }
                 other => Err(super::VmError::TypeError(format!(
                     "list.concat() expected a List argument, got {:?}",
@@ -131,23 +131,23 @@ pub(super) fn dispatch(
 
         "reversed" => {
             require_args("reversed", args, 0)?;
-            let mut out = list;
+            let mut out = list.borrow().clone();
             out.reverse();
-            Ok(RuntimeValue::List(out))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(out)))
         }
 
         "with" => {
             require_args("with", args, 2)?;
             let idx = require_int(&args[0], "with", "index")?;
-            let pos = resolve_index(idx, list.len())?;
-            let mut out = list;
+            let pos = resolve_index(idx, list.borrow().len())?;
+            let mut out = list.borrow().clone();
             out[pos] = args[1].clone();
-            Ok(RuntimeValue::List(out))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(out)))
         }
 
         "slice" => {
             require_args_range("slice", args, 1, 2)?;
-            let len = list.len();
+            let len = list.borrow().len();
 
             // Resolve a possibly-negative slice bound, clamping to [0, len].
             let resolve_bound = |raw: i64| -> usize {
@@ -174,7 +174,7 @@ pub(super) fn dispatch(
                 start..start
             };
 
-            Ok(RuntimeValue::List(list[range].to_vec()))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(list.borrow()[range].to_vec())))
         }
 
         // ── String conversion ─────────────────────────────────────────────────
@@ -195,6 +195,7 @@ pub(super) fn dispatch(
             };
 
             let joined = list
+                .borrow()
                 .iter()
                 .map(format_for_join)
                 .collect::<Vec<_>>()
@@ -221,12 +222,12 @@ pub(super) fn dispatch(
                     params.len()
                 )));
             }
-            let mut result = Vec::with_capacity(list.len());
-            for item in list {
+            let mut result = Vec::with_capacity(list.borrow().len());
+            for item in list.borrow().iter().cloned() {
                 let mapped = super::eval::exec_fn_body(body, &params, &[item], env)?;
                 result.push(mapped);
             }
-            Ok(RuntimeValue::List(result))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(result)))
         }
 
         "filter" => {
@@ -247,7 +248,7 @@ pub(super) fn dispatch(
                 )));
             }
             let mut result = Vec::new();
-            for item in list {
+            for item in list.borrow().iter().cloned() {
                 match super::eval::exec_fn_body(body, &params, std::slice::from_ref(&item), env)? {
                     RuntimeValue::Bool(true) => result.push(item),
                     RuntimeValue::Bool(false) => {}
@@ -259,7 +260,7 @@ pub(super) fn dispatch(
                     }
                 }
             }
-            Ok(RuntimeValue::List(result))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(result)))
         }
 
         "reduce" | "fold" => {
@@ -281,7 +282,7 @@ pub(super) fn dispatch(
                 )));
             }
             let mut acc = init;
-            for item in list {
+            for item in list.borrow().iter().cloned() {
                 acc = super::eval::exec_fn_body(body, &params, &[acc, item], env)?;
             }
             Ok(acc)
@@ -304,7 +305,7 @@ pub(super) fn dispatch(
                     params.len()
                 )));
             }
-            for item in list {
+            for item in list.borrow().iter().cloned() {
                 match super::eval::exec_fn_body(body, &params, std::slice::from_ref(&item), env)? {
                     RuntimeValue::Bool(true) => return Ok(item),
                     RuntimeValue::Bool(false) => {}
@@ -336,7 +337,7 @@ pub(super) fn dispatch(
                     params.len()
                 )));
             }
-            for item in list {
+            for item in list.borrow().iter().cloned() {
                 match super::eval::exec_fn_body(body, &params, &[item], env)? {
                     RuntimeValue::Bool(true) => return Ok(RuntimeValue::Bool(true)),
                     RuntimeValue::Bool(false) => {}
@@ -368,7 +369,7 @@ pub(super) fn dispatch(
                     params.len()
                 )));
             }
-            for item in list {
+            for item in list.borrow().iter().cloned() {
                 match super::eval::exec_fn_body(body, &params, &[item], env)? {
                     RuntimeValue::Bool(true) => {}
                     RuntimeValue::Bool(false) => return Ok(RuntimeValue::Bool(false)),
@@ -423,8 +424,8 @@ pub(super) fn dispatch(
             }
             // Errors from the comparator cannot be returned directly from
             // inside the sort closure, so we stash them here and check after.
-            let mut sort_error: Option<super::VmError> = None;
-            let mut out = list;
+            let mut sort_error: Option<crate::vm::VmError> = None;
+            let mut out = list.borrow().clone();
             out.sort_by(|a, b| {
                 if sort_error.is_some() {
                     return std::cmp::Ordering::Equal;
@@ -461,7 +462,7 @@ pub(super) fn dispatch(
             if let Some(e) = sort_error {
                 return Err(e);
             }
-            Ok(RuntimeValue::List(out))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(out)))
         }
 
         "zip" => {
@@ -475,26 +476,27 @@ pub(super) fn dispatch(
                     )));
                 }
             };
-            let len = list.len().min(other.len());
+            let len = list.borrow().len().min(other.borrow().len());
             let result = list
-                .into_iter()
-                .zip(other.iter().cloned())
+                .borrow()
+                .iter().cloned()
+                .zip(other.borrow().iter().cloned())
                 .take(len)
-                .map(|(a, b)| RuntimeValue::List(vec![a, b]))
+                .map(|(a, b)| RuntimeValue::List(crate::runtime::value::shared(vec![a, b])))
                 .collect();
-            Ok(RuntimeValue::List(result))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(result)))
         }
 
         // ── Aggregates ────────────────────────────────────────────────────────
         "min" => {
             require_args("min", args, 0)?;
-            if list.is_empty() {
+            if list.borrow().is_empty() {
                 return Ok(RuntimeValue::Null);
             }
-            let has_float = list.iter().any(|el| matches!(el, RuntimeValue::Float(_)));
+            let has_float = list.borrow().iter().any(|el| matches!(el, RuntimeValue::Float(_)));
             if has_float {
                 let mut result: f64 = f64::INFINITY;
-                for el in &list {
+                for el in list.borrow().iter() {
                     let v = coerce_to_f64(el, "min")?;
                     if v < result {
                         result = v;
@@ -502,8 +504,8 @@ pub(super) fn dispatch(
                 }
                 Ok(RuntimeValue::Float(result))
             } else {
-                let mut min_val = coerce_to_i64(&list[0], "min")?;
-                for el in &list[1..] {
+                let mut min_val = coerce_to_i64(&list.borrow()[0], "min")?;
+                for el in &list.borrow()[1..] {
                     let v = coerce_to_i64(el, "min")?;
                     if v < min_val {
                         min_val = v;
@@ -515,13 +517,13 @@ pub(super) fn dispatch(
 
         "max" => {
             require_args("max", args, 0)?;
-            if list.is_empty() {
+            if list.borrow().is_empty() {
                 return Ok(RuntimeValue::Null);
             }
-            let has_float = list.iter().any(|el| matches!(el, RuntimeValue::Float(_)));
+            let has_float = list.borrow().iter().any(|el| matches!(el, RuntimeValue::Float(_)));
             if has_float {
                 let mut result: f64 = f64::NEG_INFINITY;
-                for el in &list {
+                for el in list.borrow().iter() {
                     let v = coerce_to_f64(el, "max")?;
                     if v > result {
                         result = v;
@@ -529,8 +531,8 @@ pub(super) fn dispatch(
                 }
                 Ok(RuntimeValue::Float(result))
             } else {
-                let mut max_val = coerce_to_i64(&list[0], "max")?;
-                for el in &list[1..] {
+                let mut max_val = coerce_to_i64(&list.borrow()[0], "max")?;
+                for el in &list.borrow()[1..] {
                     let v = coerce_to_i64(el, "max")?;
                     if v > max_val {
                         max_val = v;
@@ -542,7 +544,7 @@ pub(super) fn dispatch(
 
         "sum" => {
             require_args("sum", args, 0)?;
-            if list.is_empty() {
+            if list.borrow().is_empty() {
                 return Ok(RuntimeValue::Int(0));
             }
             // Single-pass: start accumulating as i64, widen to f64 on first Float.
@@ -551,10 +553,10 @@ pub(super) fn dispatch(
                 Float(f64),
             }
             let mut acc = Acc::Int(0);
-            for el in &list {
+            for el in list.borrow().iter() {
                 match (&mut acc, el) {
                     (Acc::Int(total), RuntimeValue::Int(i)) => {
-                        *total = total.checked_add(*i).ok_or_else(|| {
+                        *total = total.checked_add(i.clone()).ok_or_else(|| {
                             super::VmError::TypeError("list.sum(): integer overflow".into())
                         })?;
                     }
@@ -575,7 +577,7 @@ pub(super) fn dispatch(
                         acc = Acc::Float(widened);
                     }
                     (Acc::Float(total), RuntimeValue::Int(i)) => {
-                        *total += *i as f64;
+                        *total += i.clone() as f64;
                         if !total.is_finite() {
                             return Err(super::VmError::TypeError(
                                 "list.sum(): float overflow (result is not finite)".into(),
@@ -622,7 +624,7 @@ pub(super) fn dispatch(
 ///
 /// - Non-negative `idx`: used as-is; must be in `[0, len)`.
 /// - Negative `idx`: treated as `len + idx`; must still land in `[0, len)`.
-fn resolve_index(idx: i64, len: usize) -> Result<usize, super::VmError> {
+fn resolve_index(idx: i64, len: usize) -> Result<usize, crate::vm::VmError> {
     let resolved: i64 = if idx < 0 { len as i64 + idx } else { idx };
 
     if resolved < 0 || resolved >= len as i64 {
@@ -638,7 +640,7 @@ fn require_args(
     method: &str,
     args: &[RuntimeValue],
     expected: usize,
-) -> Result<(), super::VmError> {
+) -> Result<(), crate::vm::VmError> {
     if args.len() != expected {
         return Err(super::VmError::TypeError(format!(
             "list.{method}() takes {expected} argument(s), got {}",
@@ -655,7 +657,7 @@ fn require_args_range(
     args: &[RuntimeValue],
     min: usize,
     max: usize,
-) -> Result<(), super::VmError> {
+) -> Result<(), crate::vm::VmError> {
     if args.len() < min || args.len() > max {
         return Err(super::VmError::TypeError(format!(
             "list.{method}() takes {min}–{max} argument(s), got {}",
@@ -667,7 +669,7 @@ fn require_args_range(
 
 /// Coerce a [`RuntimeValue`] to `i64`, returning a descriptive
 /// [`super::VmError::TypeError`] if the value is not a `RuntimeValue::Int`.
-fn require_int(val: &RuntimeValue, method: &str, param: &str) -> Result<i64, super::VmError> {
+fn require_int(val: &RuntimeValue, method: &str, param: &str) -> Result<i64, crate::vm::VmError> {
     match val {
         RuntimeValue::Int(i) => Ok(*i),
         other => Err(super::VmError::TypeError(format!(
@@ -681,7 +683,7 @@ fn require_int(val: &RuntimeValue, method: &str, param: &str) -> Result<i64, sup
 ///
 /// Accepts `Int` directly and truncates `Float` via `as i64`.  All other
 /// variants are rejected with a [`super::VmError::TypeError`].
-fn coerce_to_i64(val: &RuntimeValue, method: &str) -> Result<i64, super::VmError> {
+fn coerce_to_i64(val: &RuntimeValue, method: &str) -> Result<i64, crate::vm::VmError> {
     match val {
         RuntimeValue::Int(i) => Ok(*i),
         RuntimeValue::Float(f) => Ok(*f as i64),
@@ -696,7 +698,7 @@ fn coerce_to_i64(val: &RuntimeValue, method: &str) -> Result<i64, super::VmError
 ///
 /// Accepts `Int` (promoted) and `Float` directly. Rejects NaN and Infinity.
 /// All other variants are rejected with a [`super::VmError::TypeError`].
-fn coerce_to_f64(val: &RuntimeValue, method: &str) -> Result<f64, super::VmError> {
+fn coerce_to_f64(val: &RuntimeValue, method: &str) -> Result<f64, crate::vm::VmError> {
     match val {
         RuntimeValue::Int(i) => Ok(*i as f64),
         RuntimeValue::Float(f) => {
@@ -733,6 +735,7 @@ fn format_for_join(val: &RuntimeValue) -> String {
         RuntimeValue::List(items) => format!(
             "[{}]",
             items
+                .borrow()
                 .iter()
                 .map(format_for_join)
                 .collect::<Vec<_>>()
@@ -767,8 +770,18 @@ mod tests {
         RuntimeValue::Str(ParsedString::new_plain(s))
     }
 
+
+    fn dispatch(
+        list: Vec<RuntimeValue>,
+        method: &str,
+        args: &[RuntimeValue],
+        env: &Environment,
+    ) -> Result<RuntimeValue, crate::vm::VmError> {
+        super::dispatch(crate::runtime::value::shared(list), method, args, env)
+    }
+
     fn list_of(items: impl IntoIterator<Item = RuntimeValue>) -> RuntimeValue {
-        RuntimeValue::List(items.into_iter().collect())
+        RuntimeValue::List(crate::runtime::value::shared(items.into_iter().collect()))
     }
 
     /// Thin wrapper so tests don't have to spell out `&args[..]` every time.
@@ -776,7 +789,7 @@ mod tests {
         items: Vec<RuntimeValue>,
         method: &str,
         args: Vec<RuntimeValue>,
-    ) -> Result<RuntimeValue, super::super::VmError> {
+    ) -> Result<RuntimeValue, crate::vm::VmError> {
         let env = Environment::new();
         dispatch(items, method, &args, &env)
     }
@@ -997,11 +1010,11 @@ mod tests {
         let result = dispatch(list, "map", &[func], &env).unwrap();
         assert_eq!(
             result,
-            RuntimeValue::List(vec![
+            RuntimeValue::List(crate::runtime::value::shared(vec![
                 RuntimeValue::Int(2),
                 RuntimeValue::Int(4),
                 RuntimeValue::Int(6),
-            ])
+            ]))
         );
     }
 

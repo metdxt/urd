@@ -78,16 +78,16 @@ pub fn eval_expr(
                         eval_runtime_value(&RuntimeValue::IdentPath(receiver_path), env)?;
 
                     match receiver {
-                        RuntimeValue::List(list) => list_methods::dispatch(list, method, &args, env),
+                        RuntimeValue::List(list) => list_methods::dispatch(list.clone(), method, &args, env),
                         RuntimeValue::Roll(rolls) => {
                             let as_list: Vec<RuntimeValue> =
                                 rolls.iter().map(|&n| RuntimeValue::Int(n)).collect();
-                            list_methods::dispatch(as_list, method, &args, env)
+                            list_methods::dispatch(crate::runtime::value::shared(as_list), method, &args, env)
                         }
                         RuntimeValue::Str(s) => str_methods::dispatch(s, method, &args),
                         RuntimeValue::Int(n) => int_methods::dispatch(n, method, &args),
                         RuntimeValue::Float(f) => float_methods::dispatch(f, method, &args),
-                        RuntimeValue::Map(m) => map_methods::dispatch(m, method, &args),
+                        RuntimeValue::Map(m) => map_methods::dispatch(m.clone(), method, &args),
                         RuntimeValue::Range {
                             start,
                             end,
@@ -101,12 +101,12 @@ pub fn eval_expr(
                             "fields" => handle
                                 .fields()
                                 .map(|names| {
-                                    RuntimeValue::List(
+                                    RuntimeValue::List(crate::runtime::value::shared(
                                         names
                                             .into_iter()
                                             .map(|n| RuntimeValue::Str(ParsedString::new_plain(&n)))
-                                            .collect(),
-                                    )
+                                            .collect::<Vec<_>>(),
+                                    ))
                                 })
                                 .map_err(VmError::TypeError),
                             "cast" => {
@@ -169,7 +169,7 @@ pub fn eval_expr(
                             field_names.iter().cloned().zip(args).collect();
                         return Ok(RuntimeValue::Struct {
                             name: path[0].clone(),
-                            fields,
+                            fields: crate::runtime::value::shared(fields),
                         });
                     }
                     // Global aggregate builtins: min(x), max(x), sum(x) where x is Roll or List
@@ -182,13 +182,13 @@ pub fn eval_expr(
                             RuntimeValue::Roll(rolls) => {
                                 Some(rolls.iter().map(|&n| RuntimeValue::Int(n)).collect())
                             }
-                            RuntimeValue::List(items) => Some(items.clone()),
+                            RuntimeValue::List(items) => Some(items.borrow().clone()),
                             _ => None,
                         };
                         if let Some(list) = arg_as_list {
                             match fn_name {
                                 "min" | "max" | "sum" => {
-                                    return list_methods::dispatch(list, fn_name, &[], env);
+                                    return list_methods::dispatch(crate::runtime::value::shared(list.clone()), fn_name, &[], env);
                                 }
                                 _ => {}
                             }
@@ -207,7 +207,7 @@ pub fn eval_expr(
             for item in items {
                 elements.push(eval_expr(item, env)?);
             }
-            Ok(RuntimeValue::List(elements))
+            Ok(RuntimeValue::List(crate::runtime::value::shared(elements)))
         }
         AstContent::Map(pairs) => {
             let mut map = HashMap::new();
@@ -238,7 +238,7 @@ pub fn eval_expr(
                 let val = eval_expr(val_ast, env)?;
                 map.insert(key_str, Box::new(val));
             }
-            Ok(RuntimeValue::Map(map))
+            Ok(RuntimeValue::Map(crate::runtime::value::shared(map)))
         }
 
         // ── Invalid expression contexts ──────────────────────────────────────
@@ -308,7 +308,7 @@ pub fn eval_expr(
                             )));
                         }
                     };
-                    map.get(&key_str).map(|v| *v.clone()).ok_or_else(|| {
+                    map.borrow().get(&key_str).map(|v| *v.clone()).ok_or_else(|| {
                         VmError::UndefinedVariable(format!("key '{}' not found in map", key_str))
                     })
                 }
@@ -322,7 +322,7 @@ pub fn eval_expr(
                             )));
                         }
                     };
-                    let len = list.len();
+                    let len = list.borrow().len();
                     // Support Python-style negative indexing.
                     let actual = if idx < 0 {
                         let pos = len as i64 + idx;
@@ -337,7 +337,7 @@ pub fn eval_expr(
                         }
                         pos
                     };
-                    Ok(list[actual].clone())
+                    Ok(list.borrow()[actual].clone())
                 }
                 RuntimeValue::Roll(rolls) => {
                     let as_list: Vec<RuntimeValue> =
@@ -378,7 +378,7 @@ pub fn eval_expr(
                             )));
                         }
                     };
-                    fields.get(&key_str).cloned().ok_or_else(|| {
+                    fields.borrow().get(&key_str).cloned().ok_or_else(|| {
                         VmError::UndefinedVariable(format!(
                             "field '{}' not found on struct",
                             key_str
@@ -526,7 +526,7 @@ pub(super) fn eval_runtime_value(
                 }
                 // Try struct field access: path = ["struct_var", "field"].
                 if let Ok(RuntimeValue::Struct { ref fields, .. }) = env.get(&path[0])
-                    && let Some(val) = fields.get(&path[1])
+                    && let Some(val) = fields.borrow().get(&path[1])
                 {
                     return Ok(val.clone());
                 }
@@ -584,7 +584,7 @@ pub(super) fn resolve_interp_path(path: &str, env: &Environment) -> Result<Runti
             .or_else(|_| {
                 // Struct field access: `struct_var.field`
                 if let Ok(RuntimeValue::Struct { ref fields, .. }) = env.get(segments[0])
-                    && let Some(val) = fields.get(segments[1])
+                    && let Some(val) = fields.borrow().get(segments[1])
                 {
                     return Ok(val.clone());
                 }
@@ -680,9 +680,10 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
                 format!("[{parts}]")
             }
             RuntimeValue::IdentPath(path) => path.join("."),
-            RuntimeValue::Map(m) => format!("map({})", m.len()),
+            RuntimeValue::Map(m) => format!("map({})", m.borrow().len()),
             RuntimeValue::List(items) => {
                 let parts: Vec<String> = items
+                    .borrow()
                     .iter()
                     .map(|v| format_runtime_value(v, None))
                     .collect();
@@ -704,7 +705,7 @@ pub(super) fn format_runtime_value(val: &RuntimeValue, format: Option<&str>) -> 
                 format!("fn({})", params.join(", "))
             }
             RuntimeValue::Struct { name, fields } => {
-                format!("{}({})", name, fields.len())
+                format!("{}({})", name, fields.borrow().len())
             }
             RuntimeValue::Extern(handle) => handle
                 .display()
@@ -833,13 +834,13 @@ pub(super) fn eval_binop(
                 ))),
             },
             RuntimeValue::List(items) => {
-                let found = items.iter().any(|el| values_equal(&lv, el));
+                let found = items.borrow().iter().any(|el| values_equal(&lv, el));
                 Ok(RuntimeValue::Bool(found))
             }
             RuntimeValue::Map(map) => match lv {
                 RuntimeValue::Str(ref s) => {
                     let key = s.to_string();
-                    Ok(RuntimeValue::Bool(map.contains_key(&key)))
+                    Ok(RuntimeValue::Bool(map.borrow().contains_key(&key)))
                 }
                 other => Err(VmError::TypeError(format!(
                     "`in` requires a Str on the left-hand side for Map, got {:?}",
@@ -1151,7 +1152,7 @@ pub(super) fn is_truthy(v: &RuntimeValue) -> bool {
         // NaN is explicitly falsy — a NaN comparison should never pass a guard.
         RuntimeValue::Float(f) => *f != 0.0 && !f.is_nan(),
         // An empty list is falsy; a non-empty list is truthy.
-        RuntimeValue::List(items) => !items.is_empty(),
+        RuntimeValue::List(items) => !items.borrow().is_empty(),
         RuntimeValue::Roll(rolls) => !rolls.is_empty(),
         // A non-empty range is truthy.
         RuntimeValue::Range {
@@ -1168,9 +1169,9 @@ pub(super) fn is_truthy(v: &RuntimeValue) -> bool {
         // An empty string is falsy; a non-empty string is truthy.
         RuntimeValue::Str(s) => !s.to_string().is_empty(),
         // An empty map is falsy; a non-empty map is truthy.
-        RuntimeValue::Map(m) => !m.is_empty(),
+        RuntimeValue::Map(m) => !m.borrow().is_empty(),
         // A struct with no fields is falsy; one with fields is truthy.
-        RuntimeValue::Struct { fields, .. } => !fields.is_empty(),
+        RuntimeValue::Struct { fields, .. } => !fields.borrow().is_empty(),
         RuntimeValue::Extern(_) => true,
         _ => true,
     }
@@ -1207,13 +1208,14 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
         }
         (RuntimeValue::Str(x), RuntimeValue::Str(y)) => x.to_string() == y.to_string(),
         (RuntimeValue::List(xs), RuntimeValue::List(ys)) => {
-            xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(a, b)| values_equal(a, b))
+            xs.borrow().len() == ys.borrow().len() && xs.borrow().iter().zip(ys.borrow().iter()).all(|(a, b)| values_equal(a, b))
         }
         (RuntimeValue::Map(xs), RuntimeValue::Map(ys)) => {
-            xs.len() == ys.len()
+            xs.borrow().len() == ys.borrow().len()
                 && xs
+                    .borrow()
                     .iter()
-                    .all(|(k, v)| ys.get(k).is_some_and(|yv| values_equal(v, yv)))
+                    .all(|(k, v)| ys.borrow().get(k).is_some_and(|yv| values_equal(v, yv)))
         }
         (
             RuntimeValue::Struct {
@@ -1226,10 +1228,11 @@ pub(super) fn values_equal(a: &RuntimeValue, b: &RuntimeValue) -> bool {
             },
         ) => {
             n1 == n2
-                && f1.len() == f2.len()
+                && f1.borrow().len() == f2.borrow().len()
                 && f1
+                    .borrow()
                     .iter()
-                    .all(|(k, v)| f2.get(k).is_some_and(|fv| values_equal(v, fv)))
+                    .all(|(k, v)| f2.borrow().get(k).is_some_and(|fv| values_equal(v, fv)))
         }
         (
             RuntimeValue::Range {
@@ -1611,11 +1614,11 @@ mod tests {
         let result = eval_expr(&ast, &env).unwrap();
         assert_eq!(
             result,
-            RuntimeValue::List(vec![
+            RuntimeValue::List(crate::runtime::value::shared(vec![
                 RuntimeValue::Int(1),
                 RuntimeValue::Int(2),
                 RuntimeValue::Int(3),
-            ])
+            ]))
         );
     }
 
@@ -1659,27 +1662,27 @@ mod tests {
 
     #[test]
     fn test_list_is_truthy() {
-        assert!(!is_truthy(&RuntimeValue::List(vec![])));
-        assert!(is_truthy(&RuntimeValue::List(vec![RuntimeValue::Int(1)])));
+        assert!(!is_truthy(&RuntimeValue::List(crate::runtime::value::shared(vec![]))));
+        assert!(is_truthy(&RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1)]))));
     }
 
     #[test]
     fn test_list_values_equal() {
-        let a = RuntimeValue::List(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]);
-        let b = RuntimeValue::List(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]);
-        let c = RuntimeValue::List(vec![RuntimeValue::Int(1), RuntimeValue::Int(9)]);
+        let a = RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]));
+        let b = RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]));
+        let c = RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1), RuntimeValue::Int(9)]));
         assert!(values_equal(&a, &b));
         assert!(!values_equal(&a, &c));
-        assert!(!values_equal(&a, &RuntimeValue::List(vec![])));
+        assert!(!values_equal(&a, &RuntimeValue::List(crate::runtime::value::shared(vec![]))));
     }
 
     #[test]
     fn test_list_format() {
-        let list = RuntimeValue::List(vec![
+        let list = RuntimeValue::List(crate::runtime::value::shared(vec![
             RuntimeValue::Int(1),
             RuntimeValue::Bool(true),
             RuntimeValue::Str(crate::lexer::strings::ParsedString::new_plain("hello")),
-        ]);
+        ]));
         let formatted = format_runtime_value(&list, None);
         assert_eq!(formatted, "[1, true, hello]");
     }
@@ -1689,11 +1692,11 @@ mod tests {
         let mut env = Environment::new();
         env.set(
             "xs",
-            RuntimeValue::List(vec![
+            RuntimeValue::List(crate::runtime::value::shared(vec![
                 RuntimeValue::Int(10),
                 RuntimeValue::Int(20),
                 RuntimeValue::Int(30),
-            ]),
+            ])),
             &DeclKind::Variable,
         )
         .unwrap();
@@ -1711,7 +1714,7 @@ mod tests {
         let mut env = Environment::new();
         env.set(
             "xs",
-            RuntimeValue::List(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]),
+            RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)])),
             &DeclKind::Variable,
         )
         .unwrap();
@@ -1722,11 +1725,11 @@ mod tests {
         let result = eval_expr(&call, &env).unwrap();
         assert_eq!(
             result,
-            RuntimeValue::List(vec![
+            RuntimeValue::List(crate::runtime::value::shared(vec![
                 RuntimeValue::Int(1),
                 RuntimeValue::Int(2),
                 RuntimeValue::Int(3),
-            ])
+            ]))
         );
     }
 
@@ -1735,11 +1738,11 @@ mod tests {
         let mut env = Environment::new();
         env.set(
             "xs",
-            RuntimeValue::List(vec![
+            RuntimeValue::List(crate::runtime::value::shared(vec![
                 RuntimeValue::Int(1),
                 RuntimeValue::Int(2),
                 RuntimeValue::Int(3),
-            ]),
+            ])),
             &DeclKind::Variable,
         )
         .unwrap();
@@ -1922,8 +1925,8 @@ mod tests {
         match result {
             RuntimeValue::Struct { name, fields } => {
                 assert_eq!(name, "Point");
-                assert_eq!(fields.get("x"), Some(&RuntimeValue::Int(3)));
-                assert_eq!(fields.get("y"), Some(&RuntimeValue::Int(7)));
+                assert_eq!(fields.borrow().get("x"), Some(&RuntimeValue::Int(3)));
+                assert_eq!(fields.borrow().get("y"), Some(&RuntimeValue::Int(7)));
             }
             other => panic!("expected Struct, got {other:?}"),
         }
@@ -1959,7 +1962,7 @@ mod tests {
             "pt",
             RuntimeValue::Struct {
                 name: "Point".into(),
-                fields,
+                fields: crate::runtime::value::shared(fields),
             },
             &crate::parser::ast::DeclKind::Variable,
         )
@@ -1985,7 +1988,7 @@ mod tests {
             "pt",
             RuntimeValue::Struct {
                 name: "Point".into(),
-                fields,
+                fields: crate::runtime::value::shared(fields),
             },
             &crate::parser::ast::DeclKind::Variable,
         )
@@ -2015,7 +2018,7 @@ mod tests {
             "player",
             RuntimeValue::Struct {
                 name: "Player".into(),
-                fields,
+                fields: crate::runtime::value::shared(fields),
             },
             &crate::parser::ast::DeclKind::Variable,
         )
@@ -2037,7 +2040,7 @@ mod tests {
         fields.insert("y".into(), RuntimeValue::Int(2));
         let val = RuntimeValue::Struct {
             name: "Point".into(),
-            fields,
+            fields: crate::runtime::value::shared(fields),
         };
         // format_runtime_value should show "Point(2)" — name + field count.
         let formatted = format_runtime_value(&val, None);
@@ -2197,7 +2200,7 @@ mod tests {
             fields: {
                 let mut m = HashMap::new();
                 m.insert("x".to_string(), RuntimeValue::Int(x));
-                m
+                crate::runtime::value::shared(m)
             },
         };
         assert!(
@@ -2492,7 +2495,7 @@ mod tests {
         map.insert("other".to_string(), Box::new(RuntimeValue::Int(2)));
         let ast = Ast::in_op(
             Ast::value(RuntimeValue::Str(ParsedString::new_plain("key"))),
-            Ast::value(RuntimeValue::Map(map)),
+            Ast::value(RuntimeValue::Map(crate::runtime::value::shared(map))),
         );
         assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(true));
     }
@@ -2504,7 +2507,7 @@ mod tests {
         map.insert("key".to_string(), Box::new(RuntimeValue::Int(1)));
         let ast = Ast::in_op(
             Ast::value(RuntimeValue::Str(ParsedString::new_plain("missing"))),
-            Ast::value(RuntimeValue::Map(map)),
+            Ast::value(RuntimeValue::Map(crate::runtime::value::shared(map))),
         );
         assert_eq!(eval_expr(&ast, &env).unwrap(), RuntimeValue::Bool(false));
     }
@@ -2516,7 +2519,7 @@ mod tests {
         map.insert("key".to_string(), Box::new(RuntimeValue::Int(1)));
         let ast = Ast::in_op(
             Ast::value(RuntimeValue::Int(42)),
-            Ast::value(RuntimeValue::Map(map)),
+            Ast::value(RuntimeValue::Map(crate::runtime::value::shared(map))),
         );
         assert!(eval_expr(&ast, &env).is_err());
     }
@@ -2936,7 +2939,7 @@ mod tests {
     fn test_roll_not_equal_to_list_with_same_elements() {
         // Roll([3, 5]) must not compare equal to List([Int(3), Int(5)]).
         let roll = RuntimeValue::Roll(vec![3, 5]);
-        let list = RuntimeValue::List(vec![RuntimeValue::Int(3), RuntimeValue::Int(5)]);
+        let list = RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(3), RuntimeValue::Int(5)]));
         assert!(!values_equal(&roll, &list));
     }
 

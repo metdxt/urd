@@ -42,10 +42,11 @@ use crate::runtime::value::RuntimeValue;
 /// Returns a [`super::VmError`] on type mismatches, wrong argument counts, or
 /// unknown method names.
 pub(super) fn dispatch(
-    map: HashMap<String, Box<RuntimeValue>>,
+    map_ref: crate::runtime::value::Shared<HashMap<String, Box<RuntimeValue>>>,
     method: &str,
     args: &[RuntimeValue],
 ) -> Result<RuntimeValue, super::VmError> {
+    let map = map_ref.borrow().clone();
     match method {
         // ── Queries ───────────────────────────────────────────────────────────
         "get" => {
@@ -67,22 +68,22 @@ pub(super) fn dispatch(
             require_args("keys", args, 0)?;
             // Sort keys for deterministic output — HashMap iteration order is
             // undefined, and callers generally expect a stable sequence.
-            let mut ks: Vec<&String> = map.keys().collect();
+            let mut ks: Vec<&String> = map.keys().collect::<Vec<_>>();
             ks.sort();
             let list = ks
                 .into_iter()
                 .map(|k| RuntimeValue::Str(ParsedString::new_plain(k)))
-                .collect();
-            Ok(RuntimeValue::List(list))
+                .collect::<Vec<_>>();
+            Ok(RuntimeValue::List(crate::runtime::value::shared(list)))
         }
 
         "values" => {
             require_args("values", args, 0)?;
             // Iterate in sorted key order so the result is deterministic.
-            let mut pairs: Vec<(&String, &Box<RuntimeValue>)> = map.iter().collect();
+            let mut pairs: Vec<(&String, &Box<RuntimeValue>)> = map.iter().collect::<Vec<_>>();
             pairs.sort_by_key(|(k, _)| k.as_str());
-            let list = pairs.into_iter().map(|(_, v)| *v.clone()).collect();
-            Ok(RuntimeValue::List(list))
+            let list = pairs.into_iter().map(|(_, v)| *v.clone()).collect::<Vec<_>>();
+            Ok(RuntimeValue::List(crate::runtime::value::shared(list)))
         }
 
         "len" => {
@@ -101,7 +102,7 @@ pub(super) fn dispatch(
             let key = require_str(&args[0], "set", "key")?;
             let mut new_map = map;
             new_map.insert(key, Box::new(args[1].clone()));
-            Ok(RuntimeValue::Map(new_map))
+            Ok(RuntimeValue::Map(crate::runtime::value::shared(new_map)))
         }
 
         "remove" => {
@@ -109,7 +110,7 @@ pub(super) fn dispatch(
             let key = require_str(&args[0], "remove", "key")?;
             let mut new_map = map;
             new_map.remove(&key);
-            Ok(RuntimeValue::Map(new_map))
+            Ok(RuntimeValue::Map(crate::runtime::value::shared(new_map)))
         }
 
         "merge" => {
@@ -118,10 +119,10 @@ pub(super) fn dispatch(
                 RuntimeValue::Map(other) => {
                     let mut new_map = map;
                     // `other` wins on key conflicts — its entries overwrite ours.
-                    for (k, v) in other {
+                    for (k, v) in other.borrow().iter() {
                         new_map.insert(k.clone(), v.clone());
                     }
-                    Ok(RuntimeValue::Map(new_map))
+                    Ok(RuntimeValue::Map(crate::runtime::value::shared(new_map)))
                 }
                 other => Err(super::VmError::TypeError(format!(
                     "map.merge() expected a Map argument, got {:?}",
@@ -197,7 +198,7 @@ mod tests {
         method: &str,
         args: &[RuntimeValue],
     ) -> Result<RuntimeValue, super::super::VmError> {
-        dispatch(map, method, args)
+        dispatch(crate::runtime::value::shared(map), method, args)
     }
 
     // ── get ───────────────────────────────────────────────────────────────────
@@ -262,14 +263,14 @@ mod tests {
         let m = make_map(&[("z", int(3)), ("a", int(1)), ("m", int(2))]);
         assert_eq!(
             call(m, "keys", &[]).unwrap(),
-            RuntimeValue::List(vec![str_val("a"), str_val("m"), str_val("z")])
+            RuntimeValue::List(crate::runtime::value::shared(vec![str_val("a"), str_val("m"), str_val("z")]))
         );
     }
 
     #[test]
     fn test_keys_empty_map() {
         let m = make_map(&[]);
-        assert_eq!(call(m, "keys", &[]).unwrap(), RuntimeValue::List(vec![]));
+        assert_eq!(call(m, "keys", &[]).unwrap(), RuntimeValue::List(crate::runtime::value::shared(vec![])));
     }
 
     // ── values ────────────────────────────────────────────────────────────────
@@ -280,7 +281,7 @@ mod tests {
         let m = make_map(&[("b", int(2)), ("a", int(1))]);
         assert_eq!(
             call(m, "values", &[]).unwrap(),
-            RuntimeValue::List(vec![int(1), int(2)])
+            RuntimeValue::List(crate::runtime::value::shared(vec![int(1), int(2)]))
         );
     }
 
@@ -320,8 +321,8 @@ mod tests {
         // The returned map must contain both "a" and the new "b".
         match result {
             RuntimeValue::Map(out) => {
-                assert_eq!(*out["a"], int(1));
-                assert_eq!(*out["b"], int(2));
+                assert_eq!(*out.borrow()["a"], int(1));
+                assert_eq!(*out.borrow()["b"], int(2));
             }
             other => panic!("expected Map, got {:?}", other),
         }
@@ -333,7 +334,7 @@ mod tests {
         let result = call(m, "set", &[str_val("hp"), int(50)]).unwrap();
         match result {
             RuntimeValue::Map(out) => {
-                assert_eq!(*out["hp"], int(50));
+                assert_eq!(*out.borrow()["hp"], int(50));
             }
             other => panic!("expected Map, got {:?}", other),
         }
@@ -356,8 +357,8 @@ mod tests {
         let result = call(m, "remove", &[str_val("a")]).unwrap();
         match result {
             RuntimeValue::Map(out) => {
-                assert!(!out.contains_key("a"));
-                assert!(out.contains_key("b"));
+                assert!(!out.borrow().contains_key("a"));
+                assert!(out.borrow().contains_key("b"));
             }
             other => panic!("expected Map, got {:?}", other),
         }
@@ -369,8 +370,8 @@ mod tests {
         let result = call(m, "remove", &[str_val("z")]).unwrap();
         match result {
             RuntimeValue::Map(out) => {
-                assert!(out.contains_key("a"));
-                assert_eq!(out.len(), 1);
+                assert!(out.borrow().contains_key("a"));
+                assert_eq!(out.borrow().len(), 1);
             }
             other => panic!("expected Map, got {:?}", other),
         }
@@ -382,13 +383,13 @@ mod tests {
     fn test_merge_disjoint_maps() {
         let base = make_map(&[("a", int(1))]);
         let other_map = make_map(&[("b", int(2))]);
-        let other_rv = RuntimeValue::Map(other_map);
+        let other_rv = RuntimeValue::Map(crate::runtime::value::shared(other_map));
 
         let result = call(base, "merge", &[other_rv]).unwrap();
         match result {
             RuntimeValue::Map(out) => {
-                assert_eq!(*out["a"], int(1));
-                assert_eq!(*out["b"], int(2));
+                assert_eq!(*out.borrow()["a"], int(1));
+                assert_eq!(*out.borrow()["b"], int(2));
             }
             other => panic!("expected Map, got {:?}", other),
         }
@@ -398,15 +399,15 @@ mod tests {
     fn test_merge_other_wins_on_conflict() {
         let base = make_map(&[("hp", int(100)), ("mp", int(50))]);
         let other_map = make_map(&[("hp", int(999))]);
-        let other_rv = RuntimeValue::Map(other_map);
+        let other_rv = RuntimeValue::Map(crate::runtime::value::shared(other_map));
 
         let result = call(base, "merge", &[other_rv]).unwrap();
         match result {
             RuntimeValue::Map(out) => {
                 // "hp" was in both; `other` wins.
-                assert_eq!(*out["hp"], int(999));
+                assert_eq!(*out.borrow()["hp"], int(999));
                 // "mp" was only in base; preserved.
-                assert_eq!(*out["mp"], int(50));
+                assert_eq!(*out.borrow()["mp"], int(50));
             }
             other => panic!("expected Map, got {:?}", other),
         }

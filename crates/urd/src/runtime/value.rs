@@ -4,8 +4,62 @@
 //! The `RuntimeValue` enum represents all possible values that can be produced
 //! by the interpreter during script execution.
 
+use std::sync::{Arc, RwLock};
+
 use super::extern_object::ExternHandle;
 use crate::lexer::{Token, strings::ParsedString};
+
+/// A shared, mutable reference to a value, used for complex runtime types
+/// that require reference semantics (e.g., Map, List, Struct).
+#[derive(Debug, Default)]
+pub struct Shared<T>(Arc<RwLock<T>>);
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T> Shared<T> {
+    /// Acquires a read lock on the shared value.
+    pub fn borrow(&self) -> std::sync::RwLockReadGuard<'_, T> {
+        self.0.read().unwrap()
+    }
+
+    /// Acquires a write lock on the shared value.
+    pub fn borrow_mut(&self) -> std::sync::RwLockWriteGuard<'_, T> {
+        self.0.write().unwrap()
+    }
+}
+
+impl<T: PartialEq> PartialEq for Shared<T> {
+    fn eq(&self, other: &Self) -> bool {
+        *self.borrow() == *other.borrow()
+    }
+}
+
+impl<T: serde::Serialize> serde::Serialize for Shared<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.borrow().serialize(serializer)
+    }
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Shared<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        T::deserialize(deserializer).map(shared)
+    }
+}
+
+/// Wraps a value in a new [`Shared`] container.
+pub fn shared<T>(t: T) -> Shared<T> {
+    Shared(Arc::new(RwLock::new(t)))
+}
 
 /// Represents a value in the Urd runtime environment.
 ///
@@ -71,7 +125,7 @@ pub enum RuntimeValue {
     /// `Ast` is not serialisable, so this variant is excluded from serde
     /// entirely — it is an ephemeral, in-execution-only value.
     #[serde(skip)]
-    Map(std::collections::HashMap<String, Box<RuntimeValue>>),
+    Map(Shared<std::collections::HashMap<String, Box<RuntimeValue>>>),
 
     /// An ordered list of runtime values: `[a, b, c]` literals.
     ///
@@ -89,7 +143,7 @@ pub enum RuntimeValue {
     /// debug builds, but this check is compiled out in release builds and
     /// only covers a subset of non-serialisable variants. Direct
     /// construction of `List(vec![...])` bypasses the check entirely.
-    List(Vec<RuntimeValue>),
+    List(Shared<Vec<RuntimeValue>>),
 
     /// A user-defined pure function value: `fn(x: int) -> int { x + 1 }`.
     ///
@@ -132,7 +186,7 @@ pub enum RuntimeValue {
         /// The struct type name (e.g. `"Point"`).
         name: String,
         /// Field values keyed by field name.
-        fields: std::collections::HashMap<String, RuntimeValue>,
+        fields: Shared<std::collections::HashMap<String, RuntimeValue>>,
     },
 
     /// A live reference to a host game object exposed via [`ExternObject`].
@@ -176,7 +230,7 @@ impl RuntimeValue {
             "List elements must not contain non-serialisable values \
              (ScriptDecorator, Function, Map, Roll, Struct, Extern)"
         );
-        RuntimeValue::List(elements)
+        RuntimeValue::List(shared(elements))
     }
 }
 

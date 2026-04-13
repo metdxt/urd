@@ -121,7 +121,7 @@ fn apply_script_decorator(
         .collect();
     inner_env.set(
         "event",
-        RuntimeValue::Map(event_snapshot),
+        RuntimeValue::Map(crate::runtime::value::shared(event_snapshot)),
         &DeclKind::Variable,
     )?;
 

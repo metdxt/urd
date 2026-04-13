@@ -72,7 +72,7 @@ impl ExternObject for ManualExtern {
     fn set(&mut self, field: &str, value: RuntimeValue) -> Result<(), String> {
         match field {
             "value" => {
-                self.value = i64::from_runtime_value(&value)?;
+                self.value = i64::from_runtime_value(value)?;
                 Ok(())
             }
             other => Err(format!("no field '{other}' on ManualExtern")),
@@ -762,27 +762,27 @@ label start {
 fn conversion_round_trip_i32() {
     let val: i32 = 42;
     let rv = val.to_runtime_value();
-    assert_eq!(i32::from_runtime_value(&rv).unwrap(), 42);
+    assert_eq!(i32::from_runtime_value(rv.clone()).unwrap(), 42);
 }
 
 #[test]
 fn conversion_round_trip_string() {
     let val = "hello".to_string();
     let rv = val.to_runtime_value();
-    assert_eq!(String::from_runtime_value(&rv).unwrap(), "hello");
+    assert_eq!(String::from_runtime_value(rv.clone()).unwrap(), "hello");
 }
 
 #[test]
 fn conversion_round_trip_bool() {
     let rv = true.to_runtime_value();
-    assert!(bool::from_runtime_value(&rv).unwrap());
+    assert!(bool::from_runtime_value(rv.clone()).unwrap());
 }
 
 #[test]
 fn conversion_round_trip_f64() {
     let val: f64 = 2.72;
     let rv = val.to_runtime_value();
-    let back = f64::from_runtime_value(&rv).unwrap();
+    let back = f64::from_runtime_value(rv.clone()).unwrap();
     assert!((back - 2.72).abs() < f64::EPSILON);
 }
 
@@ -790,38 +790,38 @@ fn conversion_round_trip_f64() {
 fn conversion_round_trip_option_some() {
     let val: Option<i64> = Some(7);
     let rv = val.to_runtime_value();
-    assert_eq!(Option::<i64>::from_runtime_value(&rv).unwrap(), Some(7));
+    assert_eq!(Option::<i64>::from_runtime_value(rv.clone()).unwrap(), Some(7));
 }
 
 #[test]
 fn conversion_round_trip_option_none() {
     let val: Option<i64> = None;
     let rv = val.to_runtime_value();
-    assert_eq!(Option::<i64>::from_runtime_value(&rv).unwrap(), None);
+    assert_eq!(Option::<i64>::from_runtime_value(rv.clone()).unwrap(), None);
 }
 
 #[test]
 fn conversion_round_trip_vec() {
     let val: Vec<i64> = vec![1, 2, 3];
     let rv = val.to_runtime_value();
-    assert_eq!(Vec::<i64>::from_runtime_value(&rv).unwrap(), vec![1, 2, 3]);
+    assert_eq!(Vec::<i64>::from_runtime_value(rv.clone()).unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
 fn conversion_i32_overflow_errors() {
     let rv = RuntimeValue::Int(i64::MAX);
-    assert!(i32::from_runtime_value(&rv).is_err());
+    assert!(i32::from_runtime_value(rv.clone()).is_err());
 }
 
 #[test]
 fn conversion_u64_negative_errors() {
     let rv = RuntimeValue::Int(-1);
-    assert!(u64::from_runtime_value(&rv).is_err());
+    assert!(u64::from_runtime_value(rv.clone()).is_err());
 }
 
 #[test]
 fn conversion_f64_accepts_int() {
     // f64::from_runtime_value should coerce Int to Float.
     let rv = RuntimeValue::Int(5);
-    assert_eq!(f64::from_runtime_value(&rv).unwrap(), 5.0);
+    assert_eq!(f64::from_runtime_value(rv.clone()).unwrap(), 5.0);
 }
