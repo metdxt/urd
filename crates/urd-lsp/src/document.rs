@@ -351,7 +351,7 @@ pub fn position_to_byte_offset(src: &str, pos: Position) -> usize {
             let line_slice = &src[line_start_byte..];
             let mut utf16_units = 0u32;
             for (ci, c) in line_slice.char_indices() {
-                if utf16_units >= pos.character {
+                if utf16_units + (c.len_utf16() as u32) > pos.character {
                     return line_start_byte + ci;
                 }
                 // Stop at newline even if character count hasn't been reached.
@@ -376,7 +376,7 @@ pub fn position_to_byte_offset(src: &str, pos: Position) -> usize {
         let line_slice = &src[line_start_byte..];
         let mut utf16_units = 0u32;
         for (ci, c) in line_slice.char_indices() {
-            if utf16_units >= pos.character {
+            if utf16_units + (c.len_utf16() as u32) > pos.character {
                 return line_start_byte + ci;
             }
             if c == '\n' {

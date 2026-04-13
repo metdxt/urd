@@ -18,6 +18,7 @@ use dashmap::DashMap;
 use tower_lsp::lsp_types::{Location, Url};
 
 use urd::analysis::imports::collect_type_defs_from_ast;
+use urd::analysis::AnalysisError;
 use urd::compiler::loader::parse_source;
 use urd::parser::ast::{Ast, AstContent};
 
@@ -141,16 +142,48 @@ impl WorkspaceIndex {
     /// directory, reads the file from disk, parses it, and caches the result.
     /// Imports that fail to load or parse are stored with empty symbol lists so
     /// we don't panic or retry loudly on every keystroke.
-    pub fn update(&self, uri: &Url, ast: &Ast) {
+    pub fn update(&self, uri: &Url, ast: &Ast) -> Vec<AnalysisError> {
         let base_dir = uri_to_dir(uri);
         let mut modules = Vec::new();
-        collect_imports_from_ast(ast, &base_dir, &self.module_cache, &mut modules);
+        let mut errors = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        if let Ok(p) = uri.to_file_path() {
+            if let Ok(c) = p.canonicalize() {
+                visited.insert(c);
+            }
+        }
+        collect_imports_from_ast(ast, &base_dir, &self.module_cache, &mut modules, &mut errors, &mut visited, None);
         self.imports.insert(uri.clone(), modules);
+        
+        let mut active_uris = std::collections::HashSet::new();
+        for item in self.imports.iter() {
+            for module in item.value() {
+                if let Some(u) = &module.uri {
+                    active_uris.insert(u.clone());
+                }
+            }
+        }
+        self.module_cache.retain(|_, content| {
+            content.1.uri.as_ref().map_or(false, |u| active_uris.contains(u))
+        });
+        
+        errors
     }
 
     /// Remove all index entries for `uri` (call this on `did_close`).
     pub fn remove(&self, uri: &Url) {
         self.imports.remove(uri);
+        let mut active_uris = std::collections::HashSet::new();
+        for item in self.imports.iter() {
+            for module in item.value() {
+                if let Some(u) = &module.uri {
+                    active_uris.insert(u.clone());
+                }
+            }
+        }
+        self.module_cache.retain(|_, content| {
+            content.1.uri.as_ref().map_or(false, |u| active_uris.contains(u))
+        });
     }
 
     /// Return all alias-prefixed symbols visible from `uri` through its direct
@@ -177,31 +210,25 @@ impl WorkspaceIndex {
     pub fn find_definition(&self, uri: &Url, name: &str) -> Option<(Url, SimpleSpan, String)> {
         let modules = self.imports.get(uri)?;
 
-        if let Some(dot) = name.find('.') {
-            // ── Qualified lookup: "alias.local_name" ─────────────────────
-            let alias = &name[..dot];
-            let local_name = &name[dot + 1..];
+        let mut sorted_modules: Vec<_> = modules.iter().collect();
+        sorted_modules.sort_by_key(|m| std::cmp::Reverse(m.alias.len()));
 
-            for module in modules.iter() {
-                if module.alias != alias {
-                    continue;
+        for module in sorted_modules {
+            let local_name = if module.alias.is_empty() || !name.contains('.') {
+                name
+            } else {
+                let prefix = format!("{}.", module.alias);
+                match name.strip_prefix(&prefix) {
+                    Some(stripped) => stripped,
+                    None => continue,
                 }
-                if let Some(ast) = &module.ast
-                    && let Some(span) = crate::semantic::find_definition(ast, local_name)
-                {
-                    let target_uri = module.uri.clone().unwrap_or_else(|| uri.clone());
-                    return Some((target_uri, span, module.source.clone()));
-                }
-            }
-        } else {
-            // ── Unqualified lookup: search every imported module ──────────
-            for module in modules.iter() {
-                if let Some(ast) = &module.ast
-                    && let Some(span) = crate::semantic::find_definition(ast, name)
-                {
-                    let target_uri = module.uri.clone().unwrap_or_else(|| uri.clone());
-                    return Some((target_uri, span, module.source.clone()));
-                }
+            };
+
+            if let Some(ast) = &module.ast
+                && let Some(span) = crate::semantic::find_definition(ast, local_name)
+            {
+                let target_uri = module.uri.clone().unwrap_or_else(|| uri.clone());
+                return Some((target_uri, span, module.source.clone()));
             }
         }
 
@@ -219,20 +246,18 @@ impl WorkspaceIndex {
             None => return Vec::new(),
         };
 
-        let (target_alias, local_name) = if let Some(dot) = name.find('.') {
-            (Some(&name[..dot]), &name[dot + 1..])
-        } else {
-            (None, name)
-        };
-
         let mut locations = Vec::new();
 
         for module in modules.iter() {
-            if let Some(alias) = target_alias
-                && module.alias != alias
-            {
-                continue;
-            }
+            let local_name = if module.alias.is_empty() || !name.contains('.') {
+                name
+            } else {
+                let prefix = format!("{}.", module.alias);
+                match name.strip_prefix(&prefix) {
+                    Some(stripped) => stripped,
+                    None => continue,
+                }
+            };
 
             let ast = match &module.ast {
                 Some(a) => a,
@@ -261,27 +286,27 @@ impl WorkspaceIndex {
     pub fn hover_info(&self, uri: &Url, name: &str) -> Option<String> {
         let modules = self.imports.get(uri)?;
 
-        let (alias_opt, local_name) = if let Some(dot) = name.find('.') {
-            (Some(&name[..dot]), &name[dot + 1..])
-        } else {
-            (None, name)
-        };
+        let mut sorted_modules: Vec<_> = modules.iter().collect();
+        sorted_modules.sort_by_key(|m| std::cmp::Reverse(m.alias.len()));
 
-        for module in modules.iter() {
-            if let Some(alias) = alias_opt
-                && module.alias != alias
-            {
-                continue;
-            }
+        for module in sorted_modules {
+            let local_name = if module.alias.is_empty() || !name.contains('.') {
+                name
+            } else {
+                let prefix = format!("{}.", module.alias);
+                match name.strip_prefix(&prefix) {
+                    Some(stripped) => stripped,
+                    None => continue,
+                }
+            };
+
             if let Some(ast) = &module.ast {
                 let symbols = collect_symbols(ast);
-                // We don't have a byte offset here, so use find_definition to
-                // get the span and then locate the *name* inside it (to avoid
-                // landing on a keyword like `label` which hover_info now
-                // suppresses).
                 if let Some(span) = crate::semantic::find_definition(ast, local_name) {
+                    // Extract just the bare identifier part of local_name
+                    let identifier = local_name.split('.').last().unwrap_or(local_name);
                     let name_offset = module.source[span.start..span.end]
-                        .find(local_name)
+                        .find(identifier)
                         .map(|rel| span.start + rel)
                         .unwrap_or(span.start);
                     if let Some(md) =
@@ -362,27 +387,70 @@ fn collect_imports_from_ast(
     base_dir: &Option<PathBuf>,
     cache: &ModuleCache,
     out: &mut Vec<ImportedModule>,
+    errors: &mut Vec<AnalysisError>,
+    visited: &mut std::collections::HashSet<PathBuf>,
+    parent_alias: Option<&str>,
 ) {
     match ast.content() {
         // Top-level block — walk every statement.
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                collect_imports_from_ast(stmt, base_dir, cache, out);
+                collect_imports_from_ast(stmt, base_dir, cache, out, errors, visited, parent_alias);
             }
         }
 
         // The import statement itself — load and cache the module.
         AstContent::Import { path, symbols } => {
             for entry in symbols {
-                // `entry.original == None`  →  whole-module import
-                // `entry.original == Some(name)` →  single-symbol import
-                out.push(load_module_cached(
+                let alias = if let Some(p) = parent_alias {
+                    if entry.alias.is_empty() {
+                        p.to_string()
+                    } else {
+                        format!("{p}.{}", entry.alias)
+                    }
+                } else {
+                    entry.alias.clone()
+                };
+
+                let (module, err) = load_module_cached(
                     path,
-                    &entry.alias,
+                    &alias,
                     entry.original.as_deref(),
                     base_dir,
                     cache,
-                ));
+                    ast.span(),
+                );
+                
+                if let Some(e) = err {
+                    if parent_alias.is_none() {
+                        errors.push(e);
+                    }
+                }
+
+                if let Some(mod_ast) = &module.ast {
+                    let full_path = match base_dir {
+                        Some(d) => d.join(path).canonicalize().ok(),
+                        None => std::path::PathBuf::from(path).canonicalize().ok(),
+                    };
+                    if let Some(fp) = full_path {
+                        if !visited.contains(&fp) {
+                            visited.insert(fp.clone());
+                            let new_base = fp.parent().map(|p| p.to_path_buf());
+                            collect_imports_from_ast(
+                                mod_ast,
+                                &new_base,
+                                cache,
+                                out,
+                                errors,
+                                visited,
+                                if alias.is_empty() { None } else { Some(&alias) },
+                            );
+                            visited.remove(&fp);
+                        }
+                    }
+                }
+
+                out.push(module);
             }
         }
 
@@ -393,29 +461,29 @@ fn collect_imports_from_ast(
             else_block,
             ..
         } => {
-            collect_imports_from_ast(then_block, base_dir, cache, out);
+            collect_imports_from_ast(then_block, base_dir, cache, out, errors, visited, parent_alias);
             if let Some(eb) = else_block {
-                collect_imports_from_ast(eb, base_dir, cache, out);
+                collect_imports_from_ast(eb, base_dir, cache, out, errors, visited, parent_alias);
             }
         }
         AstContent::LabeledBlock { block, .. } => {
-            collect_imports_from_ast(block, base_dir, cache, out);
+            collect_imports_from_ast(block, base_dir, cache, out, errors, visited, parent_alias);
         }
         AstContent::Menu { options } => {
             for opt in options {
-                collect_imports_from_ast(opt, base_dir, cache, out);
+                collect_imports_from_ast(opt, base_dir, cache, out, errors, visited, parent_alias);
             }
         }
         AstContent::MenuOption { content, .. } => {
-            collect_imports_from_ast(content, base_dir, cache, out);
+            collect_imports_from_ast(content, base_dir, cache, out, errors, visited, parent_alias);
         }
         AstContent::Match { arms, .. } => {
             for arm in arms {
-                collect_imports_from_ast(&arm.body, base_dir, cache, out);
+                collect_imports_from_ast(&arm.body, base_dir, cache, out, errors, visited, parent_alias);
             }
         }
         AstContent::DecoratorDef { body, .. } => {
-            collect_imports_from_ast(body, base_dir, cache, out);
+            collect_imports_from_ast(body, base_dir, cache, out, errors, visited, parent_alias);
         }
 
         // All other node types cannot contain import statements.
@@ -435,22 +503,23 @@ fn load_module(
     alias: &str,
     symbol_filter: Option<&str>,
     base_dir: &Option<PathBuf>,
-) -> ImportedModule {
+    span: SimpleSpan,
+) -> (ImportedModule, Option<AnalysisError>) {
     // Build an empty shell for all early-return (security / load / parse) failures.
     // Both captured values are `Copy` so the closure can be called repeatedly.
-    let make_empty = move || ImportedModule {
+    let make_empty = move || (ImportedModule {
         alias: alias.to_owned(),
         uri: None,
         source: String::new(),
         symbols: Vec::new(),
         ast: None,
         symbol_filter: symbol_filter.map(str::to_owned),
-    };
+    }, Some(AnalysisError::UnresolvedImport { path: path.to_owned(), span }));
 
     // Reject dangerous path components before any filesystem I/O.
     // `PathBuf::join` with an absolute path silently replaces `base_dir`;
     // `..` components can walk outside the workspace root.
-    if path.starts_with('/') || path.contains("..") {
+    if std::path::Path::new(path).is_absolute() {
         return make_empty();
     }
 
@@ -484,28 +553,28 @@ fn load_module(
         Err(_) => {
             // File not found or unreadable — return an empty shell so the
             // rest of the index stays consistent.
-            return ImportedModule {
+            return (ImportedModule {
                 alias: alias.to_owned(),
                 uri,
                 source: String::new(),
                 symbols: Vec::new(),
                 ast: None,
                 symbol_filter: symbol_filter.map(str::to_owned),
-            };
+            }, Some(AnalysisError::UnresolvedImport { path: path.to_owned(), span }));
         }
     };
 
     let ast = parse_source(&source).ok();
     let symbols = ast.as_ref().map(collect_symbols).unwrap_or_default();
 
-    ImportedModule {
+    (ImportedModule {
         alias: alias.to_owned(),
         uri,
         source,
         symbols,
         ast,
         symbol_filter: symbol_filter.map(str::to_owned),
-    }
+    }, None)
 }
 
 /// Like [`load_module`], but skips `fs::read_to_string` + `parse_source` when
@@ -525,11 +594,12 @@ fn load_module_cached(
     symbol_filter: Option<&str>,
     base_dir: &Option<PathBuf>,
     cache: &ModuleCache,
-) -> ImportedModule {
+    span: SimpleSpan,
+) -> (ImportedModule, Option<AnalysisError>) {
     if let Some(base) = base_dir {
         // Mirror load_module's security pre-checks so we never attempt I/O on
         // dangerous paths and so the cache is never populated with bad keys.
-        if !path.starts_with('/') && !path.contains("..") {
+        if !std::path::Path::new(path).is_absolute() {
             let candidate = base.join(path);
             if let Ok(canonical) = candidate.canonicalize()
                 && let Ok(meta) = std::fs::metadata(&canonical)
@@ -540,17 +610,17 @@ fn load_module_cached(
                     && entry.0 == mtime
                 {
                     let content = &entry.1;
-                    return ImportedModule {
+                    return (ImportedModule {
                         alias: alias.to_owned(),
                         uri: content.uri.clone(),
                         source: content.source.clone(),
                         symbols: content.symbols.clone(),
                         ast: content.ast.clone(),
                         symbol_filter: symbol_filter.map(str::to_owned),
-                    };
+                    }, None);
                 }
                 // ── Cache miss: load, store, return ──────────────
-                let module = load_module(path, alias, symbol_filter, base_dir);
+                let (module, err) = load_module(path, alias, symbol_filter, base_dir, span);
                 let content = CachedFileContent {
                     uri: module.uri.clone(),
                     source: module.source.clone(),
@@ -558,13 +628,13 @@ fn load_module_cached(
                     ast: module.ast.clone(),
                 };
                 cache.insert(canonical, (mtime, content));
-                return module;
+                return (module, err);
             }
         }
     }
     // Fall back to the uncached path: security rejection, no base_dir, or any
     // I/O error that prevented us from reading the mtime.
-    load_module(path, alias, symbol_filter, base_dir)
+    load_module(path, alias, symbol_filter, base_dir, span)
 }
 
 // ── URI / path helpers ────────────────────────────────────────────────────────
@@ -635,7 +705,7 @@ mod tests {
         let main_ast = parse_source(&main_src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &main_ast);
+        let _ = index.update(&main_uri, &main_ast);
 
         let imported = index.imported_symbols(&main_uri);
         assert!(
@@ -656,7 +726,7 @@ mod tests {
         let ast = parse_source(&src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&uri, &ast);
+        let _ = index.update(&uri, &ast);
 
         assert!(index.imported_symbols(&uri).is_empty());
 
@@ -688,7 +758,7 @@ mod tests {
         let village_ast = parse_source(&village_src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&village_uri, &village_ast);
+        let _ = index.update(&village_uri, &village_ast);
 
         let result = index.find_definition(&village_uri, "inv.show_inventory");
         assert!(
@@ -720,7 +790,7 @@ mod tests {
         let ast = parse_source(&src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &ast);
+        let _ = index.update(&main_uri, &ast);
 
         let result = index.find_definition(&main_uri, "lib.intro");
         assert!(result.is_some(), "expected to find 'lib.intro'");
@@ -747,7 +817,7 @@ mod tests {
         let ast = parse_source(&src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &ast);
+        let _ = index.update(&main_uri, &ast);
 
         let result = index.find_definition(&main_uri, "helper");
         assert!(result.is_some(), "expected to find unqualified 'helper'");
@@ -764,7 +834,7 @@ mod tests {
         let ast = parse_source(&src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&uri, &ast);
+        let _ = index.update(&uri, &ast);
 
         assert!(index.find_definition(&uri, "ghost").is_none());
 
@@ -786,7 +856,7 @@ mod tests {
         let ast = parse_source(&src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &ast);
+        let _ = index.update(&main_uri, &ast);
 
         // "wrong.foo" uses a different alias — should not match "lib".
         assert!(index.find_definition(&main_uri, "wrong.foo").is_none());
@@ -815,7 +885,7 @@ mod tests {
         let ast = parse_source(&src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &ast);
+        let _ = index.update(&main_uri, &ast);
 
         let refs = index.find_references(&main_uri, "chars.greet");
         assert!(
@@ -843,7 +913,7 @@ mod tests {
         let ast = parse_source(&src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &ast);
+        let _ = index.update(&main_uri, &ast);
 
         assert!(!index.imported_symbols(&main_uri).is_empty());
 
@@ -870,7 +940,7 @@ mod tests {
         let ast = parse_source(&src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&uri, &ast); // must not panic
+        let _ = index.update(&uri, &ast); // must not panic
 
         assert!(
             index.imported_symbols(&uri).is_empty(),
@@ -887,7 +957,7 @@ mod tests {
         // `PathBuf::join("/abs/path")` silently replaces the base directory.
         // The guard must catch this before any I/O occurs.
         let dir = tmp_dir();
-        let module = load_module("/etc/passwd", "evil", None, &Some(dir.clone()));
+        let module = load_module("/etc/passwd", "evil", None, &Some(dir.clone()), SimpleSpan::new((), 0..0)).0;
         assert!(
             module.symbols.is_empty(),
             "absolute path must not yield symbols"
@@ -901,7 +971,7 @@ mod tests {
         // `..` components can escape the workspace root even without an
         // absolute prefix.
         let dir = tmp_dir();
-        let module = load_module("../../etc/passwd", "evil", None, &Some(dir.clone()));
+        let module = load_module("../../etc/passwd", "evil", None, &Some(dir.clone()), SimpleSpan::new((), 0..0)).0;
         assert!(
             module.symbols.is_empty(),
             "dotdot path must not yield symbols"
@@ -958,7 +1028,7 @@ mod tests {
         let index = WorkspaceIndex::new();
         // Use last_clean_ast (as on_change does).
         if let Some(ast) = &doc.last_clean_ast {
-            index.update(&main_uri, ast);
+            let _ = index.update(&main_uri, ast);
         }
 
         // ── Simulate on_change after typing `narrator.` ───────────────────
@@ -978,7 +1048,7 @@ mod tests {
 
         // workspace.update uses last_clean_ast — import cache stays intact.
         if let Some(ast) = &doc.last_clean_ast {
-            index.update(&main_uri, ast);
+            let _ = index.update(&main_uri, ast);
         }
 
         // ── Simulate completion request ────────────────────────────────────
@@ -1076,7 +1146,7 @@ mod tests {
         let main_ast = parse_source(&main_src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &main_ast);
+        let _ = index.update(&main_uri, &main_ast);
 
         // imported_type_context must expose the Character struct fields
         // even though we only imported narrator (not the whole module).
@@ -1124,7 +1194,7 @@ mod tests {
         let main_ast = parse_source(&main_src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &main_ast);
+        let _ = index.update(&main_uri, &main_ast);
 
         let imported = index.imported_symbols(&main_uri);
 
@@ -1179,7 +1249,7 @@ mod tests {
         let main_ast = parse_source(&main_src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &main_ast);
+        let _ = index.update(&main_uri, &main_ast);
 
         let (structs, enums, _) = index.imported_type_context(&main_uri);
 
@@ -1226,7 +1296,7 @@ mod tests {
         );
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &main_ast);
+        let _ = index.update(&main_uri, &main_ast);
 
         let (structs, enums, _labels) = index.imported_type_context(&main_uri);
 
@@ -1281,7 +1351,7 @@ mod tests {
         let ast = parse_source(&src).unwrap();
 
         let index = WorkspaceIndex::new();
-        index.update(&main_uri, &ast);
+        let _ = index.update(&main_uri, &ast);
 
         let hover = index.hover_info(&main_uri, "npc.talk");
         assert!(hover.is_some(), "expected hover info for 'npc.talk'");

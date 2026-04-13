@@ -226,10 +226,11 @@ impl Backend {
         // previously-valid import cache with an empty list, making
         // `imported_type_context` return nothing and breaking struct-field and
         // enum-variant completion for the rest of the edit session.
+        let mut import_errors = Vec::new();
         if let Some(doc) = self.documents.get(&uri)
             && let Some(ast) = &doc.last_clean_ast
         {
-            self.workspace.update(&uri, ast);
+            import_errors = self.workspace.update(&uri, ast);
         }
 
         // Re-run analysis with cross-module struct/enum/label context so that
@@ -243,6 +244,7 @@ impl Backend {
                 imported_labels,
                 Some(Arc::clone(&self.semantic) as Arc<dyn SemanticSuggest>),
             );
+            doc.analysis_errors.extend(import_errors);
         }
 
         self.publish_diagnostics(uri).await;

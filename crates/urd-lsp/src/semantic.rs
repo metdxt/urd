@@ -405,11 +405,11 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 ast.doc_comment.clone(),
             ));
             // Each variant is also a symbol (for completion / references).
-            for (variant_name, _variant_span) in variants {
+            for (variant_name, variant_span) in variants {
                 out.push(make_symbol(
                     variant_name.clone(),
                     SymbolKind::EnumVariant,
-                    ast.span(),
+                    variant_span.0,
                     None,
                     Some(format!("{name}.{variant_name}")),
                     None,
@@ -438,7 +438,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
                 out.push(make_symbol(
                     field.name.clone(),
                     SymbolKind::Variable,
-                    SimpleSpan::new((), 0..0),
+                    field.span.0,
                     Some(field.type_annotation.clone()),
                     Some(format!("{}.{}", name, field.name)),
                     None,
@@ -449,6 +449,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
         // ── Function definitions ─────────────────────────────────────────
         AstContent::FnDef {
             name: Some(fn_name),
+            name_span,
             params,
             ret_type,
             body,
@@ -471,7 +472,7 @@ fn collect_symbols_recursive(ast: &Ast, out: &mut Vec<Symbol>) {
             out.push(make_symbol(
                 fn_name.clone(),
                 SymbolKind::Function,
-                ast.span(),
+                name_span.map(|ns| ns.0).unwrap_or_else(|| ast.span()),
                 ret_type.clone(),
                 Some(format!("fn {fn_name}({}){ret_str}", param_list.join(", "))),
                 ast.doc_comment.clone(),
@@ -898,13 +899,7 @@ pub fn hover_info(ast: &Ast, symbols: &[Symbol], src: &str, byte_offset: usize) 
             // identifier — try resolving by name directly (handles fn
             // references like `prices.map(double)` where `double` is a
             // top-level function).
-            if let Some(target) = symbols
-                .iter()
-                .find(|s| s.name == word && !matches!(s.kind, SymbolKind::Import))
-                .or_else(|| symbols.iter().find(|s| s.name == word))
-            {
-                return Some(hover_for_symbol(target, ast, symbols));
-            }
+
             // No symbol matches — check if it's a built-in method name
             // (e.g. `len` when the cursor is on `x.len()` inside a `let`
             // declaration whose span encloses the call).
@@ -1298,21 +1293,31 @@ fn hover_from_ast(
     byte_offset: usize,
     root: &Ast,
 ) -> Option<String> {
-    if !span_contains(ast.span(), byte_offset) && ast.span().start != ast.span().end {
-        return None;
+    if !span_contains(ast.span(), byte_offset) {
+        if ast.span().start == ast.span().end && byte_offset == ast.span().start {
+            // allow hovering exactly on a zero-length span
+        } else {
+            return None;
+        }
     }
 
     match ast.content() {
         AstContent::Value(RuntimeValue::IdentPath(parts)) => {
             let name = parts.join(".");
-            // Look up the identifier in the symbol table to show its
-            // definition / type info instead of a bare "identifier" hover.
-            //
-            // Prefer value-kinded symbols (Constant / Variable / Global) over
-            // Import-kinded declaration nodes.  A directly-imported symbol
-            // like `import (hero) from "chars.urd"` produces BOTH an Import
-            // sentinel in the local symbol list AND a Constant symbol in the
-            // imported list; we want the richer Constant.
+            let def_span = find_definition_recursive(root, &name);
+            if let Some(def_span) = def_span {
+                if let Some(sym) = symbols.iter().find(|s| s.span == def_span && s.name == name) {
+                    return Some(hover_for_symbol(sym, root, symbols));
+                }
+            }
+            let sym = symbols
+                .iter()
+                .find(|s| s.name == name && !matches!(s.kind, SymbolKind::Import))
+                .or_else(|| symbols.iter().find(|s| s.name == name));
+            if let Some(sym) = sym {
+                return Some(hover_for_symbol(sym, root, symbols));
+            }
+            // Fallback for global symbols or built-ins not locally defined
             let sym = symbols
                 .iter()
                 .find(|s| s.name == name && !matches!(s.kind, SymbolKind::Import))

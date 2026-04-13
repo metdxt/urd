@@ -388,8 +388,9 @@ fn statement_inner<'tok, I: UrdInput<'tok>>(
 pub fn assignment<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     // Subscript assignment: ident[key] = value  (must come FIRST — more specific)
     let subscript_assign = select! {
-        Token::IdentPath(path) if path.len() == 1 => Ast::value(RuntimeValue::IdentPath(path))
+        Token::IdentPath(path) if path.len() == 1 => path
     }
+    .map_with(|path, extra| Ast::value(RuntimeValue::IdentPath(path)).with_span(extra.span()))
     .then(expr().delimited_by(just(Token::LeftBracket), just(Token::RightBracket)))
     .then_ignore(just(Token::Assign))
     .then(expr())
@@ -402,8 +403,9 @@ pub fn assignment<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
     // cross-module globals (`lib.score = 1`).  The compiler distinguishes them
     // via the BinOp(Assign) path — no length guard needed here.
     let plain_assign = select! {
-        Token::IdentPath(path) => Ast::value(RuntimeValue::IdentPath(path))
+        Token::IdentPath(path) => path
     }
+    .map_with(|path, extra| Ast::value(RuntimeValue::IdentPath(path)).with_span(extra.span()))
     .then_ignore(just(Token::Assign))
     .then(expr())
     .map_with(|(ident, value), extra| Ast::assign_op(ident, value).with_span(extra.span()));

@@ -111,9 +111,8 @@ impl UserDictionary {
     ///   and `Ok(())` is returned immediately.
     /// - If the backing file does not yet exist it is created, and a comment
     ///   header is prepended before the new word so the file is human-readable.
-    /// - The in-memory set is updated **before** the disk write.  Should the
-    ///   write fail, the word is still present in memory for the lifetime of
-    ///   this instance (best-effort persistence).
+    /// - The disk write happens **before** the in-memory set is updated. Should the
+    ///   write fail, the word is not added to memory, ensuring consistency.
     ///
     /// # Errors
     ///
@@ -135,9 +134,6 @@ impl UserDictionary {
             return Ok(());
         }
 
-        // Update the in-memory set unconditionally – disk write is best-effort.
-        self.words.insert(lower.clone());
-
         let mut file = match File::create_new(&self.path) {
             Ok(mut f) => {
                 writeln!(
@@ -153,6 +149,9 @@ impl UserDictionary {
         };
 
         writeln!(file, "{lower}")?;
+
+        // Disk write succeeded, now update in-memory set.
+        self.words.insert(lower);
         Ok(())
     }
 
@@ -175,6 +174,13 @@ mod tests {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    struct TempGuard<'a>(&'a Path);
+    impl<'a> Drop for TempGuard<'a> {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.0);
+        }
+    }
+
     /// Return a unique temp-file path for each test.
     ///
     /// Combines the process id with the current sub-second nanosecond count so
@@ -195,6 +201,7 @@ mod tests {
     #[test]
     fn new_creates_empty_dict() {
         let path = temp_path("new_creates_empty_dict");
+        let _guard = TempGuard(&path);
         let dict = UserDictionary::new(&path);
 
         assert!(
@@ -209,6 +216,7 @@ mod tests {
     #[test]
     fn add_word_is_then_found() {
         let path = temp_path("add_word_is_then_found");
+        let _guard = TempGuard(&path);
 
         let mut dict = UserDictionary::new(&path);
         dict.add("hello").expect("add should succeed");
@@ -216,13 +224,12 @@ mod tests {
         assert!(dict.contains("hello"), "exact lowercase must be found");
         assert!(dict.contains("Hello"), "title case must be found");
         assert!(dict.contains("HELLO"), "all-caps must be found");
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn add_is_case_insensitive_stored_as_lowercase() {
         let path = temp_path("add_is_case_insensitive_stored_as_lowercase");
+        let _guard = TempGuard(&path);
 
         let mut dict = UserDictionary::new(&path);
         dict.add("NASA").expect("add should succeed");
@@ -235,13 +242,12 @@ mod tests {
             !dict.words().contains("NASA"),
             "original casing must not appear in the set"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn add_duplicate_is_noop() {
         let path = temp_path("add_duplicate_is_noop");
+        let _guard = TempGuard(&path);
 
         let mut dict = UserDictionary::new(&path);
         dict.add("hello").expect("first add should succeed");
@@ -254,15 +260,13 @@ mod tests {
             1,
             "all three adds refer to the same word; only one entry expected"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn load_missing_file_returns_empty() {
         let path = temp_path("load_missing_file_returns_empty");
+        let _guard = TempGuard(&path);
         // Make absolutely sure the file does not exist.
-        let _ = std::fs::remove_file(&path);
 
         let dict = UserDictionary::load(&path);
 
@@ -275,6 +279,7 @@ mod tests {
     #[test]
     fn persist_and_reload() {
         let path = temp_path("persist_and_reload");
+        let _guard = TempGuard(&path);
 
         {
             let mut dict = UserDictionary::new(&path);
@@ -288,13 +293,12 @@ mod tests {
             dict.contains("persistent"),
             "word must survive a round-trip through disk"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn comments_are_ignored_on_load() {
         let path = temp_path("comments_are_ignored_on_load");
+        let _guard = TempGuard(&path);
 
         {
             let mut f = std::fs::File::create(&path).expect("create temp file");
@@ -318,15 +322,13 @@ mod tests {
             !dict.words().contains("# this is a comment"),
             "comment text must not become a word"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn add_creates_header_comment() {
         let path = temp_path("add_creates_header_comment");
+        let _guard = TempGuard(&path);
         // Guarantee no pre-existing file.
-        let _ = std::fs::remove_file(&path);
 
         let mut dict = UserDictionary::new(&path);
         dict.add("testword").expect("add should succeed");
@@ -343,14 +345,12 @@ mod tests {
             contents.contains("testword"),
             "added word must appear in the file"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn reload_skips_header_written_by_add() {
         let path = temp_path("reload_skips_header_written_by_add");
-        let _ = std::fs::remove_file(&path);
+        let _guard = TempGuard(&path);
 
         let mut dict = UserDictionary::new(&path);
         dict.add("omega").expect("add should succeed");
@@ -366,13 +366,12 @@ mod tests {
             1,
             "header comment must not inflate the word count"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn path_accessor_returns_correct_path() {
         let path = temp_path("path_accessor");
+        let _guard = TempGuard(&path);
         let dict = UserDictionary::new(&path);
         assert_eq!(dict.path(), path.as_path());
     }
@@ -382,6 +381,7 @@ mod tests {
     #[test]
     fn add_rejects_empty_word() {
         let path = temp_path("add_rejects_empty_word");
+        let _guard = TempGuard(&path);
         let mut dict = UserDictionary::new(&path);
         let err = dict.add("").expect_err("empty word must be rejected");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -394,6 +394,7 @@ mod tests {
     #[test]
     fn add_rejects_word_over_100_chars() {
         let path = temp_path("add_rejects_word_over_100_chars");
+        let _guard = TempGuard(&path);
         let long_word = "a".repeat(101);
         let mut dict = UserDictionary::new(&path);
         let err = dict
@@ -405,16 +406,17 @@ mod tests {
     #[test]
     fn add_accepts_word_exactly_100_chars() {
         let path = temp_path("add_accepts_word_exactly_100_chars");
+        let _guard = TempGuard(&path);
         let word = "a".repeat(100);
         let mut dict = UserDictionary::new(&path);
         dict.add(&word).expect("100-char word must be accepted");
         assert!(dict.contains(&word));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn add_rejects_word_with_digit() {
         let path = temp_path("add_rejects_word_with_digit");
+        let _guard = TempGuard(&path);
         let mut dict = UserDictionary::new(&path);
         let err = dict
             .add("word1")
@@ -425,6 +427,7 @@ mod tests {
     #[test]
     fn add_rejects_word_with_special_char() {
         let path = temp_path("add_rejects_word_with_special_char");
+        let _guard = TempGuard(&path);
         let mut dict = UserDictionary::new(&path);
         let err = dict
             .add("bad@word")
@@ -435,6 +438,7 @@ mod tests {
     #[test]
     fn add_accepts_hyphenated_word() {
         let path = temp_path("add_accepts_hyphenated_word");
+        let _guard = TempGuard(&path);
         let mut dict = UserDictionary::new(&path);
         dict.add("low-ceilinged")
             .expect("hyphenated word must be accepted");
@@ -442,12 +446,12 @@ mod tests {
             dict.contains("low-ceilinged"),
             "hyphenated word must be retrievable"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn add_accepts_word_with_apostrophe() {
         let path = temp_path("add_accepts_word_with_apostrophe");
+        let _guard = TempGuard(&path);
         let mut dict = UserDictionary::new(&path);
         dict.add("don't")
             .expect("word with apostrophe must be accepted");
@@ -455,12 +459,12 @@ mod tests {
             dict.contains("don't"),
             "word with apostrophe must be retrievable"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn add_rejected_word_not_inserted_into_memory() {
         let path = temp_path("add_rejected_word_not_inserted_into_memory");
+        let _guard = TempGuard(&path);
         let mut dict = UserDictionary::new(&path);
         let _ = dict.add("bad@word");
         assert!(

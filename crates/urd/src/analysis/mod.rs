@@ -177,6 +177,14 @@ impl std::fmt::Display for TypoKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnalysisError {
     // ── Errors ────────────────────────────────────────────────────────────
+    /// An import could not be resolved or loaded.
+    UnresolvedImport {
+        /// The raw path string from the import statement.
+        path: String,
+        /// The source span of the offending `import` node.
+        span: SimpleSpan,
+    },
+
     /// A `match` over an enum did not cover all variants and had no wildcard arm.
     NonExhaustiveMatch {
         /// The name of the enum being matched over.
@@ -547,6 +555,12 @@ impl AnalysisError {
     // 2. Add an entry below — the macro generates `span()`, `is_warning()`,
     //    `message()`, and `label_message()` from this single declaration.
     analysis_error_dispatch! {
+        UnresolvedImport { path, span } => {
+            span: *span,
+            warning: false,
+            message: format!("Unresolved import: could not load module '{path}'"),
+            label: format!("cannot load module '{path}'"),
+        }
         NonExhaustiveMatch { enum_name, missing_variants, span } => {
             span: *span,
             warning: false,
