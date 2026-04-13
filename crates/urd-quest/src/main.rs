@@ -52,7 +52,6 @@ enum Command {
     /// Run an Urd script interactively in the terminal (default).
     Run {
         /// Path to the `.urd` script file.
-        #[arg(default_value = "examples/quest/cave.urd")]
         script: PathBuf,
 
         /// Force a specific locale tag (e.g. `en-US`, `pl-PL`).
@@ -266,8 +265,11 @@ fn locale_display_name(tag: &str) -> &str {
 }
 
 /// Render the locale picker menu with `selected` highlighted.
-fn render_locale_menu(locales: &[String], selected: usize) {
+fn render_locale_menu(locales: &[String], selected: usize) -> u16 {
     let mut out = std::io::stdout();
+    let term_width = std::cmp::max(1, crossterm::terminal::size().unwrap_or((80, 24)).0 as usize);
+    let mut printed_rows = 0;
+
     for (i, tag) in locales.iter().enumerate() {
         execute!(
             out,
@@ -277,6 +279,16 @@ fn render_locale_menu(locales: &[String], selected: usize) {
         .ok();
         let name = locale_display_name(tag);
         let has_name = name != tag;
+        
+        let prefix_len = 5; // e.g. "  ▶  "
+        let tag_len = tag.chars().count();
+        let name_len = if has_name { name.chars().count() + 2 } else { 0 }; // +2 for "  "
+        let total_len = prefix_len + tag_len + name_len;
+        
+        let rows = (total_len + term_width - 1) / term_width;
+        let rows = std::cmp::max(1, rows);
+        printed_rows += rows as u16;
+
         if i == selected {
             if has_name {
                 println!("  \x1b[1;93m▶  {tag}\x1b[0m  \x1b[93m{name}\x1b[0m");
@@ -288,6 +300,22 @@ fn render_locale_menu(locales: &[String], selected: usize) {
         } else {
             println!("     \x1b[2m{tag}\x1b[0m");
         }
+    }
+    printed_rows
+}
+
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn new() -> Self {
+        terminal::enable_raw_mode().ok();
+        Self
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        terminal::disable_raw_mode().ok();
     }
 }
 
@@ -302,9 +330,9 @@ fn pick_locale_tty(locales: &[String]) -> usize {
     println!();
     println!("  \x1b[93m🌐 Select language\x1b[0m  \x1b[2m(↑↓ navigate, Enter confirm)\x1b[0m");
     println!();
-    render_locale_menu(locales, selected);
+    let mut printed_rows = render_locale_menu(locales, selected);
 
-    terminal::enable_raw_mode().ok();
+    let _guard = RawModeGuard::new();
 
     loop {
         match event::read() {
@@ -336,19 +364,19 @@ fn pick_locale_tty(locales: &[String]) -> usize {
 
         execute!(
             std::io::stdout(),
-            cursor::MoveUp(n as u16),
+            cursor::MoveUp(printed_rows),
             terminal::Clear(ClearType::FromCursorDown)
         )
         .ok();
-        render_locale_menu(locales, selected);
+        printed_rows = render_locale_menu(locales, selected);
     }
 
-    terminal::disable_raw_mode().ok();
+    drop(_guard);
 
     // Redraw in confirmed style.
     execute!(
         std::io::stdout(),
-        cursor::MoveUp(n as u16),
+        cursor::MoveUp(printed_rows),
         terminal::Clear(ClearType::FromCursorDown)
     )
     .ok();
@@ -455,8 +483,11 @@ fn handle_dialogue(
 /// through when option labels differ in length across redraws.
 ///
 /// Shows `localized_label` when available, falling back to `label`.
-fn render_menu(options: &[urd::ir::ChoiceEvent], selected: usize) {
+fn render_menu(options: &[urd::ir::ChoiceEvent], selected: usize) -> u16 {
     let mut out = std::io::stdout();
+    let term_width = std::cmp::max(1, crossterm::terminal::size().unwrap_or((80, 24)).0 as usize);
+    let mut printed_rows = 0;
+
     for (i, opt) in options.iter().enumerate() {
         // Clear the current line and move to column 0 before writing, so no
         // leftover characters from a previously longer label remain visible.
@@ -467,12 +498,20 @@ fn render_menu(options: &[urd::ir::ChoiceEvent], selected: usize) {
         )
         .ok();
         let display = opt.localized_label.as_deref().unwrap_or(&opt.label);
+        
+        let prefix_len = 5; // e.g. "  ▶  " or "     "
+        let total_len = prefix_len + display.chars().count();
+        let rows = (total_len + term_width - 1) / term_width;
+        let rows = std::cmp::max(1, rows);
+        printed_rows += rows as u16;
+
         if i == selected {
             println!("  \x1b[1;93m▶  {}\x1b[0m", display);
         } else {
             println!("   \x1b[2m  {}\x1b[0m", display);
         }
     }
+    printed_rows
 }
 
 /// Full arrow-key interactive menu. Returns the 0-based index of the confirmed
@@ -484,11 +523,11 @@ fn handle_choice_tty(options: &[urd::ir::ChoiceEvent]) -> usize {
     println!();
     println!("  \x1b[93mWhat do you do?\x1b[0m  \x1b[2m(↑↓ navigate, Enter confirm)\x1b[0m");
     println!();
-    render_menu(options, selected);
+    let mut printed_rows = render_menu(options, selected);
 
     // Enter raw mode AFTER printing the initial state so the header isn't
     // swallowed before the user sees it.
-    terminal::enable_raw_mode().ok();
+    let _guard = RawModeGuard::new();
 
     loop {
         match event::read() {
@@ -526,19 +565,19 @@ fn handle_choice_tty(options: &[urd::ir::ChoiceEvent]) -> usize {
         // then redraw so no stale characters remain.
         execute!(
             std::io::stdout(),
-            cursor::MoveUp(n as u16),
+            cursor::MoveUp(printed_rows),
             terminal::Clear(ClearType::FromCursorDown)
         )
         .ok();
-        render_menu(options, selected);
+        printed_rows = render_menu(options, selected);
     }
 
-    terminal::disable_raw_mode().ok();
+    drop(_guard);
 
     // Redraw in "confirmed" style: tick on selected, dim on the rest.
     execute!(
         std::io::stdout(),
-        cursor::MoveUp(n as u16),
+        cursor::MoveUp(printed_rows),
         terminal::Clear(ClearType::FromCursorDown)
     )
     .ok();
@@ -576,19 +615,21 @@ fn handle_choice_pipe(options: &[urd::ir::ChoiceEvent], stdin: &mut impl BufRead
         println!("  {}. {}", i + 1, display);
     }
 
-    let input = match read_line(stdin) {
-        Some(l) => l,
-        None => {
-            eprintln!("Unexpected EOF waiting for choice.");
-            std::process::exit(1);
-        }
-    };
+    loop {
+        let input = match read_line(stdin) {
+            Some(l) => l,
+            None => {
+                eprintln!("Unexpected EOF waiting for choice.");
+                std::process::exit(1);
+            }
+        };
 
-    match input.trim().parse::<usize>() {
-        Ok(i) if i >= 1 && i <= n => i - 1,
-        _ => {
-            eprintln!("Invalid choice '{}', expected 1\u{2013}{}", input.trim(), n);
-            std::process::exit(1);
+        match input.trim().parse::<usize>() {
+            Ok(i) if i >= 1 && i <= n => break i - 1,
+            _ => {
+                eprintln!("Invalid choice '{}', expected 1\u{2013}{}", input.trim(), n);
+                continue;
+            }
         }
     }
 }
@@ -605,29 +646,38 @@ fn run_analysis(
     filename: &str,
     loader: &dyn urd::vm::loader::FileLoader,
 ) {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{HashMap, HashSet, VecDeque};
 
-    let mut imported_structs: HashMap<String, Vec<urd::parser::ast::StructField>> = HashMap::new();
-    let mut imported_enums: HashMap<String, Vec<String>> = HashMap::new();
-    let mut imported_labels: HashSet<String> = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
 
-    collect_analysis_imports(
-        ast,
-        loader,
-        &mut imported_structs,
-        &mut imported_enums,
-        &mut imported_labels,
-    );
+    queue.push_back((filename.to_string(), src.to_string(), ast.clone()));
+    visited.insert(filename.to_string());
 
-    let errors =
-        analysis::analyze_with_imports(ast, imported_structs, imported_enums, imported_labels);
-    if !errors.is_empty() {
-        analysis::render_errors_stderr(&errors, src, filename);
-        eprintln!(
-            "[analysis] {} issue(s) found in '{}'",
-            errors.len(),
-            filename
+    while let Some((curr_filename, curr_src, curr_ast)) = queue.pop_front() {
+        let mut imported_structs = HashMap::new();
+        let mut imported_enums = HashMap::new();
+        let mut imported_labels = HashSet::new();
+
+        collect_analysis_imports(
+            &curr_ast,
+            loader,
+            &mut imported_structs,
+            &mut imported_enums,
+            &mut imported_labels,
+            &mut queue,
+            &mut visited,
         );
+
+        let errors = analysis::analyze_with_imports(&curr_ast, imported_structs, imported_enums, imported_labels);
+        if !errors.is_empty() {
+            analysis::render_errors_stderr(&errors, &curr_src, &curr_filename);
+            eprintln!(
+                "[analysis] {} issue(s) found in '{}'",
+                errors.len(),
+                curr_filename
+            );
+        }
     }
 }
 
@@ -637,24 +687,38 @@ fn collect_analysis_imports(
     structs: &mut std::collections::HashMap<String, Vec<urd::parser::ast::StructField>>,
     enums: &mut std::collections::HashMap<String, Vec<String>>,
     labels: &mut std::collections::HashSet<String>,
+    queue: &mut std::collections::VecDeque<(String, String, urd::parser::ast::Ast)>,
+    visited: &mut std::collections::HashSet<String>,
 ) {
     use urd::parser::ast::AstContent;
 
     match ast.content() {
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                collect_analysis_imports(stmt, loader, structs, enums, labels);
+                collect_analysis_imports(stmt, loader, structs, enums, labels, queue, visited);
             }
         }
         AstContent::Import { path, symbols } => {
             let src = match loader.load(path) {
                 Ok(s) => s,
-                Err(_) => return,
+                Err(e) => {
+                    eprintln!("Failed to load imported file '{}': {}", path, e);
+                    return;
+                }
             };
             let module_ast = match urd::compiler::loader::parse_source(&src) {
                 Ok(a) => a,
-                Err(_) => return,
+                Err(e) => {
+                    eprintln!("Failed to parse imported file '{}': {:?}", path, e);
+                    return;
+                }
             };
+
+            if !visited.contains(path) {
+                visited.insert(path.clone());
+                queue.push_back((path.clone(), src, module_ast.clone()));
+            }
+
             // A whole-module import has a single symbol entry with `original: None`.
             let is_whole_module = symbols.first().is_some_and(|s| s.original.is_none());
             let alias = if is_whole_module {
@@ -683,29 +747,29 @@ fn collect_analysis_imports(
             else_block,
             ..
         } => {
-            collect_analysis_imports(then_block, loader, structs, enums, labels);
+            collect_analysis_imports(then_block, loader, structs, enums, labels, queue, visited);
             if let Some(eb) = else_block {
-                collect_analysis_imports(eb, loader, structs, enums, labels);
+                collect_analysis_imports(eb, loader, structs, enums, labels, queue, visited);
             }
         }
         AstContent::LabeledBlock { block, .. } => {
-            collect_analysis_imports(block, loader, structs, enums, labels);
+            collect_analysis_imports(block, loader, structs, enums, labels, queue, visited);
         }
         AstContent::Menu { options } => {
             for opt in options {
-                collect_analysis_imports(opt, loader, structs, enums, labels);
+                collect_analysis_imports(opt, loader, structs, enums, labels, queue, visited);
             }
         }
         AstContent::MenuOption { content, .. } => {
-            collect_analysis_imports(content, loader, structs, enums, labels);
+            collect_analysis_imports(content, loader, structs, enums, labels, queue, visited);
         }
         AstContent::Match { arms, .. } => {
             for arm in arms {
-                collect_analysis_imports(&arm.body, loader, structs, enums, labels);
+                collect_analysis_imports(&arm.body, loader, structs, enums, labels, queue, visited);
             }
         }
         AstContent::DecoratorDef { body, .. } => {
-            collect_analysis_imports(body, loader, structs, enums, labels);
+            collect_analysis_imports(body, loader, structs, enums, labels, queue, visited);
         }
         // All other node types cannot contain import statements.
         _ => {}
@@ -943,12 +1007,9 @@ fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) -> Result<(), Str
                 // Root module → use the script's own stem.
                 file_slug.to_string()
             } else {
-                // Imported module: "common.urd" → "common".
-                Path::new(source.as_str())
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(source)
-                    .to_string()
+                // Imported module: "foo/common.urd" -> "foo_common"
+                let fwd = source.replace('\\', "/");
+                fwd.strip_suffix(".urd").unwrap_or(&fwd).replace('/', "_")
             };
             let ftl_content = urd::loc::ftl::generate_ftl_for_file(&graph, &slug, source);
             write_ftl(&out_dir, &slug, &ftl_content)?;
@@ -1081,8 +1142,10 @@ label start {
         let mut structs: HashMap<String, Vec<urd::parser::ast::StructField>> = HashMap::new();
         let mut enums: HashMap<String, Vec<String>> = HashMap::new();
         let mut labels: HashSet<String> = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        let mut visited = HashSet::new();
 
-        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels);
+        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels, &mut queue, &mut visited);
 
         assert!(
             labels.contains("greet"),
@@ -1123,8 +1186,10 @@ label start { jump hello }
         let mut structs: HashMap<String, Vec<urd::parser::ast::StructField>> = HashMap::new();
         let mut enums: HashMap<String, Vec<String>> = HashMap::new();
         let mut labels: HashSet<String> = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        let mut visited = HashSet::new();
 
-        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels);
+        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels, &mut queue, &mut visited);
 
         assert!(
             labels.contains("hello"),
@@ -1134,5 +1199,92 @@ label start { jump hello }
             !labels.contains("life"),
             "non-label alias must not be tracked as label"
         );
+    }
+
+    #[test]
+    fn test_display_value_formatting() {
+        use crate::display_value;
+        use urd::runtime::value::RuntimeValue;
+        use urd::lexer::strings::ParsedString;
+        
+        let s = RuntimeValue::Str(ParsedString::new_plain("\x1b[31mred\x1b[0m"));
+        assert_eq!(display_value(&s), "\x1b[31mred\x1b[0m");
+        
+        let i = RuntimeValue::Int(42);
+        assert_eq!(display_value(&i), "42");
+    }
+
+    #[test]
+    fn test_cmd_gen_l10n_collision_resistance() {
+        use crate::cmd_gen_l10n;
+        use std::fs;
+
+        let temp_dir = std::env::temp_dir().join(format!("urd_quest_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir); // clean up before
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let foo_dir = temp_dir.join("foo");
+        let bar_dir = temp_dir.join("bar");
+        fs::create_dir_all(&foo_dir).unwrap();
+        fs::create_dir_all(&bar_dir).unwrap();
+
+        // Write identical filenames in different directories
+        fs::write(foo_dir.join("common.urd"), "label test1 { }\n").unwrap();
+        fs::write(bar_dir.join("common.urd"), "label test2 { }\n").unwrap();
+        
+        // Write main script importing both
+        let main_script = temp_dir.join("main.urd");
+        fs::write(&main_script, r#"
+import (test1) from "foo/common.urd"
+import (test2) from "bar/common.urd"
+
+label start {
+    jump test1
+}
+"#).unwrap();
+
+        let out_dir = temp_dir.join("out_ftl");
+        cmd_gen_l10n(&main_script, Some(&out_dir)).expect("gen-l10n failed");
+
+        assert!(out_dir.join("foo_common.ftl").exists(), "foo_common.ftl missing");
+        assert!(out_dir.join("bar_common.ftl").exists(), "bar_common.ftl missing");
+        assert!(out_dir.join("main.ftl").exists(), "main.ftl missing");
+        assert!(!out_dir.join("common.ftl").exists(), "collision occurred: common.ftl created");
+
+        let _ = fs::remove_dir_all(&temp_dir); // clean up after
+    }
+
+    #[test]
+    fn test_static_analysis_pipeline() {
+        use crate::{run_analysis, collect_analysis_imports};
+        use urd::vm::loader::MemLoader;
+        use std::collections::{HashMap, HashSet, VecDeque};
+
+        let mut loader = MemLoader::new();
+        loader.add("missing_import.urd", r#"import (foo) from "nonexistent.urd"
+label start {}"#);
+
+        let ast = parse(r#"import (foo) from "nonexistent.urd"
+label start {}"#);
+
+        let mut structs = HashMap::new();
+        let mut enums = HashMap::new();
+        let mut labels = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut visited = HashSet::new();
+
+        // Testing that collect_analysis_imports doesn't panic on missing files
+        collect_analysis_imports(&ast, &loader, &mut structs, &mut enums, &mut labels, &mut queue, &mut visited);
+        
+        // Run full analysis on a multiple file setup
+        loader.add("root.urd", r#"import (hello) from "child.urd"
+label start { jump hello }"#);
+        loader.add("child.urd", r#"label hello {}"#);
+
+        let root_ast = parse(r#"import (hello) from "child.urd"
+label start { jump hello }"#);
+
+        // Run run_analysis
+        run_analysis(&root_ast, "import (hello) from \"child.urd\"\nlabel start { jump hello }", "root.urd", &loader);
     }
 }
