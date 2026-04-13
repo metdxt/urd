@@ -11,6 +11,8 @@
 //! - Logical operators: and/&&, or/||
 //! - Assignment operator: =
 
+use std::cell::Cell;
+
 use chumsky::pratt::*;
 use chumsky::prelude::*;
 use chumsky::{Parser, select};
@@ -21,6 +23,38 @@ use crate::lexer::Token;
 use crate::parser::ast::{DeclKind, TypeAnnotation};
 use crate::parser::block::{code_block, fn_params_parser, return_type_parser};
 use crate::runtime::value::RuntimeValue;
+
+// ---------------------------------------------------------------------------
+// Expression complexity limit
+// ---------------------------------------------------------------------------
+
+/// Maximum number of recursive `expr` entries allowed per parse.
+///
+/// Prevents exponential parse time on adversarial inputs (e.g. deeply nested
+/// bracket tokens with interleaved operators and no matching `]`).  The fuzzer
+/// found that just 176 bytes of such input can cause the parser to explore an
+/// exponential number of backtracking alternatives.
+///
+/// The limit is generous enough for any realistic hand-written script (10 000
+/// recursive expr entries allows ~100 levels of nesting with operators).
+const MAX_PARSE_FUEL: usize = 10_000;
+
+thread_local! {
+    /// Per-parse fuel counter.  Decremented on every recursive entry into
+    /// `expr`.  When it hits zero the parser fails, pruning the remaining
+    /// search space.  Must be reset to [`MAX_PARSE_FUEL`] before each parse
+    /// via [`reset_expr_fuel`].
+    static EXPR_FUEL: Cell<usize> = const { Cell::new(MAX_PARSE_FUEL) };
+}
+
+/// Reset the expression-recursion fuel to its maximum.
+///
+/// **Must** be called once before every top-level `script().parse(…)` call.
+/// [`parse_source`] and [`parse_source_spanned`] do this automatically.
+/// Test helpers and fuzz targets must call it explicitly.
+pub fn reset_expr_fuel() {
+    EXPR_FUEL.with(|f| f.set(MAX_PARSE_FUEL));
+}
 
 /// Represents a value, including anonymous function literals.
 ///
@@ -135,8 +169,31 @@ fn atom_internal<'tokens, I: UrdInput<'tokens>>(
 /// parser configuration with higher numbers indicating higher precedence.
 pub fn expr<'tokens, I: UrdInput<'tokens>>() -> BoxedUrdParser<'tokens, I> {
     recursive(|expr| {
-        let term = atom_internal(expr.clone())
-            .or(expr.delimited_by(just(Token::LeftParen), just(Token::RightParen)));
+        // ── Fuel guard ───────────────────────────────────────────────
+        // Each recursive entry into `expr` burns one unit of fuel from
+        // the thread-local counter.  When the budget is exhausted the
+        // parser fails, pruning the remaining search space.  The counter
+        // is *not* restored on backtrack — this is intentional: it bounds
+        // total work across all alternatives, which is exactly what
+        // prevents exponential blowup on ambiguous bracket sequences.
+        //
+        // The counter must be reset to `MAX_PARSE_FUEL` before every
+        // top-level parse via `reset_expr_fuel()`.
+        let fuel_guard = empty().filter(move |_| {
+            EXPR_FUEL.with(|f| {
+                let remaining = f.get();
+                if remaining == 0 {
+                    return false;
+                }
+                f.set(remaining - 1);
+                true
+            })
+        });
+
+        let term = fuel_guard.ignore_then(
+            atom_internal(expr.clone())
+                .or(expr.delimited_by(just(Token::LeftParen), just(Token::RightParen))),
+        );
 
         term.pratt((
             // Unary operators (precedence 11)
@@ -708,5 +765,57 @@ mod tests {
                 Ok(TypeAnnotation::Range)
             );
         }
+    }
+
+    /// Regression test for fuzzer slow-unit `65926283`.
+    ///
+    /// 176 bytes of deeply nested, unbalanced `[` tokens with interleaved
+    /// identifiers and operators caused exponential backtracking in the
+    /// expression parser: every `[` is ambiguous between a list literal and
+    /// a postfix subscript, so with 38 unmatched `[` the parser explored
+    /// O(2^38) alternatives.
+    ///
+    /// The fix is a per-parse fuel counter inside `expr()` that caps total
+    /// recursive entries to [`MAX_PARSE_FUEL`], pruning the search space.
+    #[test]
+    fn fuzz_slow_unit_unbalanced_brackets_completes_in_bounded_time() {
+        let slow_input = "b[a[ho[W=7=h/[W=7=h/[a[ho[W=7=h/[a[o8o[W=7=h/\
+            [W=7=h/[a[o8o[W=7=h/[W=7=h/[a[ho[W=7=h/[a[[W=7=h/[a[o8o\
+            [W=7=h/[W=7=h/[a[ho[W=7=h/[a[[a[ho[W=[a[ho[W=7=h/[a[\
+            o8V.o3==878,..o3==878,";
+
+        let start = std::time::Instant::now();
+        // Must not panic and must complete quickly (the pre-fix version
+        // would hang for minutes or longer).
+        let result = parse_test!(crate::parser::block::script(), slow_input);
+        let elapsed = start.elapsed();
+
+        // Parse will fail (the input is nonsense), but it must do so fast.
+        assert!(
+            result.is_err(),
+            "garbage input should not parse successfully"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "parser took {elapsed:?} on adversarial input — fuel guard may be broken"
+        );
+    }
+
+    /// Ensure the fuel limit is generous enough for realistic scripts.
+    /// A 20-level nested list `[[[[...]]]]` with values must still parse.
+    #[test]
+    fn deeply_nested_balanced_brackets_still_parse() {
+        // Build `[[[...[1]...]]]` with 20 levels of nesting.
+        let depth = 20;
+        let src = format!(
+            "{}1{}",
+            "[".repeat(depth),
+            "]".repeat(depth),
+        );
+        let result = parse_test!(expr(), &src);
+        assert!(
+            result.is_ok(),
+            "20-deep nested list should parse: {result:?}"
+        );
     }
 }

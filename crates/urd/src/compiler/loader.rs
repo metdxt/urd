@@ -773,6 +773,9 @@ pub fn parse_source(src: &str) -> Result<Ast, String> {
 
     use crate::lexer::{Token, lex_src};
     use crate::parser::block::script;
+    use crate::parser::expr::reset_expr_fuel;
+
+    reset_expr_fuel();
 
     let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
         Ok(t) => (t, span.into()),
@@ -829,6 +832,9 @@ pub fn parse_source_spanned(src: &str) -> (Option<Ast>, Vec<(String, SimpleSpan)
 
     use crate::lexer::{Token, lex_src};
     use crate::parser::block::script;
+    use crate::parser::expr::reset_expr_fuel;
+
+    reset_expr_fuel();
 
     let lexer = lex_src(src).spanned().map(|(tok, span)| match tok {
         Ok(t) => (t, span.into()),

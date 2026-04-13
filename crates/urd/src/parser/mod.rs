@@ -40,6 +40,7 @@ macro_rules! parse_test {
         use chumsky::Parser as _;
         use $crate::parser::test_util::{lex_to_vec, make_input};
 
+        $crate::parser::expr::reset_expr_fuel();
         let src = $src;
         let tokens = lex_to_vec(src);
         let input = make_input(&tokens, src.len());

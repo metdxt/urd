@@ -1982,4 +1982,70 @@ label start {
         let pattern = MatchPattern::Array(vec![Some(Ast::value(RuntimeValue::Int(1))), None]);
         assert_eq!(pattern.to_string(), "[1, _]");
     }
+
+    /// Regression test for slow-unit found by `fuzz_compiler`.
+    ///
+    /// The artifact `slow-unit-65926283d25e66b44c568348615b4e1e35c497c6`
+    /// is 176 bytes of deeply-nested, unmatched `[` brackets.  This input
+    /// triggers combinatorial explosion in the parser because every `[`
+    /// is ambiguous: it could start a list literal (`atom_internal`'s
+    /// `list` alternative) **or** a postfix subscript suffix.  When the
+    /// matching `]` never arrives the parser backtracks and retries the
+    /// other interpretation, leading to exponential work in the number of
+    /// open brackets.
+    ///
+    /// The bottleneck is **parsing**, not lexing or compiling.
+    #[test]
+    fn test_slow_unit_fuzz_compiler_nested_brackets() {
+        use crate::compiler::Compiler;
+        use crate::parser::test_util::{lex_to_vec, make_input};
+        use chumsky::Parser as _;
+        use std::time::Instant;
+
+        // Exact content of the slow-unit artifact (176 bytes).
+        let src = "b[a[ho[W=7=h/[W=7=h/[a[ho[W=7=h/[a[o8o[W=7=h/[W=7=h/\
+                    [a[o8o[W=7=h/[W=7=h/[a[ho[W=7=h/[a[[W=7=h/[a[o8o[W=7=h/\
+                    [W=7=h/[a[ho[W=7=h/[a[[a[ho[W=[a[ho[W=7=h/[a[o8V.o3==878,\
+                    ..o3==878,";
+
+        // --- Phase 1: Lex ------------------------------------------------
+        let t0 = Instant::now();
+        let tokens = lex_to_vec(src);
+        let lex_dur = t0.elapsed();
+
+        // --- Phase 2: Parse ----------------------------------------------
+        let input = make_input(&tokens, src.len());
+        let t1 = Instant::now();
+        let parse_result = script().parse(input);
+        let parse_dur = t1.elapsed();
+
+        // --- Phase 3: Compile (only if parse produced an AST) ------------
+        let compile_dur;
+        if let Some(ast) = parse_result.into_output() {
+            let t2 = Instant::now();
+            let _ = Compiler::compile(&ast);
+            compile_dur = t2.elapsed();
+        } else {
+            compile_dur = std::time::Duration::ZERO;
+        }
+
+        let total = lex_dur + parse_dur + compile_dur;
+
+        eprintln!("--- slow-unit timing breakdown ---");
+        eprintln!("  lex:     {lex_dur:>10.3?}");
+        eprintln!("  parse:   {parse_dur:>10.3?}");
+        eprintln!("  compile: {compile_dur:>10.3?}");
+        eprintln!("  total:   {total:>10.3?}");
+        eprintln!("---------------------------------");
+
+        // The original slow-unit took >60 s.  After a fix, parsing this
+        // 176-byte input should complete in well under 5 s even on slow CI
+        // machines.  If this assert fires, the exponential backtracking
+        // on nested brackets has regressed.
+        assert!(
+            total < std::time::Duration::from_secs(5),
+            "slow-unit regression: total time {total:.3?} exceeds 5 s budget \
+             (lex={lex_dur:.3?}, parse={parse_dur:.3?}, compile={compile_dur:.3?})"
+        );
+    }
 }

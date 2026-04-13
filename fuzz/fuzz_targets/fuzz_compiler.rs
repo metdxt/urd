@@ -6,6 +6,7 @@ use chumsky::Parser as _;
 
 use urd::compiler::Compiler;
 use urd::parser::block::script;
+use urd::parser::expr::reset_expr_fuel;
 use urd::parser::test_util::{lex_to_vec, make_input};
 
 fuzz_target!(|data: &[u8]| {
@@ -19,6 +20,9 @@ fuzz_target!(|data: &[u8]| {
     let tokens = lex_to_vec(src);
 
     // Phase 2: Parse — feed tokens into the script parser.
+    // Reset the per-parse fuel counter so deeply nested / ambiguous bracket
+    // sequences are bounded rather than exponential.
+    reset_expr_fuel();
     let input = make_input(&tokens, src.len());
     let parse_result = script().parse(input);
 
