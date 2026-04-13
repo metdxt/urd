@@ -35,7 +35,7 @@ pub enum Token {
     #[token("null")]
     Null,
     /// String literal. Can be a static or interpolated string.
-    /// In urd strings are multiline be default, no need to multiply enities.
+    /// In urd strings are multiline by default, no need for multiple entities.
     #[token("\"", string_parsing_callback)]
     StrLit(ParsedString),
 
@@ -44,7 +44,7 @@ pub enum Token {
     BoolLit(bool),
 
     /// Integer literal
-    /// Accepts: decimal, hexidecimal, octodecimal and binary radix numbers.
+    /// Accepts: decimal, hexadecimal, octal and binary radix numbers.
     /// Separating numbers with _ is allowed.
     #[regex(
         r#"(0x[0-9a-fA-F_]+)|(0b[01_]+)|(0o[0-7_]+)|([0-9][0-9_]*)"#,
@@ -268,16 +268,20 @@ pub enum Token {
 }
 
 /// Parses ints, captured by `(0x[0-9a-fA-F_]+)|(0b[01_]+)|(0o[0-7_]+)|([0-9][0-9_]*)` regex
+fn parse_radix(digits: &str, radix: u32) -> Result<i64> {
+    Ok(i64::from_str_radix(digits, radix)?)
+}
+
 fn integer_parsing_callback<'a>(lex: &mut Lexer<'a, Token>) -> Result<i64> {
     let capture = lex.slice();
     let clean: String = capture.chars().filter(|c| *c != '_').collect();
 
     if let Some(hex) = clean.strip_prefix("0x") {
-        Ok(i64::from_str_radix(hex, 16)?)
+        parse_radix(hex, 16)
     } else if let Some(oct) = clean.strip_prefix("0o") {
-        Ok(i64::from_str_radix(oct, 8)?)
+        parse_radix(oct, 8)
     } else if let Some(bin) = clean.strip_prefix("0b") {
-        Ok(i64::from_str_radix(bin, 2)?)
+        parse_radix(bin, 2)
     } else {
         Ok(clean.parse()?)
     }

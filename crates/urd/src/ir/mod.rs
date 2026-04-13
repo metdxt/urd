@@ -35,6 +35,7 @@ use crate::parser::ast::{Ast, DeclKind, Decorator, MatchPattern};
 /// Every directed arc in the graph carries exactly one `IrEdge` value.  Node
 /// variants in [`IrNodeKind`] contain *no* successor indices; all control-flow
 /// relationships are expressed exclusively through these typed edges.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IrEdge {
     /// Linear continuation (next statement).
@@ -76,7 +77,7 @@ pub enum IrEdge {
 #[derive(Debug, Clone)]
 pub struct IrGraph {
     /// The directed graph of IR nodes and control-flow edges.
-    pub graph: StableDiGraph<IrNodeKind, IrEdge>,
+    pub(crate) graph: StableDiGraph<IrNodeKind, IrEdge>,
     /// The [`NodeIndex`] at which execution begins, or `None` for an empty graph.
     pub entry: Option<NodeIndex>,
     /// Maps every `label ident { … }` label name to the [`NodeIndex`] of the
@@ -116,6 +117,11 @@ pub struct IrGraph {
 }
 
 impl IrGraph {
+    /// Returns a read-only reference to the underlying directed graph.
+    pub fn graph(&self) -> &StableDiGraph<IrNodeKind, IrEdge> {
+        &self.graph
+    }
+
     /// Creates an empty graph with no nodes and no entry point.
     pub(crate) fn new() -> Self {
         IrGraph {
@@ -345,7 +351,7 @@ pub struct SwitchArm {
 /// edges in the containing [`IrGraph`].**  No variant embeds a [`NodeIndex`].
 /// See each variant's documentation for which [`IrEdge`] labels its outgoing
 /// arcs carry.
-#[allow(missing_docs)]
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum IrNodeKind {
     // ── Internal nodes ──────────────────────────────────────────────────────
@@ -584,6 +590,7 @@ pub enum IrNodeKind {
 ///
 /// Events are the *only* IR-level type that crosses the VM/consumer boundary,
 /// and therefore the *only* IR-level type that requires `serde` support.
+#[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Event {
     /// A character (or characters) speaks one or more lines.
@@ -654,6 +661,7 @@ pub struct ChoiceEvent {
 ///     }
 /// }
 /// ```
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum VmStep {
     /// The VM produced an observable [`Event`] (dialogue or choice).

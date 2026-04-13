@@ -153,7 +153,13 @@ impl DecoratorRegistry {
             // parameter to the corresponding argument, and evaluates the body.
             Box::new(
                 move |args: &[RuntimeValue]| -> Result<HashMap<String, RuntimeValue>, VmError> {
-                    match super::eval::exec_fn_body(&body, &params, args) {
+                    // No caller environment is available inside the registry
+                    // closure — use a default env (which carries the default
+                    // dice roller).  Script decorators that need the VM's
+                    // custom roller go through the env-lookup path in
+                    // `apply_decorator` instead.
+                    let default_env = super::env::Environment::new();
+                    match super::eval::exec_fn_body(&body, &params, args, &default_env) {
                         Ok(RuntimeValue::Map(m)) => {
                             // Convert HashMap<String, Box<RuntimeValue>> →
                             // HashMap<String, RuntimeValue>.

@@ -105,6 +105,11 @@ fn apply_script_decorator(
     }
 
     for (param, arg_ast) in def.params.iter().zip(args.iter()) {
+        if param == "event" {
+            return Err(VmError::TypeError(
+                "decorator parameter cannot be named 'event' (reserved)".into(),
+            ));
+        }
         let val = eval_expr(arg_ast, env)?;
         inner_env.set(param.as_str(), val, &DeclKind::Variable)?;
     }

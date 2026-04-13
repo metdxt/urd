@@ -343,6 +343,24 @@ impl Environment {
         self.roller = Some(Arc::from(roller));
     }
 
+    /// Replace the dice-rolling backend from an existing [`Arc`].
+    ///
+    /// This is useful when propagating a roller from one environment to
+    /// another without re-boxing (e.g. from a caller env to an isolated
+    /// function-body env).
+    pub(crate) fn set_dice_roller_arc(&mut self, roller: Arc<dyn DiceRoller>) {
+        self.roller = Some(roller);
+    }
+
+    /// Returns a clone of the current dice-roller [`Arc`], if one is set.
+    ///
+    /// Callers can pass this to a freshly-created [`Environment`] via
+    /// [`Self::set_dice_roller_arc`] to propagate the roller without
+    /// requiring the trait to be `Clone`.
+    pub(crate) fn dice_roller(&self) -> Option<Arc<dyn DiceRoller>> {
+        self.roller.clone()
+    }
+
     /// Roll `count`d`sides` using the registered roller and return the total sum.
     ///
     /// Returns `Err(`[`VmError::NotImplemented`]`)` when no roller is

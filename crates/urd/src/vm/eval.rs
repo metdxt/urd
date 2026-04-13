@@ -1,5 +1,6 @@
 //! Pure expression evaluator: converts AST expressions to [`RuntimeValue`]s.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::lexer::strings::{Interpolation, ParsedString, StringPart};
@@ -77,11 +78,11 @@ pub fn eval_expr(
                         eval_runtime_value(&RuntimeValue::IdentPath(receiver_path), env)?;
 
                     match receiver {
-                        RuntimeValue::List(list) => list_methods::dispatch(list, method, &args),
+                        RuntimeValue::List(list) => list_methods::dispatch(list, method, &args, env),
                         RuntimeValue::Roll(rolls) => {
                             let as_list: Vec<RuntimeValue> =
                                 rolls.iter().map(|&n| RuntimeValue::Int(n)).collect();
-                            list_methods::dispatch(as_list, method, &args)
+                            list_methods::dispatch(as_list, method, &args, env)
                         }
                         RuntimeValue::Str(s) => str_methods::dispatch(s, method, &args),
                         RuntimeValue::Int(n) => int_methods::dispatch(n, method, &args),
@@ -145,7 +146,7 @@ pub fn eval_expr(
                         && let Ok(RuntimeValue::Function { params, body }) =
                             eval_runtime_value(&RuntimeValue::IdentPath(path.clone()), env)
                     {
-                        return exec_fn_body(&body, &params, &args);
+                        return exec_fn_body(&body, &params, &args, env);
                     }
                     let path_str = match func_path.content() {
                         AstContent::Value(RuntimeValue::IdentPath(p)) => p.join("."),
@@ -187,7 +188,7 @@ pub fn eval_expr(
                         if let Some(list) = arg_as_list {
                             match fn_name {
                                 "min" | "max" | "sum" => {
-                                    return list_methods::dispatch(list, fn_name, &[]);
+                                    return list_methods::dispatch(list, fn_name, &[], env);
                                 }
                                 _ => {}
                             }
@@ -1164,6 +1165,12 @@ pub(super) fn is_truthy(v: &RuntimeValue) -> bool {
                 end > start
             }
         }
+        // An empty string is falsy; a non-empty string is truthy.
+        RuntimeValue::Str(s) => !s.to_string().is_empty(),
+        // An empty map is falsy; a non-empty map is truthy.
+        RuntimeValue::Map(m) => !m.is_empty(),
+        // A struct with no fields is falsy; one with fields is truthy.
+        RuntimeValue::Struct { fields, .. } => !fields.is_empty(),
         RuntimeValue::Extern(_) => true,
         _ => true,
     }
@@ -1260,6 +1267,51 @@ enum FnExecResult {
     Return(RuntimeValue),
 }
 
+// ─── Recursion depth guard ────────────────────────────────────────────────────
+
+thread_local! {
+    /// Tracks the current recursion depth for pure function bodies
+    /// ([`exec_fn_body`]).  Each entry increments the counter; the RAII
+    /// [`FnDepthGuard`] decrements it on drop so that early `?`-returns and
+    /// panics cannot leak a stale count.
+    static FN_CALL_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Maximum recursive call depth for pure function bodies.
+///
+/// Matches the VM's default `max_call_depth` (256).
+const MAX_FN_CALL_DEPTH: usize = 256;
+
+/// RAII guard that increments [`FN_CALL_DEPTH`] on creation and decrements it
+/// on drop, ensuring correct depth tracking even when errors short-circuit
+/// execution via `?`.
+struct FnDepthGuard;
+
+impl FnDepthGuard {
+    /// Increment depth and check the recursion limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VmError::StackOverflow`] when the limit is reached.
+    fn enter() -> Result<Self, VmError> {
+        FN_CALL_DEPTH.with(|d| {
+            let current = d.get();
+            if current >= MAX_FN_CALL_DEPTH {
+                return Err(VmError::StackOverflow(MAX_FN_CALL_DEPTH));
+            }
+            d.set(current + 1);
+            Ok(FnDepthGuard)
+        })
+    }
+}
+
+impl Drop for FnDepthGuard {
+    fn drop(&mut self) {
+        FN_CALL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+// ─── Function body execution ──────────────────────────────────────────────────
 /// Execute a pure function body with the given arguments.
 ///
 /// Creates a **fully isolated** [`Environment`] containing only the bound
@@ -1269,15 +1321,26 @@ enum FnExecResult {
 /// Both explicit `return expr` and the implicit last-expression return are
 /// supported.
 ///
+/// # Recursion limit
+///
+/// Each call increments a thread-local depth counter (via [`FnDepthGuard`]).
+/// When the counter reaches [`MAX_FN_CALL_DEPTH`] (256), the call fails with
+/// [`VmError::StackOverflow`].  The counter is decremented automatically when
+/// the guard drops, so early returns and errors are handled correctly.
+///
 /// # Errors
 ///
+/// - [`VmError::StackOverflow`] when the recursion depth limit is exceeded.
 /// - [`VmError::TypeError`] on arity mismatch.
 /// - Any [`VmError`] produced by evaluating the body.
 pub(super) fn exec_fn_body(
     body: &crate::parser::ast::Ast,
     params: &[String],
     args: &[RuntimeValue],
+    caller_env: &Environment,
 ) -> Result<RuntimeValue, VmError> {
+    let _guard = FnDepthGuard::enter()?;
+
     if params.len() != args.len() {
         return Err(VmError::TypeError(format!(
             "function expects {} argument(s), got {}",
@@ -1287,7 +1350,12 @@ pub(super) fn exec_fn_body(
     }
 
     // Isolated environment — pure: no globals, no externs, no outer scope.
+    // Propagate the caller's dice roller so that dice expressions inside
+    // function bodies use the VM's configured roller instead of the default.
     let mut fn_env = Environment::new();
+    if let Some(roller) = caller_env.dice_roller() {
+        fn_env.set_dice_roller_arc(roller);
+    }
     for (name, val) in params.iter().zip(args.iter()) {
         fn_env.set(name, val.clone(), &DeclKind::Variable)?;
     }
@@ -1463,7 +1531,10 @@ fn exec_fn_stmt(
                         let scalar = match &scalar_val {
                             RuntimeValue::Int(n) => Some(*n),
                             RuntimeValue::Float(f) => {
-                                if f.is_nan() {
+                                if f.is_nan()
+                                    || *f < (i64::MIN as f64)
+                                    || *f > (i64::MAX as f64)
+                                {
                                     None
                                 } else {
                                     Some(*f as i64)
@@ -1706,10 +1777,12 @@ mod tests {
             Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
             Ast::value(RuntimeValue::IdentPath(vec!["y".into()])),
         )]);
+        let env = Environment::new();
         let result = exec_fn_body(
             &body,
             &["x".to_string(), "y".to_string()],
             &[RuntimeValue::Int(3), RuntimeValue::Int(4)],
+            &env,
         )
         .unwrap();
         assert_eq!(result, RuntimeValue::Int(7));
@@ -1723,7 +1796,8 @@ mod tests {
             Ast::value(RuntimeValue::IdentPath(vec!["x".into()])),
             Ast::value(RuntimeValue::Int(2)),
         )))]);
-        let result = exec_fn_body(&body, &["x".to_string()], &[RuntimeValue::Int(5)]).unwrap();
+        let env = Environment::new();
+        let result = exec_fn_body(&body, &["x".to_string()], &[RuntimeValue::Int(5)], &env).unwrap();
         assert_eq!(result, RuntimeValue::Int(10));
     }
 
@@ -1731,7 +1805,8 @@ mod tests {
     fn test_exec_fn_body_wrong_arg_count() {
         // Arity mismatch must produce a TypeError.
         let body = Ast::block(vec![]);
-        let err = exec_fn_body(&body, &["x".to_string()], &[]).unwrap_err();
+        let env = Environment::new();
+        let err = exec_fn_body(&body, &["x".to_string()], &[], &env).unwrap_err();
         assert!(
             matches!(err, VmError::TypeError(_)),
             "expected TypeError, got {err:?}"
@@ -1746,11 +1821,66 @@ mod tests {
             "outer".into(),
         ]))]);
         // exec_fn_body creates a fresh isolated environment — outer is absent.
-        let err = exec_fn_body(&body, &[], &[]).unwrap_err();
+        let env = Environment::new();
+        let err = exec_fn_body(&body, &[], &[], &env).unwrap_err();
         assert!(
             matches!(err, VmError::UndefinedVariable(_)),
             "expected UndefinedVariable, got {err:?}"
         );
+    }
+
+    #[test]
+    fn test_exec_fn_body_recursion_depth_limit() {
+        use super::{FN_CALL_DEPTH, MAX_FN_CALL_DEPTH};
+
+        // Artificially set the depth counter to the limit so the next
+        // exec_fn_body call triggers StackOverflow.
+        FN_CALL_DEPTH.with(|d| d.set(MAX_FN_CALL_DEPTH));
+
+        let body = Ast::block(vec![Ast::value(RuntimeValue::Int(42))]);
+        let env = Environment::new();
+        let err = exec_fn_body(&body, &[], &[], &env).unwrap_err();
+        assert!(
+            matches!(err, VmError::StackOverflow(n) if n == MAX_FN_CALL_DEPTH),
+            "expected StackOverflow({MAX_FN_CALL_DEPTH}), got {err:?}"
+        );
+
+        // Depth unchanged — enter() bails before incrementing.
+        FN_CALL_DEPTH.with(|d| {
+            assert_eq!(d.get(), MAX_FN_CALL_DEPTH);
+            d.set(0); // reset for other tests on this thread
+        });
+    }
+
+    #[test]
+    fn test_exec_fn_body_depth_resets_after_normal_call() {
+        use super::FN_CALL_DEPTH;
+
+        FN_CALL_DEPTH.with(|d| d.set(0));
+
+        let body = Ast::block(vec![Ast::value(RuntimeValue::Int(7))]);
+        let env = Environment::new();
+        let result = exec_fn_body(&body, &[], &[], &env).unwrap();
+        assert_eq!(result, RuntimeValue::Int(7));
+
+        // Guard dropped → depth back to 0.
+        FN_CALL_DEPTH.with(|d| assert_eq!(d.get(), 0));
+    }
+
+    #[test]
+    fn test_exec_fn_body_depth_resets_after_error() {
+        use super::FN_CALL_DEPTH;
+
+        FN_CALL_DEPTH.with(|d| d.set(0));
+
+        // Trigger an arity error inside exec_fn_body — guard must still drop.
+        let body = Ast::block(vec![]);
+        let env = Environment::new();
+        let _ = exec_fn_body(&body, &["x".to_string()], &[], &env);
+
+        FN_CALL_DEPTH.with(|d| {
+            assert_eq!(d.get(), 0, "depth leaked after error");
+        });
     }
 
     #[test]

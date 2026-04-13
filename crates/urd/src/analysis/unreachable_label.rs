@@ -43,6 +43,15 @@ use crate::parser::ast::{Ast, AstContent, walk_ast};
 /// that no `jump`, `let-call`, or `@entry` can reach.
 ///
 /// Results are ordered by source position (ascending) for deterministic output.
+///
+/// # Known Limitations
+///
+/// This pass operates on a **single module** in isolation. Labels that are only
+/// referenced by `jump` or `let-call` statements in *other* files (i.e.
+/// cross-module callers via `import`) will be falsely flagged as unreachable.
+/// A proper fix requires cross-module analysis — tracking which labels are
+/// exported and which imported modules reference them — which is not yet
+/// implemented.
 pub fn check(ast: &Ast) -> Vec<AnalysisError> {
     // ── Step 1: collect all locally-defined labels and their spans ──────────
     let defined = collect_defined(ast);

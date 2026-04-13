@@ -4,8 +4,16 @@
 //! to eliminate duplication.  All items use `pub(super)` visibility so they
 //! are accessible to sibling renderer modules but not to the wider crate.
 
+use std::collections::HashSet;
+
+use petgraph::Direction;
+use petgraph::stable_graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+
 use crate::parser::ast::{AstContent, DeclKind, MatchPattern};
 use crate::runtime::value::RuntimeValue;
+
+use super::{IrEdge, IrGraph, IrNodeKind};
 
 // ─── Dialogue content extraction ─────────────────────────────────────────────
 
@@ -154,5 +162,84 @@ pub(super) fn arm_pattern_label(pattern: &MatchPattern) -> String {
         MatchPattern::Wildcard => "_".into(),
         MatchPattern::Value(inner) => truncate(&ast_summary(inner), 20),
         MatchPattern::Range { .. } | MatchPattern::Array(_) => truncate(&pattern.to_string(), 20),
+    }
+}
+
+// ─── Preamble helpers ────────────────────────────────────────────────────────
+
+/// Returns `true` for IR node kinds that belong to the script preamble
+/// (top-level declarations / definitions that run before the first label).
+pub(super) fn is_preamble_kind(kind: &IrNodeKind) -> bool {
+    matches!(
+        kind,
+        IrNodeKind::Assign { .. }
+            | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineStruct { .. }
+            | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::DefineFunction { .. }
+            | IrNodeKind::ExternDecl { .. }
+            | IrNodeKind::Eval { .. }
+    )
+}
+
+/// Returns a short human-readable summary for a preamble node (assignment,
+/// enum definition, etc.).  Used to build the collapsed `__preamble__` node.
+///
+/// # Panics
+///
+/// Panics if `kind` is not a preamble node (i.e. `is_preamble_kind` returns
+/// `false`).
+pub(super) fn preamble_summary(kind: &IrNodeKind) -> String {
+    match kind {
+        IrNodeKind::Assign { var, scope, .. } => {
+            format!("{} {var}", decl_kw(scope))
+        }
+        IrNodeKind::DefineEnum { name, .. } => format!("enum {name}"),
+        IrNodeKind::DefineStruct { name, .. } => format!("struct {name}"),
+        IrNodeKind::DefineScriptDecorator { name, .. } => format!("decorator {name}"),
+        IrNodeKind::DefineFunction { name, .. } => format!("fn {name}"),
+        IrNodeKind::ExternDecl { name } => format!("extern {name}"),
+        IrNodeKind::Eval { .. } => "⟨eval⟩".into(),
+        _ => unreachable!("preamble_summary called on non-preamble node"),
+    }
+}
+
+/// Walks the prologue chain from `cursor`, following preamble-style nodes
+/// (Assign, DefineEnum, DefineStruct, DefineScriptDecorator, DefineFunction,
+/// ExternDecl, Nop, Eval) via their [`IrEdge::Next`] edges, until the first
+/// non-preamble node (typically `EnterScope`) or `None` is reached.
+pub(super) fn preamble_chain_target(
+    graph: &IrGraph,
+    cursor: Option<NodeIndex>,
+) -> Option<NodeIndex> {
+    let mut current = cursor?;
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return Some(current);
+        }
+        let kind = graph.graph.node_weight(current)?;
+        match kind {
+            IrNodeKind::Assign { .. }
+            | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineStruct { .. }
+            | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::DefineFunction { .. }
+            | IrNodeKind::ExternDecl { .. }
+            | IrNodeKind::Nop
+            | IrNodeKind::Eval { .. } => {
+                // Follow the Next edge.
+                let next = graph
+                    .graph
+                    .edges_directed(current, Direction::Outgoing)
+                    .find(|e| matches!(e.weight(), IrEdge::Next))
+                    .map(|e| e.target());
+                match next {
+                    Some(n) => current = n,
+                    None => return None,
+                }
+            }
+            _ => return Some(current),
+        }
     }
 }

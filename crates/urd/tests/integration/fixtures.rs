@@ -3,6 +3,13 @@
 //! Centralises example Urd scripts so render (and other) tests can
 //! import them from one place.  Changes to language syntax only need
 //! to be applied once.
+//!
+// TODO: extract a shared `run_script(src, step_cap) -> Vec<VmStep>` helper
+// into this module.  The same function is copy-pasted across adversarial.rs,
+// adversarial_new.rs, adversarial_round2.rs, builtin_methods.rs,
+// in_operator_and_functions.rs, string_format_and_extern.rs, and
+// vm_decorator.rs — each with a different step cap (64 / 128 / 256 / 1024).
+// A single parametric version here would eliminate the duplication.
 
 /// Full showcase Urd script exercising every major language feature.
 /// Used as a smoke-test input for both DOT and Mermaid renderers.

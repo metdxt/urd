@@ -41,12 +41,15 @@ use crate::runtime::value::RuntimeValue;
 ///
 /// # Example
 ///
-/// ```ignore
-/// let ps = ParsedString::new_from_parts(vec![
-///     StringPart::Interpolation(Interpolation { path: "gold".into(), format: None }),
-/// ]);
-/// let ast = Ast::value(RuntimeValue::Str(ps));
-/// assert_eq!(collect_interpolation_paths(&ast), vec!["gold".to_string()]);
+/// ```no_run
+/// // FIXME(L-14): enable this doc test once ParsedString/Ast constructors are
+/// // re-exported or made available for doc tests.
+/// # fn main() {}
+/// // let ps = ParsedString::new_from_parts(vec![
+/// //     StringPart::Interpolation(Interpolation { path: "gold".into(), format: None }),
+/// // ]);
+/// // let ast = Ast::value(RuntimeValue::Str(ps));
+/// // assert_eq!(collect_interpolation_paths(&ast), vec!["gold".to_string()]);
 /// ```
 pub fn collect_interpolation_paths(ast: &Ast) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
@@ -86,12 +89,15 @@ fn collect_paths_inner(ast: &Ast, paths: &mut Vec<String>) {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let ps = ParsedString::new_from_parts(vec![
-///     StringPart::Literal("hello ".into()),
-///     StringPart::Interpolation(Interpolation { path: "user.name".into(), format: None }),
-/// ]);
-/// assert_eq!(render_parsed_string_as_ftl(&ps), "hello { $user-name }");
+/// ```no_run
+/// // FIXME(L-14): enable this doc test once ParsedString constructors are
+/// // re-exported or made available for doc tests.
+/// # fn main() {}
+/// // let ps = ParsedString::new_from_parts(vec![
+/// //     StringPart::Literal("hello ".into()),
+/// //     StringPart::Interpolation(Interpolation { path: "user.name".into(), format: None }),
+/// // ]);
+/// // assert_eq!(render_parsed_string_as_ftl(&ps), "hello { $user-name }");
 /// ```
 /// Converts a menu option label string (already rendered via [`ParsedString`]'s
 /// `Display` impl, so interpolations appear as `{var}`) into a Fluent message
@@ -168,9 +174,12 @@ pub fn render_parsed_string_as_ftl(ps: &ParsedString) -> String {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let ast = Ast::value(RuntimeValue::Str(ParsedString::new_plain("Hello")));
-/// assert_eq!(render_lines_ast_as_ftl(&ast), "Hello");
+/// ```no_run
+/// // FIXME(L-14): enable this doc test once Ast::value / ParsedString
+/// // constructors are re-exported or made available for doc tests.
+/// # fn main() {}
+/// // let ast = Ast::value(RuntimeValue::Str(ParsedString::new_plain("Hello")));
+/// // assert_eq!(render_lines_ast_as_ftl(&ast), "Hello");
 /// ```
 pub fn render_lines_ast_as_ftl(ast: &Ast) -> String {
     match ast.content() {

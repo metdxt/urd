@@ -22,6 +22,38 @@ use crate::{
 
 use super::aliases::{BoxedUrdParser, UrdInput, UrdParser};
 
+/// Parses a 1-or-2-segment label path used by `jump` and `let … = jump … and return`.
+///
+/// - Single segment: `label_name`
+/// - Two segments:   `module.label` (dot-joined for cross-module jumps)
+/// - Three or more segments: emits a diagnostic and recovers by truncating to the
+///   first two segments.
+fn label_path_parser<'tok, I: UrdInput<'tok>>(
+) -> impl Parser<'tok, I, (String, SimpleSpan), extra::Err<Rich<'tok, Token, SimpleSpan>>> + Clone
+{
+    select! {
+        Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
+        Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
+    }
+    .map_with(|lbl, extra| (lbl, extra.span()))
+    .or(select! {
+        Token::IdentPath(path) if path.len() >= 3 => path,
+    }
+    .validate(|path, extra, emitter| {
+        emitter.emit(chumsky::error::Rich::custom(
+            extra.span(),
+            format!(
+                "jump label path `{}` has {} segments; maximum is 2 \
+                 (`module.label` for cross-module jumps)",
+                path.join("."),
+                path.len()
+            ),
+        ));
+        path[..2].join(".") // best-effort recovery: truncate to first two segments
+    })
+    .map_with(|lbl, extra| (lbl, extra.span())))
+}
+
 /// Parser for a single statement, optionally preceded by `##` documentation comments.
 ///
 /// One or more consecutive `## text` lines immediately before a statement are
@@ -63,33 +95,8 @@ pub fn return_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 /// produce a diagnostic error with best-effort recovery (the path is
 /// truncated to the first two segments).
 pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
-    let label = select! {
-        // Local jump: `jump label_name`
-        Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
-        // Cross-module jump: `jump module_name.label_name`
-        // Encoded as "module_name.label_name" — the compiler detects the dot.
-        Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
-    }
-    .map_with(|lbl, extra| (lbl, extra.span()))
-    .or(select! {
-        Token::IdentPath(path) if path.len() >= 3 => path,
-    }
-    .validate(|path, extra, emitter| {
-        emitter.emit(chumsky::error::Rich::custom(
-            extra.span(),
-            format!(
-                "jump label path `{}` has {} segments; maximum is 2 \
-                 (`module.label` for cross-module jumps)",
-                path.join("."),
-                path.len()
-            ),
-        ));
-        path[..2].join(".") // best-effort recovery: truncate to first two segments
-    })
-    .map_with(|lbl, extra| (lbl, extra.span())));
-
     just(Token::Jump)
-        .ignore_then(label)
+        .ignore_then(label_path_parser())
         .then(
             just(Token::And)
                 .ignore_then(just(Token::Return))
@@ -106,28 +113,6 @@ pub fn jump_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 
 /// Parser for `let name = jump label and return` (subroutine call with result binding)
 pub fn let_call_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
-    let label = select! {
-        Token::IdentPath(path) if path.len() == 1 => path[0].clone(),
-        Token::IdentPath(path) if path.len() == 2 => format!("{}.{}", path[0], path[1]),
-    }
-    .map_with(|lbl, extra| (lbl, extra.span()))
-    .or(select! {
-        Token::IdentPath(path) if path.len() >= 3 => path,
-    }
-    .validate(|path, extra, emitter| {
-        emitter.emit(chumsky::error::Rich::custom(
-            extra.span(),
-            format!(
-                "jump label path `{}` has {} segments; maximum is 2 \
-                 (`module.label` for cross-module jumps)",
-                path.join("."),
-                path.len()
-            ),
-        ));
-        path[..2].join(".") // best-effort recovery: truncate to first two segments
-    })
-    .map_with(|lbl, extra| (lbl, extra.span())));
-
     just(Token::Let)
         .ignore_then(
             select! {
@@ -137,7 +122,7 @@ pub fn let_call_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> 
         )
         .then_ignore(just(Token::Assign))
         .then_ignore(just(Token::Jump))
-        .then(label)
+        .then(label_path_parser())
         .then_ignore(just(Token::And))
         .then_ignore(just(Token::Return))
         .map_with(|((name, name_span), (target, target_span)), extra| {

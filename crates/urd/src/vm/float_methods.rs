@@ -45,7 +45,7 @@ pub(super) fn dispatch(
         "to_int" => {
             require_args("to_int", args, 0)?;
             require_finite(n, "to_int")?;
-            Ok(RuntimeValue::Int(n as i64))
+            Ok(RuntimeValue::Int(checked_f64_to_i64(n, "to_int")?))
         }
 
         // ── Arithmetic ────────────────────────────────────────────────────────
@@ -59,21 +59,21 @@ pub(super) fn dispatch(
         "floor" => {
             require_args("floor", args, 0)?;
             require_finite(n, "floor")?;
-            Ok(RuntimeValue::Int(n.floor() as i64))
+            Ok(RuntimeValue::Int(checked_f64_to_i64(n.floor(), "floor")?))
         }
 
         // Rounds up to the nearest integer, returned as `Int`.
         "ceil" => {
             require_args("ceil", args, 0)?;
             require_finite(n, "ceil")?;
-            Ok(RuntimeValue::Int(n.ceil() as i64))
+            Ok(RuntimeValue::Int(checked_f64_to_i64(n.ceil(), "ceil")?))
         }
 
         // Rounds to the nearest integer (half-away-from-zero), returned as `Int`.
         "round" => {
             require_args("round", args, 0)?;
             require_finite(n, "round")?;
-            Ok(RuntimeValue::Int(n.round() as i64))
+            Ok(RuntimeValue::Int(checked_f64_to_i64(n.round(), "round")?))
         }
 
         // Returns the square root as a `Float`.
@@ -158,6 +158,21 @@ pub(super) fn dispatch(
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
+
+/// Checked conversion from `f64` to `i64`.
+///
+/// `i64::MIN as f64` is exact (−2^63) and `i64::MAX as f64` rounds up to 2^63.
+/// Any finite `f64` in the closed interval `[i64::MIN as f64, i64::MAX as f64]`
+/// truncates to a value representable as `i64`, so we reject values outside
+/// that interval.
+fn checked_f64_to_i64(n: f64, method: &str) -> Result<i64, super::VmError> {
+    if n < (i64::MIN as f64) || n > (i64::MAX as f64) {
+        return Err(super::VmError::TypeError(format!(
+            "float.{method}(): float value {n} is out of integer range"
+        )));
+    }
+    Ok(n as i64)
+}
 
 /// Guard that rejects NaN and ±Infinity before a float-to-integer cast.
 fn require_finite(n: f64, method: &str) -> Result<(), super::VmError> {
@@ -575,5 +590,72 @@ mod tests {
             call(f64::NEG_INFINITY, "round", &[]).unwrap_err(),
             super::super::VmError::TypeError(_)
         ));
+    }
+
+    // ── Out-of-i64-range tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_to_int_large_positive_errors() {
+        assert!(matches!(
+            call(1e100, "to_int", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_to_int_large_negative_errors() {
+        assert!(matches!(
+            call(-1e100, "to_int", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_floor_large_positive_errors() {
+        assert!(matches!(
+            call(1e100, "floor", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_ceil_large_negative_errors() {
+        assert!(matches!(
+            call(-1e100, "ceil", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_round_large_positive_errors() {
+        assert!(matches!(
+            call(1e100, "round", &[]).unwrap_err(),
+            super::super::VmError::TypeError(_)
+        ));
+    }
+
+    #[test]
+    fn test_to_int_normal_values_still_work() {
+        assert_eq!(call(42.7, "to_int", &[]).unwrap(), int(42));
+        assert_eq!(call(-42.7, "to_int", &[]).unwrap(), int(-42));
+        assert_eq!(call(0.0, "to_int", &[]).unwrap(), int(0));
+    }
+
+    #[test]
+    fn test_floor_normal_values_still_work() {
+        assert_eq!(call(42.7, "floor", &[]).unwrap(), int(42));
+        assert_eq!(call(-42.7, "floor", &[]).unwrap(), int(-43));
+    }
+
+    #[test]
+    fn test_ceil_normal_values_still_work() {
+        assert_eq!(call(42.3, "ceil", &[]).unwrap(), int(43));
+        assert_eq!(call(-42.3, "ceil", &[]).unwrap(), int(-42));
+    }
+
+    #[test]
+    fn test_round_normal_values_still_work() {
+        assert_eq!(call(42.5, "round", &[]).unwrap(), int(43));
+        assert_eq!(call(-42.5, "round", &[]).unwrap(), int(-43));
     }
 }

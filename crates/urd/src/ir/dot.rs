@@ -51,7 +51,7 @@ use petgraph::visit::EdgeRef;
 use super::analysis::{self, follow_nops};
 use super::render_common::{
     arm_pattern_label, ast_summary, decl_kw, decorator_line, extract_content_lines,
-    extract_speakers, truncate,
+    extract_speakers, is_preamble_kind, preamble_chain_target, preamble_summary, truncate,
 };
 use super::{IrEdge, IrGraph, IrNodeKind};
 
@@ -953,70 +953,6 @@ fn sanitize_id(s: &str) -> String {
         .collect()
 }
 
-// ─── Preamble helpers ────────────────────────────────────────────────────────
-
-/// Returns `true` for node kinds that belong to the script preamble
-/// (assignments, enum/decorator definitions, evals) and should be collapsed
-/// into the single `__preamble__` summary node.
-fn is_preamble_kind(kind: &IrNodeKind) -> bool {
-    matches!(
-        kind,
-        IrNodeKind::Assign { .. }
-            | IrNodeKind::DefineEnum { .. }
-            | IrNodeKind::DefineScriptDecorator { .. }
-            | IrNodeKind::DefineFunction { .. }
-            | IrNodeKind::Eval { .. }
-    )
-}
-
-/// Returns a short human-readable summary for a preamble node (assignment,
-/// enum definition, etc.).  Used to build the collapsed `__preamble__` node.
-fn preamble_summary(kind: &IrNodeKind) -> String {
-    match kind {
-        IrNodeKind::Assign { var, scope, .. } => {
-            format!("{} {var}", decl_kw(scope))
-        }
-        IrNodeKind::DefineEnum { name, .. } => format!("enum {name}"),
-        IrNodeKind::DefineScriptDecorator { name, .. } => format!("decorator {name}"),
-        IrNodeKind::DefineFunction { name, .. } => format!("fn {name}"),
-        IrNodeKind::Eval { .. } => "⟨eval⟩".into(),
-        _ => "⟨init⟩".into(),
-    }
-}
-
-/// Walks the prologue chain from `cursor`, following Assign / DefineEnum /
-/// DefineScriptDecorator / Nop / Eval Next edges, until the first
-/// non-preamble node (typically `EnterScope`) or `None` is reached.
-fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<NodeIndex> {
-    let mut current = cursor?;
-    let mut visited: HashSet<NodeIndex> = HashSet::new();
-    loop {
-        if !visited.insert(current) {
-            return Some(current);
-        }
-        let kind = graph.graph.node_weight(current)?;
-        match kind {
-            IrNodeKind::Assign { .. }
-            | IrNodeKind::DefineEnum { .. }
-            | IrNodeKind::DefineScriptDecorator { .. }
-            | IrNodeKind::DefineFunction { .. }
-            | IrNodeKind::Nop
-            | IrNodeKind::Eval { .. } => {
-                // Follow the Next edge.
-                let next = graph
-                    .graph
-                    .edges_directed(current, Direction::Outgoing)
-                    .find(|e| matches!(e.weight(), IrEdge::Next))
-                    .map(|e| e.target());
-                match next {
-                    Some(n) => current = n,
-                    None => return None,
-                }
-            }
-            _ => return Some(current),
-        }
-    }
-}
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

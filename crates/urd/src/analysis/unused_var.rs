@@ -116,7 +116,7 @@ fn check_block(block: &Ast, errors: &mut Vec<AnalysisError>) {
     // Map: variable name → declaration span.
     let mut unread: HashMap<String, SimpleSpan> = HashMap::new();
 
-    collect_in_block(block, &mut unread);
+    collect_in_block(block, &mut unread, errors);
 
     // Emit diagnostics for everything still unread.
     let mut unread_vec: Vec<(String, SimpleSpan)> = unread.into_iter().collect();
@@ -135,7 +135,7 @@ fn check_block(block: &Ast, errors: &mut Vec<AnalysisError>) {
 /// Walk `node`, updating the `unread` map as declarations and reads are found.
 ///
 /// Does NOT recurse into nested `LabeledBlock` nodes — those are separate scopes.
-fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
+fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>, errors: &mut Vec<AnalysisError>) {
     match node.content() {
         // ── Nested labeled blocks are independent — skip ─────────────────
         AstContent::LabeledBlock { .. } => {}
@@ -143,7 +143,7 @@ fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
         // ── Block: process statements in order ───────────────────────────
         AstContent::Block(stmts) => {
             for stmt in stmts {
-                collect_in_block(stmt, unread);
+                collect_in_block(stmt, unread, errors);
             }
         }
 
@@ -179,9 +179,15 @@ fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
                     // Then register the declaration.
                     if !is_fluent && let Some(name) = extract_decl_name(decl_name) {
                         // If the same name was already in `unread` (re-declaration
-                        // / shadowing), the old entry is replaced — the old one was
-                        // already covered by the previous declaration's check or
-                        // will be reported at end.
+                        // / shadowing), the old entry was never read — emit an
+                        // UnusedVariable warning for the previous declaration
+                        // before replacing it.
+                        if let Some(old_span) = unread.get(&name) {
+                            errors.push(AnalysisError::UnusedVariable {
+                                name: name.to_string(),
+                                span: *old_span,
+                            });
+                        }
                         unread.insert(name, node.span());
                     }
                 }
@@ -218,9 +224,9 @@ fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
             else_block,
         } => {
             scan_reads(condition, unread);
-            collect_in_block(then_block, unread);
+            collect_in_block(then_block, unread, errors);
             if let Some(eb) = else_block {
-                collect_in_block(eb, unread);
+                collect_in_block(eb, unread, errors);
             }
         }
 
@@ -232,19 +238,19 @@ fn collect_in_block(node: &Ast, unread: &mut HashMap<String, SimpleSpan>) {
                 if let crate::parser::ast::MatchPattern::Value(pv) = &arm.pattern {
                     scan_reads(pv, unread);
                 }
-                collect_in_block(&arm.body, unread);
+                collect_in_block(&arm.body, unread, errors);
             }
         }
 
         // ── Menu ──────────────────────────────────────────────────────────
         AstContent::Menu { options } => {
             for opt in options {
-                collect_in_block(opt, unread);
+                collect_in_block(opt, unread, errors);
             }
         }
 
         AstContent::MenuOption { content, .. } => {
-            collect_in_block(content, unread);
+            collect_in_block(content, unread, errors);
         }
 
         // ── All other nodes: scan for reads ───────────────────────────────

@@ -37,7 +37,9 @@ use crate::runtime::value::RuntimeValue;
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
+/// use urd::loc::to_slug;
+///
 /// assert_eq!(to_slug("The Story"),    Some("the_story".to_string()));
 /// assert_eq!(to_slug("hello-world"),  Some("hello_world".to_string()));
 /// assert_eq!(to_slug("café au lait"), Some("café_au_lait".to_string()));

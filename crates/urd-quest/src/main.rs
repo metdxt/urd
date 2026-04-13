@@ -675,6 +675,38 @@ fn collect_analysis_imports(
                 }
             }
         }
+        // Defensively recurse into compound nodes in case imports appear
+        // inside conditional, menu, or match blocks (the compiler permits it).
+        AstContent::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            collect_analysis_imports(then_block, loader, structs, enums, labels);
+            if let Some(eb) = else_block {
+                collect_analysis_imports(eb, loader, structs, enums, labels);
+            }
+        }
+        AstContent::LabeledBlock { block, .. } => {
+            collect_analysis_imports(block, loader, structs, enums, labels);
+        }
+        AstContent::Menu { options } => {
+            for opt in options {
+                collect_analysis_imports(opt, loader, structs, enums, labels);
+            }
+        }
+        AstContent::MenuOption { content, .. } => {
+            collect_analysis_imports(content, loader, structs, enums, labels);
+        }
+        AstContent::Match { arms, .. } => {
+            for arm in arms {
+                collect_analysis_imports(&arm.body, loader, structs, enums, labels);
+            }
+        }
+        AstContent::DecoratorDef { body, .. } => {
+            collect_analysis_imports(body, loader, structs, enums, labels);
+        }
+        // All other node types cannot contain import statements.
         _ => {}
     }
 }
@@ -828,7 +860,7 @@ fn build_vm(graph: IrGraph) -> Result<Vm, String> {
 //  Subcommand: run
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
+fn cmd_run(script_path: &Path, forced_locale: Option<&str>) -> Result<(), String> {
     let is_tty = io::stdin().is_terminal();
 
     print_separator();
@@ -836,21 +868,9 @@ fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
     println!("  Loading: {}", script_path.display());
     print_separator();
 
-    let graph = match build_graph(script_path) {
-        Ok(g) => g,
-        Err(msg) => {
-            eprintln!("\n\x1b[91mError:\x1b[0m {}\n", msg);
-            std::process::exit(1);
-        }
-    };
+    let graph = build_graph(script_path)?;
 
-    let vm = match build_vm(graph) {
-        Ok(vm) => vm,
-        Err(msg) => {
-            eprintln!("\n\x1b[91mError:\x1b[0m {}\n", msg);
-            std::process::exit(1);
-        }
-    };
+    let vm = build_vm(graph)?;
 
     // ── Locale discovery & selection ─────────────────────────────────────────
     //
@@ -900,11 +920,7 @@ fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
                 vm.with_localizer(Arc::new(localizer))
             }
             Err(e) => {
-                eprintln!(
-                    "\x1b[91mError:\x1b[0m could not load locale '{}': {}",
-                    tag, e
-                );
-                std::process::exit(1);
+                return Err(format!("could not load locale '{}': {}", tag, e));
             }
         },
         None => vm,
@@ -925,8 +941,7 @@ fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
                 break;
             }
             VmStep::Error(e) => {
-                eprintln!("\n\x1b[91mRuntime error:\x1b[0m {:?}\n", e);
-                std::process::exit(1);
+                return Err(format!("Runtime error: {:?}", e));
             }
             VmStep::Event(Event::Dialogue {
                 speakers,
@@ -951,8 +966,15 @@ fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
                 };
                 choice = Some(idx);
             }
+            // Forward-compatibility: `Event` and `VmStep` are `#[non_exhaustive]`.
+            _ => {
+                eprintln!("\n\x1b[93mWarning:\x1b[0m unhandled VM step, skipping.\n");
+                choice = None;
+            }
         }
     }
+
+    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -967,14 +989,8 @@ fn cmd_run(script_path: &Path, forced_locale: Option<&str>) {
 /// so shared imports are never duplicated across `.ftl` files.
 ///
 /// Output defaults to `i18n/en-US/` next to the script.
-fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) {
-    let graph = match build_graph(script_path) {
-        Ok(g) => g,
-        Err(msg) => {
-            eprintln!("\x1b[91mError:\x1b[0m {}", msg);
-            std::process::exit(1);
-        }
-    };
+fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) -> Result<(), String> {
+    let graph = build_graph(script_path)?;
 
     // Determine the file slug from the script name.
     let file_slug = script_path
@@ -991,14 +1007,9 @@ fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) {
         parent.join("i18n").join("en-US")
     });
 
-    if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        eprintln!(
-            "\x1b[91mError:\x1b[0m could not create '{}': {}",
-            out_dir.display(),
-            e
-        );
-        std::process::exit(1);
-    }
+    std::fs::create_dir_all(&out_dir).map_err(|e| {
+        format!("could not create '{}': {}", out_dir.display(), e)
+    })?;
 
     // Collect the distinct source modules.  For multi-file scripts this
     // returns one entry per source file ("" = root, "common.urd" = import);
@@ -1009,7 +1020,7 @@ fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) {
     if modules.is_empty() {
         // Single-file script: emit everything into one .ftl.
         let ftl_content = urd::loc::ftl::generate_ftl(&graph, file_slug);
-        write_ftl(&out_dir, file_slug, &ftl_content);
+        write_ftl(&out_dir, file_slug, &ftl_content)?;
     } else {
         // Multi-file script: one .ftl per source module — no duplicates.
         for source in &modules {
@@ -1025,41 +1036,33 @@ fn cmd_gen_l10n(script_path: &Path, output_dir: Option<&Path>) {
                     .to_string()
             };
             let ftl_content = urd::loc::ftl::generate_ftl_for_file(&graph, &slug, source);
-            write_ftl(&out_dir, &slug, &ftl_content);
+            write_ftl(&out_dir, &slug, &ftl_content)?;
         }
     }
+
+    Ok(())
 }
 
 /// Write `content` to `<dir>/<slug>.ftl`, printing a success message or
-/// exiting on I/O error.
-fn write_ftl(dir: &Path, slug: &str, content: &str) {
+/// returning an error.
+fn write_ftl(dir: &Path, slug: &str, content: &str) -> Result<(), String> {
     let out_file = dir.join(format!("{slug}.ftl"));
-    if let Err(e) = std::fs::write(&out_file, content) {
-        eprintln!(
-            "\x1b[91mError:\x1b[0m could not write '{}': {}",
-            out_file.display(),
-            e
-        );
-        std::process::exit(1);
-    }
+    std::fs::write(&out_file, content).map_err(|e| {
+        format!("could not write '{}': {}", out_file.display(), e)
+    })?;
     eprintln!(
         "Generated Fluent file: \x1b[32m{}\x1b[0m",
         out_file.display()
     );
+    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Subcommand: export
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn cmd_export(script_path: &Path, format: ExportFormat, output: Option<&Path>) {
-    let graph = match build_graph(script_path) {
-        Ok(g) => g,
-        Err(msg) => {
-            eprintln!("\x1b[91mError:\x1b[0m {}", msg);
-            std::process::exit(1);
-        }
-    };
+fn cmd_export(script_path: &Path, format: ExportFormat, output: Option<&Path>) -> Result<(), String> {
+    let graph = build_graph(script_path)?;
 
     let rendered = match format {
         ExportFormat::Dot => graph.to_dot(),
@@ -1068,14 +1071,9 @@ fn cmd_export(script_path: &Path, format: ExportFormat, output: Option<&Path>) {
 
     match output {
         Some(path) => {
-            if let Err(e) = std::fs::write(path, &rendered) {
-                eprintln!(
-                    "\x1b[91mError:\x1b[0m could not write '{}': {}",
-                    path.display(),
-                    e
-                );
-                std::process::exit(1);
-            }
+            std::fs::write(path, &rendered).map_err(|e| {
+                format!("could not write '{}': {}", path.display(), e)
+            })?;
 
             let fmt_label = match format {
                 ExportFormat::Dot => "DOT",
@@ -1088,6 +1086,8 @@ fn cmd_export(script_path: &Path, format: ExportFormat, output: Option<&Path>) {
             flush_stdout();
         }
     }
+
+    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1099,24 +1099,29 @@ fn main() {
 
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         None => {
             // No subcommand — default to running the demo script.
-            cmd_run(Path::new("examples/quest/cave.urd"), None);
+            cmd_run(Path::new("examples/quest/cave.urd"), None)
         }
         Some(Command::Run { script, locale }) => {
-            cmd_run(&script, locale.as_deref());
+            cmd_run(&script, locale.as_deref())
         }
         Some(Command::Export {
             script,
             format,
             output,
         }) => {
-            cmd_export(&script, format, output.as_deref());
+            cmd_export(&script, format, output.as_deref())
         }
         Some(Command::GenL10n { script, output }) => {
-            cmd_gen_l10n(&script, output.as_deref());
+            cmd_gen_l10n(&script, output.as_deref())
         }
+    };
+
+    if let Err(msg) = result {
+        eprintln!("\n\x1b[91mError:\x1b[0m {msg}\n");
+        std::process::exit(1);
     }
 }
 

@@ -3,6 +3,9 @@
 //! Provides [`AnalysisContext`], built once per analysis run from a single pass
 //! over the AST, and [`ScopeStack`], used per-pass for tracking variable type
 //! annotations as blocks are entered and exited.
+//!
+//! Also hosts shared helpers (e.g. [`node_kind_name`]) used by multiple
+//! analysis sub-passes.
 
 use std::collections::{HashMap, HashSet};
 
@@ -184,6 +187,46 @@ fn collect_top_level_vars(root: &Ast, vars: &mut HashMap<String, TypeAnnotation>
             }
             _ => {}
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// node_kind_name
+// ---------------------------------------------------------------------------
+
+/// Returns a human-readable name for an [`AstContent`] variant.
+///
+/// Used by decorator validation passes ([`super::fluent_decorator`],
+/// [`super::id_decorator`]) to produce clear diagnostics when a decorator is
+/// attached to an unsupported node kind.
+pub(super) fn node_kind_name(content: &AstContent) -> String {
+    match content {
+        AstContent::Declaration { .. } => "Declaration".to_string(),
+        AstContent::ExternDeclaration { .. } => "ExternDeclaration".to_string(),
+        AstContent::FnDef { .. } => "FnDef".to_string(),
+        AstContent::DecoratorDef { .. } => "DecoratorDef".to_string(),
+        AstContent::EnumDecl { .. } => "EnumDecl".to_string(),
+        AstContent::StructDecl { .. } => "StructDecl".to_string(),
+        AstContent::Import { .. } => "Import".to_string(),
+        AstContent::Jump { .. } => "Jump".to_string(),
+        AstContent::Return { .. } => "Return".to_string(),
+        AstContent::LetCall { .. } => "LetCall".to_string(),
+        AstContent::Call { .. } => "Call".to_string(),
+        AstContent::Block(_) => "Block".to_string(),
+        AstContent::List(_) => "List".to_string(),
+        AstContent::Map(_) => "Map".to_string(),
+        AstContent::BinOp { .. } => "BinOp".to_string(),
+        AstContent::UnaryOp { .. } => "UnaryOp".to_string(),
+        AstContent::Value(_) => "Value".to_string(),
+        AstContent::ExprList(_) => "ExprList".to_string(),
+        AstContent::Subscript { .. } => "Subscript".to_string(),
+        AstContent::SubscriptAssign { .. } => "SubscriptAssign".to_string(),
+        AstContent::Dialogue { .. } => "Dialogue".to_string(),
+        AstContent::Menu { .. } => "Menu".to_string(),
+        AstContent::MenuOption { .. } => "MenuOption".to_string(),
+        AstContent::LabeledBlock { .. } => "LabeledBlock".to_string(),
+        AstContent::If { .. } => "If".to_string(),
+        AstContent::Match { .. } => "Match".to_string(),
     }
 }
 

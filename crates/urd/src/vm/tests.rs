@@ -2490,3 +2490,82 @@ label start {
     expect_dialogue_line(&mut vm, "hello from start");
     assert!(matches!(vm.next(None), VmStep::Ended), "script should end");
 }
+
+// ── Bug-fix regression tests ──────────────────────────────────────────────
+
+/// `list.contains()` must use `values_equal` so that cross-type numeric
+/// comparisons work (e.g. `[1.0, 2.0].contains(1)` → `true`).
+#[test]
+fn test_list_contains_cross_type_numeric_equality() {
+    let list = vec![
+        RuntimeValue::Float(1.0),
+        RuntimeValue::Float(2.0),
+        RuntimeValue::Float(3.0),
+    ];
+
+    // Int 1 should match Float 1.0
+    let env = Environment::new();
+    let result =
+        list_methods::dispatch(list.clone(), "contains", &[RuntimeValue::Int(1)], &env).unwrap();
+    assert_eq!(result, RuntimeValue::Bool(true), "[1.0,2.0,3.0].contains(1)");
+
+    // Int 4 should not match anything
+    let result =
+        list_methods::dispatch(list.clone(), "contains", &[RuntimeValue::Int(4)], &env).unwrap();
+    assert_eq!(result, RuntimeValue::Bool(false), "[1.0,2.0,3.0].contains(4)");
+
+    // Symmetric: list of ints, searching with a float
+    let int_list = vec![
+        RuntimeValue::Int(10),
+        RuntimeValue::Int(20),
+    ];
+    let result =
+        list_methods::dispatch(int_list, "contains", &[RuntimeValue::Float(20.0)], &env).unwrap();
+    assert_eq!(result, RuntimeValue::Bool(true), "[10,20].contains(20.0)");
+}
+
+/// `is_truthy` must return `false` for empty strings and `true` for non-empty.
+#[test]
+fn test_is_truthy_empty_string_is_falsy() {
+    use super::eval::is_truthy;
+
+    let empty = RuntimeValue::Str(ParsedString::new_plain(""));
+    assert!(!is_truthy(&empty), "empty string should be falsy");
+
+    let non_empty = RuntimeValue::Str(ParsedString::new_plain("hello"));
+    assert!(is_truthy(&non_empty), "non-empty string should be truthy");
+}
+
+/// `is_truthy` must return `false` for empty maps and `true` for non-empty.
+#[test]
+fn test_is_truthy_empty_map_is_falsy() {
+    use super::eval::is_truthy;
+
+    let empty_map = RuntimeValue::Map(std::collections::HashMap::new());
+    assert!(!is_truthy(&empty_map), "empty map should be falsy");
+
+    let mut m = std::collections::HashMap::new();
+    m.insert("k".to_string(), Box::new(RuntimeValue::Int(1)));
+    let non_empty_map = RuntimeValue::Map(m);
+    assert!(is_truthy(&non_empty_map), "non-empty map should be truthy");
+}
+
+/// `is_truthy` must return `false` for structs with no fields and `true` otherwise.
+#[test]
+fn test_is_truthy_empty_struct_is_falsy() {
+    use super::eval::is_truthy;
+
+    let empty_struct = RuntimeValue::Struct {
+        name: "Empty".to_string(),
+        fields: std::collections::HashMap::new(),
+    };
+    assert!(!is_truthy(&empty_struct), "empty struct should be falsy");
+
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("x".to_string(), RuntimeValue::Int(42));
+    let non_empty_struct = RuntimeValue::Struct {
+        name: "Point".to_string(),
+        fields,
+    };
+    assert!(is_truthy(&non_empty_struct), "non-empty struct should be truthy");
+}

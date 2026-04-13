@@ -176,15 +176,12 @@ fn visit_node(
                 // writes introduced only inside the then-branch are uncertain
                 // (the branch may not execute), so we do NOT add them.
                 //
-                // `then_writes` was cloned from `last_write` before entering
-                // the branch, so any key in `then_writes` that is also in
-                // `last_write` was already there — the span may have changed
-                // inside the branch, but conservatively we keep the pre-if
-                // span.  New keys that appear only in `then_writes` are NOT
-                // propagated back (the branch might not have run).
-                //
-                // `last_write` is therefore already correct — no changes needed.
-                let _ = then_writes; // consumed; kept here to silence unused binding lint
+                // However, if a variable was *read* inside the then-branch,
+                // the pending write may have been consumed.  Conservatively:
+                // if the variable MAY have been read (i.e. the key was removed
+                // from `then_writes` compared to `last_write`), remove it from
+                // `last_write` too — the read might execute at runtime.
+                last_write.retain(|k, _| then_writes.contains_key(k));
             }
         }
 

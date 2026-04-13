@@ -42,7 +42,7 @@ impl PartialEq for Ast {
 }
 
 /// A decorator applied to an AST node, using Python-like `@name` or `@name(args)` syntax.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Decorator {
     /// The decorator's name (a single-segment identifier).
     name: String,
@@ -52,6 +52,12 @@ pub struct Decorator {
     /// Source span covering the entire decorator (from `@` through closing `)` if present).
     /// Zero span when constructed outside the parser.
     span: SimpleSpan,
+}
+
+impl PartialEq for Decorator {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.args == other.args
+    }
 }
 
 impl Decorator {
@@ -93,6 +99,7 @@ impl Decorator {
     }
 
     /// Set the source span on this decorator, returning `self` (builder).
+    #[must_use]
     pub fn with_span(mut self, span: SimpleSpan) -> Self {
         self.span = span;
         self
@@ -100,7 +107,7 @@ impl Decorator {
 }
 
 /// Represents binary operators in the Urd language.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operator {
     /// Addition operator (+)
     Plus,
@@ -151,7 +158,7 @@ pub enum Operator {
 }
 
 /// Represents unary operators in the Urd language.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOperator {
     /// Bitwise NOT operator (!)
     BitwiseNot,
@@ -162,7 +169,7 @@ pub enum UnaryOperator {
 }
 
 /// Data declaration modes
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeclKind {
     /// Globally available variable, typically represents the data game wants to preserve, global state.
     Global,
@@ -185,7 +192,7 @@ pub enum DeclKind {
 /// Type annotations use `: TypeName` syntax, e.g. `let x: int = 5`.
 /// The annotation is purely informational at parse time; the runtime may use it for
 /// type-checking or documentation purposes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeAnnotation {
     /// The `int` primitive type
     Int,
@@ -212,7 +219,7 @@ pub enum TypeAnnotation {
 /// The optional event-kind constraint on a decorator definition.
 /// `decorator foo<event: dialogue>(...)` → `EventConstraint::Dialogue`
 /// If the `<event: ...>` clause is absent, the decorator applies to any event.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventConstraint {
     /// Constrains the decorator to dialogue events only
     Dialogue,
@@ -323,7 +330,7 @@ impl std::fmt::Display for MatchPattern {
 }
 
 /// A single named parameter in a `decorator` definition.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecoratorParam {
     /// The parameter name (plain identifier)
     pub name: String,
@@ -332,7 +339,7 @@ pub struct DecoratorParam {
 }
 
 /// A single parameter in a [`AstContent::FnDef`] parameter list.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnParam {
     /// The parameter name.
     pub name: String,
@@ -398,7 +405,7 @@ impl MatchArm {
 }
 
 /// A single symbol import specifier: `symbol_name as local_alias` or just `symbol_name`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportSymbol {
     /// The original name in the source module. `None` means the whole module is imported.
     pub original: Option<String>,
@@ -673,18 +680,21 @@ impl Ast {
     }
 
     /// Attaches decorators to this AST node, replacing any existing ones.
+    #[must_use]
     pub fn with_decorators(mut self, decorators: Vec<Decorator>) -> Self {
         self.decorators = decorators;
         self
     }
 
     /// Attaches a documentation comment to this AST node, returning `self`.
+    #[must_use]
     pub fn with_doc_comment(mut self, doc: String) -> Self {
         self.doc_comment = Some(doc);
         self
     }
 
     /// Replaces the span on this node, returning `self`. Used by parsers after construction.
+    #[must_use]
     pub fn with_span(mut self, span: SimpleSpan) -> Self {
         self.span = span;
         self
@@ -693,15 +703,18 @@ impl Ast {
     /// Set the label-name span on a [`AstContent::LabeledBlock`] node (builder).
     ///
     /// Has no effect if called on a non-`LabeledBlock` node.
+    #[must_use]
     pub fn with_label_span(mut self, label_span: SimpleSpan) -> Self {
+        debug_assert!(
+            matches!(self.content, AstContent::LabeledBlock { .. }),
+            "with_label_span called on non-LabeledBlock node"
+        );
         if let AstContent::LabeledBlock {
             label_span: ref mut ls,
             ..
         } = self.content
         {
             *ls = TokSpan(label_span);
-        } else {
-            debug_assert!(false, "with_label_span called on non-LabeledBlock node");
         }
         self
     }
@@ -709,15 +722,18 @@ impl Ast {
     /// Set the label span on a [`AstContent::Jump`] node (builder).
     ///
     /// Has no effect on non-`Jump` nodes.
+    #[must_use]
     pub fn with_jump_label_span(mut self, label_span: SimpleSpan) -> Self {
+        debug_assert!(
+            matches!(self.content, AstContent::Jump { .. }),
+            "with_jump_label_span called on non-Jump node"
+        );
         if let AstContent::Jump {
             label_span: ref mut ls,
             ..
         } = self.content
         {
             *ls = TokSpan(label_span);
-        } else {
-            debug_assert!(false, "with_jump_label_span called on non-Jump node");
         }
         self
     }
@@ -725,7 +741,12 @@ impl Ast {
     /// Set the name and target spans on a [`AstContent::LetCall`] node (builder).
     ///
     /// Has no effect on non-`LetCall` nodes.
+    #[must_use]
     pub fn with_let_call_spans(mut self, name_span: SimpleSpan, target_span: SimpleSpan) -> Self {
+        debug_assert!(
+            matches!(self.content, AstContent::LetCall { .. }),
+            "with_let_call_spans called on non-LetCall node"
+        );
         if let AstContent::LetCall {
             name_span: ref mut ns,
             target_span: ref mut ts,
@@ -734,8 +755,6 @@ impl Ast {
         {
             *ns = TokSpan(name_span);
             *ts = TokSpan(target_span);
-        } else {
-            debug_assert!(false, "with_let_call_spans called on non-LetCall node");
         }
         self
     }
@@ -743,15 +762,18 @@ impl Ast {
     /// Set the function-name span on a [`AstContent::FnDef`] node (builder).
     ///
     /// Has no effect on non-`FnDef` nodes.
+    #[must_use]
     pub fn with_fn_name_span(mut self, name_span: Option<SimpleSpan>) -> Self {
+        debug_assert!(
+            matches!(self.content, AstContent::FnDef { .. }),
+            "with_fn_name_span called on non-FnDef node"
+        );
         if let AstContent::FnDef {
             name_span: ref mut ns,
             ..
         } = self.content
         {
             *ns = name_span.map(TokSpan);
-        } else {
-            debug_assert!(false, "with_fn_name_span called on non-FnDef node");
         }
         self
     }
@@ -1159,7 +1181,11 @@ impl Ast {
                                 c.push(ast);
                             }
                         }
-                        _ => {}
+                        MatchPattern::Range { start, end, .. } => {
+                            c.push(start);
+                            c.push(end);
+                        }
+                        MatchPattern::Wildcard => {}
                     }
                     c.push(&arm.body);
                 }

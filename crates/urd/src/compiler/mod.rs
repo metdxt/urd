@@ -35,6 +35,7 @@ use state::CompilerState;
 // ─── Public error type ────────────────────────────────────────────────────────
 
 /// Errors that can occur during compilation of an [`Ast`] into an [`IrGraph`].
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum CompilerError {
     /// A [`AstContent::Jump`] targeted a label that was never defined.

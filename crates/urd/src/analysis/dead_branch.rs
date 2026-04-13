@@ -148,26 +148,44 @@ fn fold_condition(node: &Ast, const_vals: &HashMap<String, bool>) -> Option<bool
             const_vals.get(&path[0]).copied()
         }
 
-        // Logical AND.
+        // Logical AND (short-circuit: false && _ = false, _ && false = false).
         AstContent::BinOp {
             op: Operator::And,
             left,
             right,
         } => {
-            let l = fold_condition(left, const_vals)?;
-            let r = fold_condition(right, const_vals)?;
-            Some(l && r)
+            let l = fold_condition(left, const_vals);
+            match l {
+                Some(false) => Some(false),
+                Some(true) => fold_condition(right, const_vals),
+                None => {
+                    let r = fold_condition(right, const_vals);
+                    match r {
+                        Some(false) => Some(false),
+                        _ => None,
+                    }
+                }
+            }
         }
 
-        // Logical OR.
+        // Logical OR (short-circuit: true || _ = true, _ || true = true).
         AstContent::BinOp {
             op: Operator::Or,
             left,
             right,
         } => {
-            let l = fold_condition(left, const_vals)?;
-            let r = fold_condition(right, const_vals)?;
-            Some(l || r)
+            let l = fold_condition(left, const_vals);
+            match l {
+                Some(true) => Some(true),
+                Some(false) => fold_condition(right, const_vals),
+                None => {
+                    let r = fold_condition(right, const_vals);
+                    match r {
+                        Some(true) => Some(true),
+                        _ => None,
+                    }
+                }
+            }
         }
 
         // Logical NOT.
@@ -486,8 +504,9 @@ label scene {
     }
 
     #[test]
-    fn no_fold_when_and_operand_is_runtime() {
-        // `a` is const true, `x` is a runtime variable — cannot fold the AND.
+    fn no_fold_when_and_operand_is_runtime_and_other_is_true() {
+        // `a` is const true, `x` is a runtime variable — `true && x` depends
+        // on `x`, so the AND cannot be folded.
         let src = r#"
 const a = true
 label scene {
@@ -503,8 +522,144 @@ label scene {
         let errors = check(&ast);
         assert!(
             dead_branch_errors(&errors).is_empty(),
-            "AND with a runtime variable must not be folded, got: {errors:?}"
+            "true && runtime must not be folded, got: {errors:?}"
         );
+    }
+
+    #[test]
+    fn short_circuit_false_and_runtime() {
+        // `false && runtime_var` short-circuits to false → then-branch dead.
+        let src = r#"
+const DEBUG = false
+label scene {
+    let x = true
+    if DEBUG && x {
+        end!
+    } else {
+        end!
+    }
+}
+"#;
+        let ast = parse(src);
+        let errors = check(&ast);
+        let db = dead_branch_errors(&errors);
+        assert_eq!(
+            db.len(),
+            1,
+            "expected one dead-branch diagnostic for false && runtime, got: {errors:?}"
+        );
+        match db[0] {
+            AnalysisError::AlwaysDeadBranch {
+                dead_branch_is_then,
+                ..
+            } => assert!(
+                dead_branch_is_then,
+                "then-branch should be dead for false && runtime"
+            ),
+            _ => panic!("expected AlwaysDeadBranch"),
+        }
+    }
+
+    #[test]
+    fn short_circuit_true_or_runtime() {
+        // `true || runtime_var` short-circuits to true → else-branch dead.
+        let src = r#"
+const ENABLED = true
+label scene {
+    let x = false
+    if ENABLED || x {
+        end!
+    } else {
+        end!
+    }
+}
+"#;
+        let ast = parse(src);
+        let errors = check(&ast);
+        let db = dead_branch_errors(&errors);
+        assert_eq!(
+            db.len(),
+            1,
+            "expected one dead-branch diagnostic for true || runtime, got: {errors:?}"
+        );
+        match db[0] {
+            AnalysisError::AlwaysDeadBranch {
+                dead_branch_is_then,
+                ..
+            } => assert!(
+                !dead_branch_is_then,
+                "else-branch should be dead for true || runtime"
+            ),
+            _ => panic!("expected AlwaysDeadBranch"),
+        }
+    }
+
+    #[test]
+    fn short_circuit_runtime_and_false() {
+        // `runtime_var && false` — right operand known false → folds to false.
+        let src = r#"
+const FLAG = false
+label scene {
+    let x = true
+    if x && FLAG {
+        end!
+    } else {
+        end!
+    }
+}
+"#;
+        let ast = parse(src);
+        let errors = check(&ast);
+        let db = dead_branch_errors(&errors);
+        assert_eq!(
+            db.len(),
+            1,
+            "expected one dead-branch diagnostic for runtime && false, got: {errors:?}"
+        );
+        match db[0] {
+            AnalysisError::AlwaysDeadBranch {
+                dead_branch_is_then,
+                ..
+            } => assert!(
+                dead_branch_is_then,
+                "then-branch should be dead for runtime && false"
+            ),
+            _ => panic!("expected AlwaysDeadBranch"),
+        }
+    }
+
+    #[test]
+    fn short_circuit_runtime_or_true() {
+        // `runtime_var || true` — right operand known true → folds to true.
+        let src = r#"
+const FLAG = true
+label scene {
+    let x = false
+    if x || FLAG {
+        end!
+    } else {
+        end!
+    }
+}
+"#;
+        let ast = parse(src);
+        let errors = check(&ast);
+        let db = dead_branch_errors(&errors);
+        assert_eq!(
+            db.len(),
+            1,
+            "expected one dead-branch diagnostic for runtime || true, got: {errors:?}"
+        );
+        match db[0] {
+            AnalysisError::AlwaysDeadBranch {
+                dead_branch_is_then,
+                ..
+            } => assert!(
+                !dead_branch_is_then,
+                "else-branch should be dead for runtime || true"
+            ),
+            _ => panic!("expected AlwaysDeadBranch"),
+        }
     }
 
     #[test]

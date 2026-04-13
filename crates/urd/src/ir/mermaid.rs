@@ -31,7 +31,7 @@ use petgraph::visit::EdgeRef;
 use super::analysis::{self, follow_nops};
 use super::render_common::{
     arm_pattern_label, ast_summary, decl_kw, decorator_line, extract_content_lines,
-    extract_speakers, truncate,
+    extract_speakers, is_preamble_kind, preamble_chain_target, preamble_summary, truncate,
 };
 use super::{IrEdge, IrGraph, IrNodeKind};
 
@@ -960,73 +960,7 @@ fn write_mermaid_edge(
     }
 }
 
-// ─── Preamble helpers ─────────────────────────────────────────────────────────
 
-/// Returns `true` for node kinds that should be collapsed into the preamble
-/// summary node (Assign, DefineEnum, DefineScriptDecorator, Eval).
-fn is_preamble_kind(kind: &IrNodeKind) -> bool {
-    matches!(
-        kind,
-        IrNodeKind::Assign { .. }
-            | IrNodeKind::DefineEnum { .. }
-            | IrNodeKind::DefineScriptDecorator { .. }
-            | IrNodeKind::DefineFunction { .. }
-            | IrNodeKind::Eval { .. }
-    )
-}
-
-/// Returns a short one-line summary for a preamble (non-clustered) IR node.
-fn preamble_summary(kind: &IrNodeKind) -> String {
-    match kind {
-        IrNodeKind::Assign { var, scope, .. } => {
-            format!("{} {var}", decl_kw(scope))
-        }
-        IrNodeKind::DefineEnum { name, .. } => {
-            format!("enum {name}")
-        }
-        IrNodeKind::DefineScriptDecorator { name, .. } => {
-            format!("decorator {name}")
-        }
-        IrNodeKind::DefineFunction { name, .. } => format!("fn {name}"),
-        IrNodeKind::Eval { .. } => "⟨eval⟩".to_string(),
-        _ => "⟨init⟩".to_string(),
-    }
-}
-
-/// Walks from `cursor` following preamble-style nodes (Assign, DefineEnum,
-/// DefineScriptDecorator, Nop, Eval) via their Next edges, until hitting an
-/// EnterScope, `None`, or any other non-preamble node.  Returns that target
-/// `Option<NodeIndex>`.
-fn preamble_chain_target(graph: &IrGraph, cursor: Option<NodeIndex>) -> Option<NodeIndex> {
-    let mut current = cursor?;
-    let mut visited: HashSet<NodeIndex> = HashSet::new();
-    loop {
-        if !visited.insert(current) {
-            return Some(current);
-        }
-        let kind = graph.graph.node_weight(current)?;
-        match kind {
-            IrNodeKind::Assign { .. }
-            | IrNodeKind::DefineEnum { .. }
-            | IrNodeKind::DefineScriptDecorator { .. }
-            | IrNodeKind::DefineFunction { .. }
-            | IrNodeKind::Nop
-            | IrNodeKind::Eval { .. } => {
-                // Follow the Next edge.
-                let next = graph
-                    .graph
-                    .edges_directed(current, Direction::Outgoing)
-                    .find(|e| matches!(e.weight(), IrEdge::Next))
-                    .map(|e| e.target());
-                match next {
-                    Some(n) => current = n,
-                    None => return None,
-                }
-            }
-            _ => return Some(current),
-        }
-    }
-}
 
 // ─── Mermaid-specific helpers ─────────────────────────────────────────────────
 

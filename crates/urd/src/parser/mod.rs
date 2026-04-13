@@ -4,13 +4,17 @@
 //! of tokens from the lexer into an Abstract Syntax Tree (AST) that represents the
 //! structure of the source code.
 //!
-//! The parser is implemented using the Pratt parsing technique, which is particularly
-//! well-suited for handling operator precedence and associativity in expressions.
+//! The parser is built with chumsky, a parser-combinator library. Expression parsing
+//! uses chumsky's built-in Pratt parser for operator precedence and associativity.
 //!
 //! ## Submodules
 //!
+//! - [`aliases`]: Type aliases used across parser sub-modules
 //! - [`ast`]: Abstract Syntax Tree definitions and node types
+//! - [`block`]: Block-level statement and top-level item parsers
+//! - [`errors`]: Parser error types and diagnostics
 //! - [`expr`]: Expression parsing implementation using Pratt parser
+//! - [`test_util`]: Shared test helpers (available under `#[cfg(test)]` or `test-support` feature)
 
 pub mod aliases;
 pub mod ast;

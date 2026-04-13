@@ -224,11 +224,42 @@ pub fn compute_clusters(
 /// Returns `None` if `graph.entry` is absent or never reaches a label node
 /// (e.g. the script has no `label` blocks at all).
 pub fn entry_cluster_name(graph: &IrGraph) -> Option<String> {
-    let label_by_entry: HashMap<NodeIndex, &str> = graph
-        .labels
-        .iter()
-        .map(|(name, &idx)| (idx, name.as_str()))
-        .collect();
+    // Build a NodeIndex → name map.  When `cluster_names` is populated
+    // (multi-file compilation) it already holds exactly one canonical name
+    // per unique NodeIndex — use it directly.  For single-file graphs we
+    // fall back to `labels`, but when two labels alias the same NodeIndex
+    // we deterministically prefer the shorter name (and among equal-length
+    // names, the one without a `::` module prefix).
+    let label_by_entry: HashMap<NodeIndex, &str> = if !graph.cluster_names.is_empty() {
+        graph
+            .cluster_names
+            .iter()
+            .map(|(&idx, name)| (idx, name.as_str()))
+            .collect()
+    } else {
+        let mut map: HashMap<NodeIndex, &str> = HashMap::new();
+        for (name, &idx) in &graph.labels {
+            let replace = match map.get(&idx) {
+                None => true,
+                Some(existing) => {
+                    let new_has_prefix = name.contains("::");
+                    let old_has_prefix = existing.contains("::");
+                    if new_has_prefix != old_has_prefix {
+                        // Prefer the bare (non-prefixed) name.
+                        !new_has_prefix
+                    } else {
+                        // Both prefixed or both bare — prefer shorter, then
+                        // lexicographically smaller for full determinism.
+                        (name.len(), name.as_str()) < (existing.len(), *existing)
+                    }
+                }
+            };
+            if replace {
+                map.insert(idx, name.as_str());
+            }
+        }
+        map
+    };
 
     let mut current = graph.entry?;
     let mut visited: HashSet<NodeIndex> = HashSet::new();

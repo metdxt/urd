@@ -58,7 +58,7 @@ impl ParsedString {
         ParsedString::default()
     }
 
-    /// New string from it's parts
+    /// New string from its parts
     pub fn new_from_parts(parts: Vec<StringPart>) -> Self {
         ParsedString(parts)
     }
@@ -140,7 +140,7 @@ impl std::fmt::Display for ParsedString {
                             .format
                             .as_deref()
                             .map(|fmt| format!(":{}", fmt))
-                            .unwrap_or_else(String::new)
+                            .unwrap_or_default()
                     )?;
                 }
                 StringPart::ExitString => {}
@@ -196,7 +196,8 @@ fn interpolation_parsing_callback<'a>(lex: &mut Lexer<'a, StringPart>) -> Result
     }
 
     let (path_str, format) = if let Some((p, f)) = inner_content.split_once(':') {
-        (p.trim(), Some(f.trim().to_string()))
+        let fmt = f.trim();
+        (p.trim(), if fmt.is_empty() { None } else { Some(fmt.to_string()) })
     } else {
         (inner_content, None)
     };
@@ -381,6 +382,33 @@ mod tests {
                 }),
                 StringPart::Literal("d".to_string()),
             ],
+        );
+    }
+
+    #[test]
+    fn test_interpolation_empty_format_normalized_to_none() {
+        // `{x:}` has an empty format specifier after the colon — must be
+        // normalized to `None`, not `Some("")`.
+        let s = parse(r#""{x:}""#);
+        assert_parts(
+            s,
+            &[StringPart::Interpolation(Interpolation {
+                path: "x".to_string(),
+                format: None,
+            })],
+        );
+    }
+
+    #[test]
+    fn test_interpolation_whitespace_only_format_normalized_to_none() {
+        // `{x:   }` — whitespace-only format after trim is empty → None.
+        let s = parse(r#""{x:   }""#);
+        assert_parts(
+            s,
+            &[StringPart::Interpolation(Interpolation {
+                path: "x".to_string(),
+                format: None,
+            })],
         );
     }
 

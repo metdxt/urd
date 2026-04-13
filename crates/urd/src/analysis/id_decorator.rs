@@ -30,6 +30,8 @@ use crate::lexer::strings::StringPart;
 use crate::parser::ast::{Ast, AstContent, Decorator, walk_ast};
 use crate::runtime::value::RuntimeValue;
 
+use super::context::node_kind_name;
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -217,38 +219,7 @@ fn extract_valid_id_override(decorators: &[Decorator]) -> Option<String> {
     crate::loc::extract_id_override(decorators)
 }
 
-/// Returns a short, human-readable name for an [`AstContent`] variant.
-///
-/// Used as the `node_kind` field of [`AnalysisError::IdOnUnsupportedNode`].
-/// The supported node types (which should never reach this function) fall
-/// through to the catch-all `"node"` label.
-fn node_kind_name(content: &AstContent) -> String {
-    match content {
-        AstContent::Declaration { .. } => "Declaration".to_string(),
-        AstContent::ExternDeclaration { .. } => "ExternDeclaration".to_string(),
-        AstContent::FnDef { .. } => "FnDef".to_string(),
-        AstContent::DecoratorDef { .. } => "DecoratorDef".to_string(),
-        AstContent::EnumDecl { .. } => "EnumDecl".to_string(),
-        AstContent::StructDecl { .. } => "StructDecl".to_string(),
-        AstContent::Import { .. } => "Import".to_string(),
-        AstContent::Jump { .. } => "Jump".to_string(),
-        AstContent::Return { .. } => "Return".to_string(),
-        AstContent::LetCall { .. } => "LetCall".to_string(),
-        AstContent::Call { .. } => "Call".to_string(),
-        AstContent::Block(_) => "Block".to_string(),
-        AstContent::List(_) => "List".to_string(),
-        AstContent::Map(_) => "Map".to_string(),
-        AstContent::BinOp { .. } => "BinOp".to_string(),
-        AstContent::UnaryOp { .. } => "UnaryOp".to_string(),
-        AstContent::Value(_) => "Value".to_string(),
-        AstContent::ExprList(_) => "ExprList".to_string(),
-        AstContent::Subscript { .. } => "Subscript".to_string(),
-        AstContent::SubscriptAssign { .. } => "SubscriptAssign".to_string(),
-        // Supported node types — structurally unreachable; node_kind_name is
-        // only called when is_supported is false.
-        _ => "node".to_string(),
-    }
-}
+
 
 // ---------------------------------------------------------------------------
 // Tests

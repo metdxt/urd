@@ -475,6 +475,8 @@ impl AnalysisError {
     ///
     /// For AST nodes built in tests (without a real parser span) this will be
     /// a zero span `0..0`.
+    // NOTE: When adding a new `AnalysisError` variant, update all four methods:
+    // `span()`, `is_warning()`, `message()`, and `label_message()`.
     pub fn span(&self) -> SimpleSpan {
         match self {
             AnalysisError::NonExhaustiveMatch { span, .. } => *span,
@@ -510,6 +512,8 @@ impl AnalysisError {
     }
 
     /// Returns `true` if this diagnostic is a warning rather than a hard error.
+    // NOTE: When adding a new `AnalysisError` variant, update all four methods:
+    // `span()`, `is_warning()`, `message()`, and `label_message()`.
     pub fn is_warning(&self) -> bool {
         match self {
             Self::UnreachableLabel { .. }
@@ -550,6 +554,8 @@ impl AnalysisError {
 
     /// Returns a short human-readable message for this error (used in `Display`
     /// and as the ariadne report message).
+    // NOTE: When adding a new `AnalysisError` variant, update all four methods:
+    // `span()`, `is_warning()`, `message()`, and `label_message()`.
     fn message(&self) -> String {
         match self {
             AnalysisError::NonExhaustiveMatch {
@@ -772,6 +778,8 @@ impl AnalysisError {
     }
 
     /// Returns a short label string suitable for an ariadne `Label`.
+    // NOTE: When adding a new `AnalysisError` variant, update all four methods:
+    // `span()`, `is_warning()`, `message()`, and `label_message()`.
     fn label_message(&self) -> String {
         match self {
             AnalysisError::NonExhaustiveMatch {

@@ -2152,6 +2152,14 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
             emit_semantic_tokens(left, out);
             emit_semantic_tokens(right, out);
             // The operator token itself sits between left and right spans.
+            //
+            // TODO(L-12): This span includes surrounding whitespace — for
+            // `a + b` the "operator" token covers ` + ` (3 chars) instead of
+            // just `+` (1 char).  Fixing this properly requires access to the
+            // source text so we can trim leading/trailing whitespace from the
+            // span, but `emit_semantic_tokens` only receives the AST.  A fix
+            // would either thread the source `&str` through every call, or
+            // store the precise operator span in the AST node itself.
             let op_start = left.span().end;
             let op_end = right.span().start;
             if op_end > op_start {
@@ -2165,6 +2173,9 @@ fn emit_semantic_tokens(ast: &Ast, out: &mut Vec<SemanticTokenInfo>) {
 
         AstContent::UnaryOp { op: _, expr } => {
             // Operator token is the bytes before the operand.
+            // TODO(L-12): Same whitespace-in-span issue as BinOp above —
+            // the span may include trailing whitespace between the operator
+            // and its operand.
             let op_end = expr.span().start;
             if op_end > span.start {
                 out.push(SemanticTokenInfo {

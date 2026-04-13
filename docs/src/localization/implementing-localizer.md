@@ -40,7 +40,7 @@ Pass your localizer to the VM builder before the first call to `next()`:
 use std::sync::Arc;
 
 let localizer = MyLocalizer::new("pl-PL")?;
-let vm = Vm::new(graph)
+let mut vm = Vm::new(graph, registry)?
     .with_localizer(Arc::new(localizer));
 ```
 
@@ -145,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "pl-PL",
     )?;
 
-    let mut vm = Vm::new(graph)
+    let mut vm = Vm::new(graph, registry)?
         .with_localizer(Arc::new(localizer));
 
     loop {
@@ -168,7 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 // ... read player choice ...
             }
-            VmStep::Done => break,
+            VmStep::Ended => break,
             _ => {}
         }
     }

@@ -24,6 +24,8 @@
 use crate::lexer::strings::ParsedString;
 use crate::runtime::value::RuntimeValue;
 
+use super::eval::values_equal;
+
 // ─── Public entry point ───────────────────────────────────────────────────────
 
 /// Dispatch a method call on a `RuntimeValue::List`.
@@ -42,6 +44,7 @@ pub(super) fn dispatch(
     list: Vec<RuntimeValue>,
     method: &str,
     args: &[RuntimeValue],
+    env: &super::env::Environment,
 ) -> Result<RuntimeValue, super::VmError> {
     match method {
         // ── Queries ───────────────────────────────────────────────────────────
@@ -79,7 +82,7 @@ pub(super) fn dispatch(
 
         "contains" => {
             require_args("contains", args, 1)?;
-            let found = list.iter().any(|el| el == &args[0]);
+            let found = list.iter().any(|el| values_equal(el, &args[0]));
             Ok(RuntimeValue::Bool(found))
         }
 
@@ -220,7 +223,7 @@ pub(super) fn dispatch(
             }
             let mut result = Vec::with_capacity(list.len());
             for item in list {
-                let mapped = super::eval::exec_fn_body(body, &params, &[item])?;
+                let mapped = super::eval::exec_fn_body(body, &params, &[item], env)?;
                 result.push(mapped);
             }
             Ok(RuntimeValue::List(result))
@@ -245,7 +248,7 @@ pub(super) fn dispatch(
             }
             let mut result = Vec::new();
             for item in list {
-                match super::eval::exec_fn_body(body, &params, std::slice::from_ref(&item))? {
+                match super::eval::exec_fn_body(body, &params, std::slice::from_ref(&item), env)? {
                     RuntimeValue::Bool(true) => result.push(item),
                     RuntimeValue::Bool(false) => {}
                     other => {
@@ -279,7 +282,7 @@ pub(super) fn dispatch(
             }
             let mut acc = init;
             for item in list {
-                acc = super::eval::exec_fn_body(body, &params, &[acc, item])?;
+                acc = super::eval::exec_fn_body(body, &params, &[acc, item], env)?;
             }
             Ok(acc)
         }
@@ -302,7 +305,7 @@ pub(super) fn dispatch(
                 )));
             }
             for item in list {
-                match super::eval::exec_fn_body(body, &params, std::slice::from_ref(&item))? {
+                match super::eval::exec_fn_body(body, &params, std::slice::from_ref(&item), env)? {
                     RuntimeValue::Bool(true) => return Ok(item),
                     RuntimeValue::Bool(false) => {}
                     other => {
@@ -334,7 +337,7 @@ pub(super) fn dispatch(
                 )));
             }
             for item in list {
-                match super::eval::exec_fn_body(body, &params, &[item])? {
+                match super::eval::exec_fn_body(body, &params, &[item], env)? {
                     RuntimeValue::Bool(true) => return Ok(RuntimeValue::Bool(true)),
                     RuntimeValue::Bool(false) => {}
                     other => {
@@ -366,7 +369,7 @@ pub(super) fn dispatch(
                 )));
             }
             for item in list {
-                match super::eval::exec_fn_body(body, &params, &[item])? {
+                match super::eval::exec_fn_body(body, &params, &[item], env)? {
                     RuntimeValue::Bool(true) => {}
                     RuntimeValue::Bool(false) => return Ok(RuntimeValue::Bool(false)),
                     other => {
@@ -388,6 +391,19 @@ pub(super) fn dispatch(
         //
         // Returns a new sorted list; the original is consumed.  Errors
         // produced by the comparator are propagated after sorting completes.
+        //
+        // The comparator should return an **Int** for correct three-way
+        // ordering (negative → Less, zero → Equal, positive → Greater),
+        // e.g. `fn(a, b) { a - b }`.
+        //
+        // A **Bool** return is also accepted as a strict-less-than
+        // comparator (`true` → Less, `false` → Greater).  Note: Bool
+        // comparators assume a strict weak ordering — elements that are
+        // equal under the predicate will both yield `false`, mapping to
+        // `Greater` in both directions.  This violates the `Ord` contract
+        // for equal elements but is tolerated by Rust's sort (which
+        // guarantees no UB, only an arbitrary permutation).  Prefer Int
+        // comparators when the collection may contain duplicates.
         "sort_by" => {
             require_args("sort_by", args, 1)?;
             let (params, body) = match &args[0] {
@@ -413,7 +429,7 @@ pub(super) fn dispatch(
                 if sort_error.is_some() {
                     return std::cmp::Ordering::Equal;
                 }
-                match super::eval::exec_fn_body(body, &params, &[a.clone(), b.clone()]) {
+                match super::eval::exec_fn_body(body, &params, &[a.clone(), b.clone()], env) {
                     Ok(RuntimeValue::Int(n)) => {
                         if n < 0 {
                             std::cmp::Ordering::Less
@@ -423,11 +439,15 @@ pub(super) fn dispatch(
                             std::cmp::Ordering::Equal
                         }
                     }
+                    // Bool accepted as a strict-less-than comparator.
+                    // Prefer Int comparators for correct three-way ordering.
                     Ok(RuntimeValue::Bool(true)) => std::cmp::Ordering::Less,
                     Ok(RuntimeValue::Bool(false)) => std::cmp::Ordering::Greater,
                     Ok(other) => {
                         sort_error = Some(super::VmError::TypeError(format!(
-                            "list.sort_by() comparator must return Int or Bool, got {:?}",
+                            "list.sort_by() comparator must return Int (preferred, \
+                             three-way: negative/zero/positive) or Bool (strict less-than), \
+                             got {:?}",
                             other
                         )));
                         std::cmp::Ordering::Equal
@@ -735,6 +755,7 @@ fn format_for_join(val: &RuntimeValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::env::Environment;
 
     // ── Convenience constructors ──────────────────────────────────────────────
 
@@ -756,7 +777,8 @@ mod tests {
         method: &str,
         args: Vec<RuntimeValue>,
     ) -> Result<RuntimeValue, super::super::VmError> {
-        dispatch(items, method, &args)
+        let env = Environment::new();
+        dispatch(items, method, &args, &env)
     }
 
     // ── len ──────────────────────────────────────────────────────────────────
@@ -971,7 +993,8 @@ mod tests {
             RuntimeValue::Int(2),
             RuntimeValue::Int(3),
         ];
-        let result = dispatch(list, "map", &[func]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(list, "map", &[func], &env).unwrap();
         assert_eq!(
             result,
             RuntimeValue::List(vec![
@@ -985,7 +1008,8 @@ mod tests {
     #[test]
     fn test_map_wrong_arg_type() {
         let list = vec![RuntimeValue::Int(1)];
-        let err = dispatch(list, "map", &[RuntimeValue::Int(42)]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(list, "map", &[RuntimeValue::Int(42)], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
@@ -999,7 +1023,8 @@ mod tests {
             body,
         };
         let list = vec![RuntimeValue::Int(1)];
-        let err = dispatch(list, "map", &[func]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(list, "map", &[func], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
@@ -1017,7 +1042,8 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![int(1), int(2), int(3), int(4)], "filter", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(1), int(2), int(3), int(4)], "filter", &[pred], &env).unwrap();
         assert_eq!(result, list_of([int(3), int(4)]));
     }
 
@@ -1030,13 +1056,15 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![], "filter", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![], "filter", &[pred], &env).unwrap();
         assert_eq!(result, list_of([]));
     }
 
     #[test]
     fn test_filter_wrong_arg_type() {
-        let err = dispatch(vec![int(1)], "filter", &[int(42)]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(vec![int(1)], "filter", &[int(42)], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
@@ -1051,7 +1079,8 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let err = dispatch(vec![int(1)], "filter", &[pred]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(vec![int(1)], "filter", &[pred], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
@@ -1070,10 +1099,12 @@ mod tests {
             params: vec!["acc".to_string(), "x".to_string()],
             body,
         };
+        let env = Environment::new();
         let result = dispatch(
             vec![int(1), int(2), int(3), int(4)],
             "reduce",
             &[int(0), func],
+            &env,
         )
         .unwrap();
         assert_eq!(result, int(10));
@@ -1092,7 +1123,8 @@ mod tests {
             params: vec!["acc".to_string(), "x".to_string()],
             body,
         };
-        let result = dispatch(vec![int(1), int(2), int(3)], "fold", &[int(0), func]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(1), int(2), int(3)], "fold", &[int(0), func], &env).unwrap();
         assert_eq!(result, int(6));
     }
 
@@ -1108,14 +1140,16 @@ mod tests {
             params: vec!["acc".to_string(), "x".to_string()],
             body,
         };
-        let result = dispatch(vec![], "reduce", &[int(42), func]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![], "reduce", &[int(42), func], &env).unwrap();
         assert_eq!(result, int(42));
     }
 
     #[test]
     fn test_reduce_wrong_function_arg_type() {
         // Second argument must be a function
-        let err = dispatch(vec![int(1)], "reduce", &[int(0), int(42)]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(vec![int(1)], "reduce", &[int(0), int(42)], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
@@ -1133,7 +1167,8 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![int(1), int(3), int(5)], "find", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(1), int(3), int(5)], "find", &[pred], &env).unwrap();
         assert_eq!(result, int(3));
     }
 
@@ -1149,13 +1184,15 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![int(1), int(2), int(3)], "find", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(1), int(2), int(3)], "find", &[pred], &env).unwrap();
         assert_eq!(result, RuntimeValue::Null);
     }
 
     #[test]
     fn test_find_wrong_arg_type() {
-        let err = dispatch(vec![int(1)], "find", &[int(42)]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(vec![int(1)], "find", &[int(42)], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
@@ -1173,7 +1210,8 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![int(1), int(2), int(3)], "any", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(1), int(2), int(3)], "any", &[pred], &env).unwrap();
         assert_eq!(result, RuntimeValue::Bool(true));
     }
 
@@ -1189,7 +1227,8 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![int(1), int(2), int(3)], "any", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(1), int(2), int(3)], "any", &[pred], &env).unwrap();
         assert_eq!(result, RuntimeValue::Bool(false));
     }
 
@@ -1202,13 +1241,15 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![], "any", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![], "any", &[pred], &env).unwrap();
         assert_eq!(result, RuntimeValue::Bool(false));
     }
 
     #[test]
     fn test_any_wrong_arg_type() {
-        let err = dispatch(vec![int(1)], "any", &[int(42)]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(vec![int(1)], "any", &[int(42)], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
@@ -1226,7 +1267,8 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![int(1), int(2), int(3)], "all", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(1), int(2), int(3)], "all", &[pred], &env).unwrap();
         assert_eq!(result, RuntimeValue::Bool(true));
     }
 
@@ -1242,7 +1284,8 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![int(1), int(2), int(3)], "all", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(1), int(2), int(3)], "all", &[pred], &env).unwrap();
         assert_eq!(result, RuntimeValue::Bool(false));
     }
 
@@ -1255,13 +1298,15 @@ mod tests {
             params: vec!["x".to_string()],
             body,
         };
-        let result = dispatch(vec![], "all", &[pred]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![], "all", &[pred], &env).unwrap();
         assert_eq!(result, RuntimeValue::Bool(true));
     }
 
     #[test]
     fn test_all_wrong_arg_type() {
-        let err = dispatch(vec![int(1)], "all", &[int(42)]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(vec![int(1)], "all", &[int(42)], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
@@ -1280,7 +1325,8 @@ mod tests {
             params: vec!["a".to_string(), "b".to_string()],
             body,
         };
-        let result = dispatch(vec![int(3), int(1), int(2)], "sort_by", &[cmp]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(3), int(1), int(2)], "sort_by", &[cmp], &env).unwrap();
         assert_eq!(result, list_of([int(1), int(2), int(3)]));
     }
 
@@ -1296,7 +1342,8 @@ mod tests {
             params: vec!["a".to_string(), "b".to_string()],
             body,
         };
-        let result = dispatch(vec![int(5), int(2), int(8)], "sort_by", &[cmp]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![int(5), int(2), int(8)], "sort_by", &[cmp], &env).unwrap();
         assert_eq!(result, list_of([int(2), int(5), int(8)]));
     }
 
@@ -1308,13 +1355,15 @@ mod tests {
             params: vec!["a".to_string(), "b".to_string()],
             body,
         };
-        let result = dispatch(vec![], "sort_by", &[cmp]).unwrap();
+        let env = Environment::new();
+        let result = dispatch(vec![], "sort_by", &[cmp], &env).unwrap();
         assert_eq!(result, list_of([]));
     }
 
     #[test]
     fn test_sort_by_wrong_arg_type() {
-        let err = dispatch(vec![int(1)], "sort_by", &[int(42)]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(vec![int(1)], "sort_by", &[int(42)], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 
@@ -1329,7 +1378,8 @@ mod tests {
             params: vec!["a".to_string(), "b".to_string()],
             body,
         };
-        let err = dispatch(vec![int(1), int(2)], "sort_by", &[cmp]).unwrap_err();
+        let env = Environment::new();
+        let err = dispatch(vec![int(1), int(2)], "sort_by", &[cmp], &env).unwrap_err();
         assert!(matches!(err, super::super::VmError::TypeError(_)));
     }
 

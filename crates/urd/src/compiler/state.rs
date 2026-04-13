@@ -560,9 +560,8 @@ impl CompilerState {
                     // Use an empty var name as the "discard return value" sentinel.
                     let id = self.graph.push(IrNodeKind::LetCall { var: String::new() });
                     self.graph.add_edge(id, target, IrEdge::Call);
-                    if let Some(n) = next {
-                        self.graph.add_edge(id, n, IrEdge::Ret);
-                    }
+                    let ret_target = next.unwrap_or_else(|| self.graph.push(IrNodeKind::End));
+                    self.graph.add_edge(id, ret_target, IrEdge::Ret);
                     Ok(Some(id))
                 } else {
                     // Unconditional jump — `next` is intentionally ignored.
@@ -584,9 +583,8 @@ impl CompilerState {
 
                 let id = self.graph.push(IrNodeKind::LetCall { var: name.clone() });
                 self.graph.add_edge(id, target_id, IrEdge::Call);
-                if let Some(n) = next {
-                    self.graph.add_edge(id, n, IrEdge::Ret);
-                }
+                let ret_target = next.unwrap_or_else(|| self.graph.push(IrNodeKind::End));
+                self.graph.add_edge(id, ret_target, IrEdge::Ret);
                 Ok(Some(id))
             }
 

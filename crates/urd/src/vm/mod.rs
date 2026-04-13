@@ -79,6 +79,7 @@ fn next_of(graph: &IrGraph, idx: NodeIndex) -> Option<NodeIndex> {
 // ─── Error type ───────────────────────────────────────────────────────────────
 
 /// Errors that can occur during VM construction or execution.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum VmError {
     /// A decorator name used in the script was not registered in the
@@ -457,6 +458,7 @@ impl Vm {
     /// pass `None` for all other steps.
     ///
     /// Returns [`VmStep::Ended`] when the script has ended.
+    #[must_use]
     #[allow(clippy::collapsible_if)]
     pub fn next(&mut self, choice: Option<usize>) -> VmStep {
         // Split borrows: the graph and exit-scope map are immutable for the

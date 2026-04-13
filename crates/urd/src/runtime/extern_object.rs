@@ -361,8 +361,12 @@ macro_rules! impl_int_via_i64 {
 impl_int_via_i64!(i8, i16, i32, u8, u16, u32);
 
 impl IntoRuntimeValue for u64 {
+    /// Converts to [`RuntimeValue::Int`].
+    ///
+    /// Values above [`i64::MAX`] are **saturated** to `i64::MAX` because Urd's
+    /// integer type is signed 64-bit.
     fn to_runtime_value(&self) -> RuntimeValue {
-        RuntimeValue::Int(*self as i64)
+        RuntimeValue::Int((*self).min(i64::MAX as u64) as i64)
     }
 }
 
@@ -380,9 +384,17 @@ impl IntoRuntimeValue for f32 {
 }
 
 impl FromRuntimeValue for f32 {
+    /// Converts from [`RuntimeValue::Float`].
+    ///
+    /// Returns an error if the `f64` value is finite but outside `f32` range
+    /// (would become infinite).
     fn from_runtime_value(value: &RuntimeValue) -> Result<Self, String> {
         let f = f64::from_runtime_value(value)?;
-        Ok(f as f32)
+        let result = f as f32;
+        if result.is_infinite() && f.is_finite() {
+            return Err(format!("float value {f} is out of f32 range"));
+        }
+        Ok(result)
     }
 }
 
@@ -575,5 +587,47 @@ mod tests {
     #[test]
     fn f64_from_int_coerces() {
         assert_eq!(f64::from_runtime_value(&RuntimeValue::Int(5)).unwrap(), 5.0);
+    }
+
+    // ---- u64 saturating conversion ----
+
+    #[test]
+    fn u64_max_saturates_to_i64_max() {
+        assert_eq!(
+            u64::MAX.to_runtime_value(),
+            RuntimeValue::Int(i64::MAX),
+            "u64::MAX must saturate to i64::MAX, not wrap to negative"
+        );
+    }
+
+    #[test]
+    fn u64_i64_max_is_exact() {
+        assert_eq!(
+            (i64::MAX as u64).to_runtime_value(),
+            RuntimeValue::Int(i64::MAX)
+        );
+    }
+
+    #[test]
+    fn u64_zero() {
+        assert_eq!(0u64.to_runtime_value(), RuntimeValue::Int(0));
+    }
+
+    // ---- f32 overflow rejection ----
+
+    #[test]
+    fn f32_from_f64_max_errors() {
+        let huge = RuntimeValue::Float(f64::MAX);
+        let err = f32::from_runtime_value(&huge);
+        assert!(
+            err.is_err(),
+            "f64::MAX must not silently become f32::INFINITY"
+        );
+    }
+
+    #[test]
+    fn f32_from_normal_value() {
+        let val = RuntimeValue::Float(1.5);
+        assert_eq!(f32::from_runtime_value(&val).unwrap(), 1.5f32);
     }
 }
