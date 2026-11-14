@@ -417,6 +417,29 @@ pub struct ImportSymbol {
     pub alias: String,
 }
 
+impl ImportSymbol {
+    /// Sentinel alias used by the wildcard form `import * from "path"`.
+    pub const WILDCARD_ALIAS: &'static str = "*";
+
+    /// Creates the sentinel entry for a wildcard import.
+    pub fn wildcard() -> Self {
+        Self {
+            original: None,
+            alias: Self::WILDCARD_ALIAS.to_owned(),
+        }
+    }
+
+    /// True when this is the whole-module import form (`import "path" as alias`).
+    pub fn is_whole_module(&self) -> bool {
+        self.original.is_none() && self.alias != Self::WILDCARD_ALIAS
+    }
+
+    /// True when this is the wildcard form (`import * from "path"`).
+    pub fn is_wildcard(&self) -> bool {
+        self.original.is_none() && self.alias == Self::WILDCARD_ALIAS
+    }
+}
+
 /// Represents the different types of content an AST node can contain.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstContent {
@@ -1105,6 +1128,16 @@ impl Ast {
     /// Creates an `Import` node with an explicit symbol list.
     pub fn import(path: String, symbols: Vec<ImportSymbol>) -> Self {
         Self::new(AstContent::Import { path, symbols })
+    }
+
+    /// Creates a wildcard import: `import * from "path"`.
+    ///
+    /// Brings every exported top-level name of the module into the importing
+    /// file's scope: values/speakers/decorators are already published into the
+    /// shared runtime environment, and exported (`@entry`) labels are mapped
+    /// to their bare names.
+    pub fn import_wildcard(path: String) -> Self {
+        Self::import(path, vec![ImportSymbol::wildcard()])
     }
 
     /// Convenience constructor for the whole-module form: `import "path" as alias`.

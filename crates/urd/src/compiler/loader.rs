@@ -152,6 +152,8 @@ struct ImportRef {
 enum ImportStyle {
     /// `import "path" as alias` — every label becomes `alias::label`.
     WholeModule { alias: String },
+    /// `import * from "path"` — exported names are imported into local scope.
+    Wildcard,
     /// `import (sym …) from "path"` — each entry is `(original_name, alias)`.
     Symbols { symbols: Vec<(String, String)> },
 }
@@ -244,10 +246,14 @@ fn collect_import_refs_from_ast(ast: &Ast, out: &mut Vec<ImportRef>) {
         }
         AstContent::Import { path, symbols } => {
             // A single ImportSymbol with `original == None` signals a whole-
-            // module import (`import "p" as alias`).
-            let is_whole = symbols.first().is_some_and(|s| s.original.is_none());
+            // module import (`import "p" as alias`); the `*` alias sentinel
+            // signals a wildcard import (`import * from "p"`).
+            let wildcard = symbols.first().is_some_and(|s| s.is_wildcard());
+            let is_whole = !wildcard && symbols.first().is_some_and(|s| s.is_whole_module());
 
-            let style = if is_whole {
+            let style = if wildcard {
+                ImportStyle::Wildcard
+            } else if is_whole {
                 ImportStyle::WholeModule {
                     alias: symbols[0].alias.clone(),
                 }
@@ -491,6 +497,26 @@ fn build_global_labels(
                         }
                     }
                 }
+                ImportStyle::Wildcard => {
+                    // Wildcard imports expose the module's public labels under
+                    // their bare names. Values, functions, decorators, enums and
+                    // structs already live in the shared preamble/environment.
+                    for (label_name, &idx) in imported_locals {
+                        if !module_entries
+                            .is_some_and(|entries| entries.contains(label_name.as_str()))
+                        {
+                            continue;
+                        }
+                        if let Some(&existing) = global.get(label_name) {
+                            if existing != idx {
+                                return Err(CompilerError::DuplicateLabel(label_name.clone()));
+                            }
+                            continue;
+                        }
+                        global.insert(label_name.clone(), idx);
+                        exported.insert(label_name.clone());
+                    }
+                }
                 ImportStyle::Symbols { symbols } => {
                     for (orig, alias) in symbols {
                         if let Some(&idx) = imported_locals.get(orig.as_str()) {
@@ -727,6 +753,10 @@ fn emit_all(
                             .entry(idx)
                             .or_insert_with(|| namespace(alias, name));
                     }
+                }
+                ImportStyle::Wildcard => {
+                    // Cluster rendering only; the bare label mapping is handled
+                    // by `build_global_labels`.
                 }
                 ImportStyle::Symbols { symbols } => {
                     for (orig, sym_alias) in symbols {
