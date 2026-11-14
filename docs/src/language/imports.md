@@ -70,6 +70,49 @@ and globals in a single statement.
 
 ---
 
+## Wildcard Import
+
+When you want a module's public names without any prefix at all, import everything:
+
+```urd
+import * from "cast.urd"
+
+@entry
+label scene {
+    @bg("res://game/assets/backgrounds/library-night.png")
+    narrator: "No prefix needed."
+    draconia: "None at all."
+    end!()
+}
+```
+
+A wildcard import brings the module's top-level values (`const`/`global`),
+speakers, decorators and functions into the importing file's scope. Structs and
+enums are available as bare type names as well. Only labels decorated with
+`@entry` are exported, so wildcard imports cannot reach a module's private
+labels; public labels can be jumped to by their bare name:
+
+```urd
+import * from "chapters.urd"
+
+@entry
+label start {
+    jump chapter_two
+}
+```
+
+Wildcard imports are a convenience, not a replacement for explicit imports:
+
+- Two wildcard imports that export the same `@entry` label name fail with a
+  `DuplicateLabel` error.
+- Values and speakers share the same bare-name environment as other imports, so
+  if two modules define the same bare name the last definition wins. Use aliased
+  or named imports when names may collide.
+- Prefer named imports (`import (narrator, Character) from "cast.urd"`) for
+  smaller dependency surfaces in large projects.
+
+---
+
 ## Renamed Import
 
 If an imported name collides with a local declaration (or you simply prefer a

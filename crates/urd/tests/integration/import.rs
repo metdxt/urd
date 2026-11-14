@@ -747,3 +747,160 @@ fn test_circular_import_with_entry_labels_succeeds() -> Result<(), Box<dyn std::
     );
     Ok(())
 }
+
+// ─── Test 18: Wildcard import allows bare jump to @entry labels ──────────────
+
+/// Wildcard imports expose the module's @entry labels under their bare names,
+/// so "jump greeting" works without a namespace.
+#[test]
+fn test_wildcard_import_allows_bare_jump() -> Result<(), Box<dyn std::error::Error>> {
+    let mut loader = MemLoader::new();
+    loader.add(
+        "lib.urd",
+        r#"
+        @entry
+        label greeting {
+            Alice: "Hello from wildcard import!"
+        }
+        "#,
+    );
+
+    let main_src = r#"
+        import * from "lib.urd"
+
+        @entry
+        label main {
+            jump greeting
+        }
+    "#;
+
+    let mut vm = build_vm_with_loader(main_src, &loader)?;
+    let lines = collect_dialogue_lines(&mut vm)?;
+    assert_eq!(
+        lines,
+        vec!["Hello from wildcard import!"],
+        "wildcard import must allow bare jump to @entry labels, got: {lines:?}"
+    );
+    Ok(())
+}
+
+// ─── Test 19: Wildcard import does not expose private labels ─────────────────
+
+/// Only @entry labels are public. A wildcard import must not make a private
+/// label reachable by its bare name.
+#[test]
+fn test_wildcard_import_skips_private_labels() {
+    let mut loader = MemLoader::new();
+    loader.add(
+        "lib.urd",
+        r#"
+        label secret {
+            Alice: "private"
+        }
+        "#,
+    );
+
+    let main_src = r#"
+        import * from "lib.urd"
+
+        @entry
+        label main {
+            jump secret
+        }
+    "#;
+
+    let result = try_compile_with_loader(main_src, &loader);
+    assert!(
+        matches!(result, Err(CompilerError::UnknownLabel(ref l)) if l == "secret"),
+        "wildcard import must not expose private labels, got: {result:?}"
+    );
+}
+
+// ─── Test 20: Conflicting wildcard labels fail deterministically ─────────────
+
+/// Two wildcard imports exposing the same @entry label name is a real
+/// collision, not a silent last-one-wins.
+#[test]
+fn test_duplicate_wildcard_entry_labels_fail() {
+    let mut loader = MemLoader::new();
+    loader.add(
+        "a.urd",
+        r#"
+        @entry
+        label greet { Alice: "from a" }
+        "#,
+    );
+    loader.add(
+        "b.urd",
+        r#"
+        @entry
+        label greet { Bob: "from b" }
+        "#,
+    );
+
+    let main_src = r#"
+        import * from "a.urd"
+        import * from "b.urd"
+
+        @entry
+        label main {
+            jump greet
+        }
+    "#;
+
+    let result = try_compile_with_loader(main_src, &loader);
+    assert!(
+        matches!(result, Err(CompilerError::DuplicateLabel(ref l)) if l == "greet"),
+        "duplicate wildcard label 'greet' must fail, got: {result:?}"
+    );
+}
+
+// ─── Test 21: Wildcard import exposes values, types and decorators ──────────
+
+/// A wildcard import makes the module's speakers, struct type and decorators
+/// usable without a prefix (values/decorators come from the shared preamble).
+#[test]
+fn test_wildcard_import_exposes_values_types_and_decorators() -> Result<(), Box<dyn std::error::Error>> {
+    let mut loader = MemLoader::new();
+    loader.add(
+        "lib.urd",
+        r#"
+        struct Character {
+            name: str
+        }
+        const narrator: Character = :{ name: "Wildcard Narrator" }
+        const hero: Character = :{ name: "Wildcard Hero" }
+
+        decorator bg<event: dialogue>(path: str) {
+            event["bg"] = path
+        }
+
+        @entry
+        label greeting {
+            narrator: "From the module."
+            end!()
+        }
+        "#,
+    );
+
+    let main_src = r#"
+        import * from "lib.urd"
+
+        @entry
+        label main {
+            @bg("res://main.png")
+            narrator: "Hello from a wildcard value."
+            hero: "And another one."
+            end!()
+        }
+    "#;
+
+    let mut vm = build_vm_with_loader(main_src, &loader)?;
+    let lines = collect_dialogue_lines(&mut vm)?;
+    assert_eq!(
+        lines,
+        vec!["Hello from a wildcard value.", "And another one."],
+        "wildcard values/decorators must resolve without a prefix, got: {lines:?}"
+    );
+    Ok(())
+}

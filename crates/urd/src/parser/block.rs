@@ -138,6 +138,15 @@ pub fn import_statement<'tok, I: UrdInput<'tok>>() -> BoxedUrdParser<'tok, I> {
 }
 
 fn import_statement_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I> {
+    // Form 0: `import * from "path"`  (wildcard import)
+    let form_wildcard = just(Token::Import)
+        .ignore_then(just(Token::Star).ignored())
+        .then_ignore(just(Token::From))
+        .then(select! {
+            Token::StrLit(s) => s.to_string(),
+        })
+        .map_with(|((), path), extra| Ast::import_wildcard(path).with_span(extra.span()));
+
     // Form 1: `import "path" as alias`  (whole-module import)
     let form1 = just(Token::Import)
         .ignore_then(select! {
@@ -210,7 +219,7 @@ fn import_statement_parser<'tok, I: UrdInput<'tok>>() -> impl UrdParser<'tok, I>
         })
         .map_with(|(symbols, path), extra| Ast::import(path, symbols).with_span(extra.span()));
 
-    choice((form3, form2, form1)).boxed()
+    choice((form_wildcard, form3, form2, form1)).boxed()
 }
 
 /// Parser for a single decorator: `@name` or `@name(arg1, arg2, ...)`
@@ -1028,6 +1037,19 @@ mod tests {
             } else {
                 panic!("expected FnDef, got {:?}", stmts[0].content());
             }
+        }
+    }
+
+    #[test]
+    fn import_wildcard_parses() {
+        let result = parse_test!(import_statement(), r#"import * from "foo.urd""#);
+        let ast = result.expect("wildcard import should parse");
+        if let AstContent::Import { path, symbols } = ast.content() {
+            assert_eq!(path, "foo.urd");
+            assert_eq!(symbols.len(), 1);
+            assert!(symbols[0].is_wildcard());
+        } else {
+            panic!("Expected AstContent::Import, got {:?}", ast.content());
         }
     }
 
