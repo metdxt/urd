@@ -1146,6 +1146,7 @@ fn test_todo_bang_ends_script() {
     let graph = IrGraph {
         graph: g,
         entry: Some(todo_id),
+        body_entry: Some(todo_id),
         labels: HashMap::new(),
         entry_labels: HashSet::new(),
         cluster_names: HashMap::new(),
@@ -1171,6 +1172,7 @@ fn test_end_bang_ends_script() {
     let graph = IrGraph {
         graph: g,
         entry: Some(end_id),
+        body_entry: Some(end_id),
         labels: HashMap::new(),
         entry_labels: HashSet::new(),
         cluster_names: HashMap::new(),
@@ -2760,4 +2762,239 @@ fn test_decorator_param_named_event_is_rejected() {
         }
         other => panic!("expected TypeError for reserved param name 'event', got: {other:?}"),
     }
+}
+
+// ── Host integration: globals, pending choice, imported values ───────────
+
+/// Extract the first speaker's display name and the first dialogue line.
+fn dialogue_speaker_and_line(vm: &mut Vm) -> (Option<String>, String) {
+    match vm.next(None) {
+        VmStep::Event(Event::Dialogue { speakers, lines, .. }) => {
+            let name = speakers.first().and_then(|speaker| match speaker {
+                RuntimeValue::Map(map) => map.borrow().get("name").map(|value| match &**value {
+                    RuntimeValue::Str(ps) => ps.to_string(),
+                    other => format!("{other:?}"),
+                }),
+                other => Some(format!("{other:?}")),
+            });
+            let line = match &lines[0] {
+                RuntimeValue::Str(ps) => ps.to_string(),
+                other => panic!("expected Str line, got {other:?}"),
+            };
+            (name, line)
+        }
+        other => panic!("expected Dialogue event, got {other:?}"),
+    }
+}
+
+/// Hosts can read, snapshot and overwrite globals between events.
+#[test]
+fn test_host_globals_access_and_mutation() {
+    use crate::compiler::loader::parse_source;
+
+    let src = r#"
+global hp = 10
+global title = "Ada"
+
+@entry
+label start {
+    narrator: "begin"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile(&ast).expect("compile");
+    let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+    expect_dialogue_line(&mut vm, "begin");
+    assert_eq!(vm.get_global("hp"), Some(&RuntimeValue::Int(10)));
+    assert_eq!(vm.globals().len(), 2, "preamble globals must be visible");
+    assert!(vm.get_global("missing").is_none());
+
+    vm.set_global("hp", RuntimeValue::Int(3));
+    assert_eq!(vm.get_global("hp"), Some(&RuntimeValue::Int(3)));
+}
+
+/// is_awaiting_choice mirrors the VM's pending-menu state.
+#[test]
+fn test_is_awaiting_choice_tracks_pending_menu() {
+    use crate::compiler::loader::parse_source;
+
+    let src = r#"
+@entry
+label start {
+    narrator: "pick one"
+    menu {
+        "a" { end!() }
+        "b" { end!() }
+    }
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile(&ast).expect("compile");
+    let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+    expect_dialogue_line(&mut vm, "pick one");
+    assert!(!vm.is_awaiting_choice(), "no menu has been emitted yet");
+    match vm.next(None) {
+        VmStep::Event(Event::Choice { .. }) => {}
+        other => panic!("expected Choice event, got {other:?}"),
+    }
+    assert!(vm.is_awaiting_choice(), "menu is pending");
+    assert!(matches!(vm.next(Some(0)), VmStep::Ended));
+    assert!(!vm.is_awaiting_choice(), "menu was answered");
+}
+
+/// import "x" as alias plus alias.const resolves the imported speaker.
+#[test]
+fn test_aliased_imported_const_resolves_as_speaker() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add(
+        "cast.urd",
+        r#"const narrator = :{ name: "Narrator", name_color: "white" }"#,
+    );
+
+    let src = r#"
+import "cast.urd" as cast
+
+@entry
+label start {
+    cast.narrator: "hello"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile_with_loader(&ast, &loader).expect("compile with imports");
+    let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+    let (name, line) = dialogue_speaker_and_line(&mut vm);
+    assert_eq!(name.as_deref(), Some("Narrator"));
+    assert_eq!(line, "hello");
+}
+
+/// import (const) from file publishes the imported value under its bare name.
+#[test]
+fn test_named_import_of_const_resolves_as_speaker() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add(
+        "cast.urd",
+        r#"const narrator = :{ name: "Narrator", name_color: "white" }"#,
+    );
+
+    let src = r#"
+import (narrator) from "cast.urd"
+
+@entry
+label start {
+    narrator: "hello"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile_with_loader(&ast, &loader).expect("compile with imports");
+    let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+    let (name, line) = dialogue_speaker_and_line(&mut vm);
+    assert_eq!(name.as_deref(), Some("Narrator"));
+    assert_eq!(line, "hello");
+}
+
+/// Starting at an explicit entry runs imported and root definitions first.
+#[test]
+fn test_new_at_runs_import_and_root_preamble() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add(
+        "cast.urd",
+        r#"decorator bg<event: dialogue>(path: str) { event["bg"] = path }
+const narrator = :{ name: "Narrator", name_color: "white" }"#,
+    );
+
+    let src = r#"
+import "cast.urd" as cast
+
+global flag = 7
+
+@entry
+label start {
+    cast.narrator: "start"
+    end!()
+}
+
+@entry
+label second {
+    @bg("res://bg.png")
+    cast.narrator: "second {flag}"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile_with_loader(&ast, &loader).expect("compile");
+    let mut vm = Vm::new_at(graph, empty_registry(), "second").expect("new_at");
+
+    match vm.next(None) {
+        VmStep::Event(Event::Dialogue {
+            speakers,
+            lines,
+            fields,
+            ..
+        }) => {
+            let name = match &speakers[0] {
+                RuntimeValue::Map(map) => map.borrow().get("name").map(|value| match &**value {
+                    RuntimeValue::Str(ps) => ps.to_string(),
+                    other => format!("{other:?}"),
+                }),
+                other => panic!("expected Map speaker, got {other:?}"),
+            };
+            assert_eq!(name.as_deref(), Some("Narrator"));
+            let line = match &lines[0] {
+                RuntimeValue::Str(ps) => ps.to_string(),
+                other => panic!("expected Str line, got {other:?}"),
+            };
+            assert_eq!(line, "second 7", "root global must be initialised");
+            assert!(
+                matches!(fields.get("bg"), Some(RuntimeValue::Str(ps)) if ps.to_string() == "res://bg.png"),
+                "imported decorator must be defined, fields: {fields:?}"
+            );
+        }
+        other => panic!("expected Dialogue event, got {other:?}"),
+    }
+}
+
+/// Single-file scripts with a preamble also initialise it on Vm::new_at.
+#[test]
+fn test_new_at_single_file_runs_preamble() {
+    use crate::compiler::loader::parse_source;
+
+    let src = r##"
+const narrator = :{ name: "Inline Narrator", name_color: "#123456" }
+global flag = 3
+
+@entry
+label start {
+    narrator: "start"
+    end!()
+}
+
+@entry
+label second {
+    narrator: "second {flag}"
+    end!()
+}
+"##;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile(&ast).expect("compile");
+    let mut vm = Vm::new_at(graph, empty_registry(), "second").expect("new_at");
+
+    let (name, line) = dialogue_speaker_and_line(&mut vm);
+    assert_eq!(name.as_deref(), Some("Inline Narrator"));
+    assert_eq!(line, "second 3");
 }

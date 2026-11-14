@@ -1585,6 +1585,7 @@ mod tests {
         let graph = IrGraph {
             graph: g,
             entry: Some(n0),
+            body_entry: Some(n0),
             labels: HashMap::new(),
             entry_labels: HashSet::new(),
             cluster_names: HashMap::new(),

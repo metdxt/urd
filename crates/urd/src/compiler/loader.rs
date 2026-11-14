@@ -33,6 +33,7 @@ use crate::{
     ir::{IrEdge, IrGraph, IrNodeKind, namespace},
     loc::IdContext,
     parser::ast::{Ast, AstContent},
+    runtime::value::RuntimeValue,
 };
 
 use super::{CompilerError, CompilerState};
@@ -398,6 +399,53 @@ fn scan_label_nops(
 ///
 /// All [`NodeIndex`] values come from `local_labels` (the Nop stubs from
 /// phase 2) so they are immediately valid in the shared graph.
+/// True when `ast` declares a named value/type/function/decorator `name`.
+///
+/// Named imports (`import (narrator) from "cast.urd"`) are only meaningful for
+/// labels, because labels are the only importable symbol that needs a graph
+/// mapping. Values, types and functions from an imported module are already
+/// published into the shared runtime environment by that module's preamble, so
+/// such imports need no extra work — but they must not be rejected as
+/// "missing symbol".
+fn module_declares_name(ast: &Ast, name: &str) -> bool {
+    match ast.content() {
+        AstContent::Block(stmts) => stmts.iter().any(|stmt| module_declares_name(stmt, name)),
+        AstContent::LabeledBlock { block, .. } => module_declares_name(block, name),
+        AstContent::Declaration { decl_name, .. } => {
+            declared_names(decl_name).contains(&name)
+        }
+        AstContent::ExternDeclaration { name: decl, .. } => {
+            ident_name(decl).is_some_and(|ident| ident == name)
+        }
+        AstContent::EnumDecl { name: decl, .. }
+        | AstContent::StructDecl { name: decl, .. }
+        | AstContent::DecoratorDef { name: decl, .. } => decl == name,
+        AstContent::FnDef {
+            name: Some(decl), ..
+        } => decl == name,
+        _ => false,
+    }
+}
+
+fn ident_name(ast: &Ast) -> Option<&str> {
+    match ast.content() {
+        AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => {
+            Some(path[0].as_str())
+        }
+        _ => None,
+    }
+}
+
+fn declared_names(ast: &Ast) -> Vec<&str> {
+    match ast.content() {
+        AstContent::Value(RuntimeValue::IdentPath(path)) if path.len() == 1 => {
+            vec![path[0].as_str()]
+        }
+        AstContent::ExprList(items) => items.iter().flat_map(declared_names).collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn build_global_labels(
     all: &AllModules,
     local_labels: &HashMap<String, HashMap<String, NodeIndex>>,
@@ -460,7 +508,11 @@ fn build_global_labels(
                             global.insert(alias.clone(), idx);
                             // Symbol imports are explicit opt-in; always exported.
                             exported.insert(alias.clone());
-                        } else {
+                        } else if !all
+                            .asts
+                            .get(&iref.imported_path)
+                            .is_some_and(|ast| module_declares_name(ast, orig))
+                        {
                             return Err(CompilerError::MissingImportedSymbol {
                                 symbol: orig.clone(),
                                 module: iref.imported_path.clone(),
@@ -515,7 +567,7 @@ fn emit_all(
         // Give each imported module its own fresh IdContext so its dialogue and
         // choice nodes receive stable, file-scoped loc_ids.
         state.id_ctx = file_stem_of(path).map(IdContext::new);
-        let entry = state.compile_top_level(ast)?;
+        let (entry, _body) = state.compile_top_level(ast)?;
 
         // Track modules that have a preamble (non-label executable nodes).
         if let Some(idx) = entry {
@@ -538,7 +590,7 @@ fn emit_all(
     // Use the root path's file stem for loc_id generation if provided;
     // fall back gracefully to no id_ctx for unnamed/inline compilations.
     state.id_ctx = root_path.and_then(file_stem_of).map(IdContext::new);
-    let root_entry = state.compile_top_level(root_ast)?;
+    let (root_entry, root_body) = state.compile_top_level(root_ast)?;
 
     // Reverse so chain_prologues wires them in deepest-dependency-first order:
     // preamble_entries was collected shallowest-first (BFS); chain_prologues
@@ -548,6 +600,10 @@ fn emit_all(
 
     let entry = chain_prologues(&mut state.graph, &preamble_entries, root_entry);
     state.graph.entry = entry;
+    // Remember where the definition/import preamble ends, so `Vm::new_at` can
+    // start at an alternative @entry label without skipping it. This is the
+    // root module's entry label node, not its preamble start.
+    state.graph.body_entry = root_body;
 
     // Record all @entry-decorated labels (bare + namespaced forms).
     // Root-module bare names were already added by `compile_top_level` (guarded

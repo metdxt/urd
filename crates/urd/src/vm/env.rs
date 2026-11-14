@@ -270,6 +270,25 @@ impl Environment {
         Err(VmError::UndefinedVariable(name.to_string()))
     }
 
+    /// Returns the full map of global variables.
+    ///
+    /// Globals (`global x = ...`) are the persistent, save-game-worthy part of
+    /// the environment: they live for the whole run, unlike scoped locals.
+    /// Hosts use this to serialise/restore state or to drive the script from
+    /// the engine side.
+    pub fn globals(&self) -> &HashMap<String, RuntimeValue> {
+        &self.globals
+    }
+
+    /// Overwrites a global variable from the host side.
+    ///
+    /// Unlike [`Self::set`] this does not need a declaration kind and does not
+    /// touch constants or scoped locals; it is meant for save restoration and
+    /// engine-driven state changes (e.g. toggling a story flag between runs).
+    pub fn set_global_value(&mut self, name: impl Into<String>, value: RuntimeValue) {
+        self.globals.insert(name.into(), value);
+    }
+
     /// Registers an enum type with its ordered variant names.
     pub fn define_enum(&mut self, name: String, variants: Vec<String>) {
         self.enums.insert(name, variants);
