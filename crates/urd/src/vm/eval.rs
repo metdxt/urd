@@ -531,9 +531,11 @@ pub(super) fn eval_runtime_value(
                 }
             }
             2 => {
-                // Two-segment: try `EnumName.Variant` first, then try
-                // module-namespaced variable "alias::var_name", then fall back
-                // to plain variable lookup of the first segment.
+                // Two-segment: try `EnumName.Variant` first, then the
+                // module-namespaced binding "alias::var_name", then struct /
+                // extern field access. Imported module values get explicit
+                // `alias::name` bindings from the compiler, so no bare-name
+                // fallback is needed here.
                 if let Ok(variant) = env.get_enum_variant(&path[0], &path[1]) {
                     return Ok(variant);
                 }
@@ -551,14 +553,6 @@ pub(super) fn eval_runtime_value(
                 // Try extern object field access: path = ["extern_var", "field"].
                 if let Ok(RuntimeValue::Extern(ref handle)) = env.get(&path[0]) {
                     return handle.get(&path[1]).map_err(VmError::TypeError);
-                }
-                // Imported-module values: every module shares a single
-                // environment, so an imported `const`/`global` also exists
-                // under its bare name (emitted by that module's preamble).
-                // `alias.name` therefore resolves to it when no other form
-                // matched. Kept last so struct/extern field access still wins.
-                if let Ok(value) = env.get(&path[1]) {
-                    return Ok(value);
                 }
                 Err(VmError::UndefinedVariable(format!(
                     "{}.{}",
@@ -618,11 +612,10 @@ pub(super) fn resolve_interp_path(path: &str, env: &Environment) -> Result<Runti
                 if let Ok(RuntimeValue::Extern(ref handle)) = env.get(segments[0]) {
                     return handle.get(segments[1]).map_err(VmError::TypeError);
                 }
-                // Imported-module value: see the equivalent fallback in
-                // `eval_runtime_value`.
-                env.get(segments[1]).map_err(|_| {
-                    VmError::UndefinedVariable(format!("{}.{}", segments[0], segments[1]))
-                })
+                Err(VmError::UndefinedVariable(format!(
+                    "{}.{}",
+                    segments[0], segments[1]
+                )))
             }),
         _ => env.get(&crate::ir::namespace(segments[0], segments[1])),
     }

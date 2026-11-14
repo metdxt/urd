@@ -1229,10 +1229,9 @@ fn test_max_compiler_depth_exceeded_returns_error() {
 fn test_body_entry_skips_single_file_preamble() {
     use crate::compiler::loader::parse_source;
 
-    let ast = parse_source(
-        "const x = 1\n\n@entry\nlabel start { end!() }\n\nlabel second { end!() }\n",
-    )
-    .expect("parse");
+    let ast =
+        parse_source("const x = 1\n\n@entry\nlabel start { end!() }\n\nlabel second { end!() }\n")
+            .expect("parse");
     let graph = Compiler::compile(&ast).expect("compile");
 
     let entry = graph.entry.expect("entry");
@@ -1366,13 +1365,47 @@ fn test_named_import_of_unknown_symbol_errors() {
     let mut loader = MemLoader::new();
     loader.add("cast.urd", r#"const narrator = :{ name: "Narrator" }"#);
 
-    let ast = parse_source(
-        "import (missing) from \"cast.urd\"\n\n@entry\nlabel start { end!() }\n",
-    )
-    .expect("parse");
+    let ast =
+        parse_source("import (missing) from \"cast.urd\"\n\n@entry\nlabel start { end!() }\n")
+            .expect("parse");
     let result = Compiler::compile_with_loader(&ast, &loader);
     assert!(
         matches!(result, Err(CompilerError::MissingImportedSymbol { .. })),
         "expected MissingImportedSymbol, got: {result:?}"
+    );
+}
+
+/// Imported module values are materialised under their whole-module aliases.
+#[test]
+fn test_imported_values_get_alias_bindings() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add(
+        "a.urd",
+        r#"const shared = "A"
+global counter = 1
+"#,
+    );
+    let ast =
+        parse_source("import \"a.urd\" as a\n\n@entry\nlabel start { end!() }\n").expect("parse");
+    let graph = Compiler::compile_with_loader(&ast, &loader).expect("compile");
+
+    let assigned: Vec<&str> = graph
+        .graph
+        .node_weights()
+        .filter_map(|kind| match kind {
+            IrNodeKind::Assign { var, .. } => Some(var.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        assigned.contains(&"a::shared"),
+        "expected an a::shared binding, got: {assigned:?}"
+    );
+    assert!(
+        assigned.contains(&"a::counter"),
+        "expected an a::counter binding, got: {assigned:?}"
     );
 }

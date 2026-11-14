@@ -2769,7 +2769,9 @@ fn test_decorator_param_named_event_is_rejected() {
 /// Extract the first speaker's display name and the first dialogue line.
 fn dialogue_speaker_and_line(vm: &mut Vm) -> (Option<String>, String) {
     match vm.next(None) {
-        VmStep::Event(Event::Dialogue { speakers, lines, .. }) => {
+        VmStep::Event(Event::Dialogue {
+            speakers, lines, ..
+        }) => {
             let name = speakers.first().and_then(|speaker| match speaker {
                 RuntimeValue::Map(map) => map.borrow().get("name").map(|value| match &**value {
                     RuntimeValue::Str(ps) => ps.to_string(),
@@ -2997,4 +2999,71 @@ label second {
     let (name, line) = dialogue_speaker_and_line(&mut vm);
     assert_eq!(name.as_deref(), Some("Inline Narrator"));
     assert_eq!(line, "second 3");
+}
+
+/// Aliased value access stays correct when two modules export the same names.
+#[test]
+fn test_aliased_values_do_not_collide_across_modules() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add(
+        "a.urd",
+        r#"const shared = "A"
+global shared_global = "GA"
+"#,
+    );
+    loader.add(
+        "b.urd",
+        r#"const shared = "B"
+global shared_global = "GB"
+"#,
+    );
+
+    let src = r#"
+import "a.urd" as a
+import "b.urd" as b
+
+@entry
+label start {
+    narrator: "{a.shared}/{b.shared}/{a.shared_global}/{b.shared_global}"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile_with_loader(&ast, &loader).expect("compile with imports");
+    let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+    expect_dialogue_line(&mut vm, "A/B/GA/GB");
+}
+
+/// A module's alias binding is captured before a later module overwrites the
+/// bare name, so traversal order cannot change aliased results.
+#[test]
+fn test_aliased_value_binding_is_order_independent() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add("first.urd", r#"global value = "one""#);
+    loader.add("second.urd", r#"global value = "two""#);
+
+    // Reverse import order from the previous test: the last-defined bare value
+    // is still "two", but both aliases must resolve to their own module.
+    let src = r#"
+import "second.urd" as b
+import "first.urd" as a
+
+@entry
+label start {
+    narrator: "{b.value}/{a.value}"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile_with_loader(&ast, &loader).expect("compile with imports");
+    let mut vm = Vm::new(graph, empty_registry()).expect("vm");
+
+    expect_dialogue_line(&mut vm, "two/one");
 }

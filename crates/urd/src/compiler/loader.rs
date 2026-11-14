@@ -32,7 +32,7 @@ use petgraph::visit::EdgeRef as _;
 use crate::{
     ir::{IrEdge, IrGraph, IrNodeKind, namespace},
     loc::IdContext,
-    parser::ast::{Ast, AstContent},
+    parser::ast::{Ast, AstContent, DeclKind},
     runtime::value::RuntimeValue,
 };
 
@@ -411,9 +411,7 @@ fn module_declares_name(ast: &Ast, name: &str) -> bool {
     match ast.content() {
         AstContent::Block(stmts) => stmts.iter().any(|stmt| module_declares_name(stmt, name)),
         AstContent::LabeledBlock { block, .. } => module_declares_name(block, name),
-        AstContent::Declaration { decl_name, .. } => {
-            declared_names(decl_name).contains(&name)
-        }
+        AstContent::Declaration { decl_name, .. } => declared_names(decl_name).contains(&name),
         AstContent::ExternDeclaration { name: decl, .. } => {
             ident_name(decl).is_some_and(|ident| ident == name)
         }
@@ -556,6 +554,25 @@ fn emit_all(
 
     let mut preamble_entries: Vec<NodeIndex> = Vec::new();
 
+    // Whole-module aliases per imported module, collected from every importer
+    // (including transitively imported modules). Exported values are bound
+    // under these aliases right after the defining module's preamble runs.
+    let mut aliases_by_module: HashMap<String, Vec<String>> = HashMap::new();
+    for refs in all.import_refs.values() {
+        for iref in refs {
+            if let ImportStyle::WholeModule { alias } = &iref.style {
+                aliases_by_module
+                    .entry(iref.imported_path.clone())
+                    .or_default()
+                    .push(alias.clone());
+            }
+        }
+    }
+    for aliases in aliases_by_module.values_mut() {
+        aliases.sort();
+        aliases.dedup();
+    }
+
     // Emit all imported modules in BFS order (skip the root, emitted last).
     state.is_imported_module = true;
     for path in all.order.iter().skip(1) {
@@ -568,6 +585,54 @@ fn emit_all(
         // choice nodes receive stable, file-scoped loc_ids.
         state.id_ctx = file_stem_of(path).map(IdContext::new);
         let (entry, _body) = state.compile_top_level(ast)?;
+
+        // Bind exported values under each import alias. Appending the bindings
+        // to this module's own preamble chain keeps them ahead of any later
+        // module's definitions, so a duplicate bare name cannot shadow them.
+        if let Some(entry_idx) = entry
+            && state
+                .graph
+                .graph
+                .node_weight(entry_idx)
+                .is_some_and(is_preamble_node_kind)
+        {
+            let aliases = aliases_by_module
+                .get(path)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let values = exported_value_names(ast);
+            if !aliases.is_empty() && !values.is_empty() {
+                normalize_imported_constants(&mut state.graph, entry_idx);
+                let tail = imported_preamble_tail(&state.graph, entry_idx);
+                let mut chain: Option<NodeIndex> = None;
+                for name in &values {
+                    for alias in aliases {
+                        chain = Some(push_imported_value_alias(
+                            &mut state.graph,
+                            alias,
+                            name,
+                            chain,
+                        ));
+                    }
+                }
+                if let Some(chain_start) = chain {
+                    // Replace the preamble's outgoing Next edge (usually into
+                    // the module's own entry label) with the alias chain. The
+                    // prologue linker retargets the chain tail to the next
+                    // module later.
+                    if let Some(edge) = state
+                        .graph
+                        .graph
+                        .edges(tail)
+                        .find(|edge| matches!(edge.weight(), IrEdge::Next))
+                        .map(|edge| edge.id())
+                    {
+                        state.graph.graph.remove_edge(edge);
+                    }
+                    state.graph.add_edge(tail, chain_start, IrEdge::Next);
+                }
+            }
+        }
 
         // Track modules that have a preamble (non-label executable nodes).
         if let Some(idx) = entry {
@@ -717,6 +782,133 @@ fn chain_prologues(
 ///
 /// Non-preamble-compatible node kinds (branches, choices, …) also stop the
 /// walk; they should not appear in a well-formed module prologue.
+/// Whether an IR node belongs to a module's definition preamble.
+///
+/// Used both to find the tail of a preamble chain (so imported-value bindings
+/// can be appended) and by [`patch_prologue_tail`].
+fn is_preamble_node_kind(kind: &IrNodeKind) -> bool {
+    matches!(
+        kind,
+        IrNodeKind::Assign { .. }
+            | IrNodeKind::Eval { .. }
+            | IrNodeKind::DefineEnum { .. }
+            | IrNodeKind::DefineScriptDecorator { .. }
+            | IrNodeKind::DefineFunction { .. }
+            | IrNodeKind::DefineStruct { .. }
+            | IrNodeKind::ExternDecl { .. }
+            | IrNodeKind::Nop
+    )
+}
+
+/// Return the last node of a module's preamble chain.
+fn imported_preamble_tail(graph: &IrGraph, entry: NodeIndex) -> NodeIndex {
+    let mut current = entry;
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return current; // cycle guard
+        }
+        let next = graph
+            .graph
+            .edges(current)
+            .find(|edge| matches!(edge.weight(), IrEdge::Next))
+            .map(|edge| edge.target());
+        match next {
+            Some(target)
+                if graph
+                    .graph
+                    .node_weight(target)
+                    .is_some_and(is_preamble_node_kind) =>
+            {
+                current = target;
+            }
+            _ => return current,
+        }
+    }
+}
+
+/// Names of the values a module exports: top-level `const` and `global`
+/// declarations. Labels/functions/types are imported through their own
+/// mechanisms and are not materialised as runtime value bindings.
+fn exported_value_names(ast: &Ast) -> Vec<String> {
+    match ast.content() {
+        AstContent::Block(stmts) => stmts.iter().flat_map(exported_value_names).collect(),
+        AstContent::Declaration {
+            kind: DeclKind::Constant | DeclKind::Global,
+            decl_name,
+            ..
+        } => declared_names(decl_name)
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Turn an imported module's top-level constants into module globals.
+///
+/// Imported modules share one environment, so two modules declaring the same
+/// `const` name would otherwise abort with "cannot reassign constant". Each
+/// module's constants are re-exported under `alias::name` bindings (see
+/// [`push_imported_value_alias`]), which are stable even when bare names
+/// collide. Turning the declarations into globals lets every module's preamble
+/// run; bare names follow last-definition-wins, alias-qualified access does not.
+fn normalize_imported_constants(graph: &mut IrGraph, entry: NodeIndex) {
+    let mut assign_nodes = Vec::new();
+    let mut current = Some(entry);
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
+    while let Some(idx) = current {
+        if !visited.insert(idx) {
+            break;
+        }
+        if matches!(
+            graph.graph.node_weight(idx),
+            Some(IrNodeKind::Assign { .. })
+        ) {
+            assign_nodes.push(idx);
+        }
+        current = graph
+            .graph
+            .edges(idx)
+            .find(|edge| matches!(edge.weight(), IrEdge::Next))
+            .map(|edge| edge.target())
+            .filter(|next| {
+                graph
+                    .graph
+                    .node_weight(*next)
+                    .is_some_and(is_preamble_node_kind)
+            });
+    }
+
+    for idx in assign_nodes {
+        if let Some(IrNodeKind::Assign { scope, .. }) = graph.node_mut(idx)
+            && matches!(scope, DeclKind::Constant)
+        {
+            *scope = DeclKind::Global;
+        }
+    }
+}
+
+/// Emit `alias::name = name` so an imported module's value is addressable as
+/// `alias.name` at runtime, independently of the bare-name environment.
+fn push_imported_value_alias(
+    graph: &mut IrGraph,
+    alias: &str,
+    name: &str,
+    next: Option<NodeIndex>,
+) -> NodeIndex {
+    let id = graph.push(IrNodeKind::Assign {
+        var: namespace(alias, name),
+        scope: DeclKind::Global,
+        expr: Ast::value(RuntimeValue::IdentPath(vec![name.to_owned()])),
+        fluent_alias: None,
+    });
+    if let Some(next) = next {
+        graph.add_edge(id, next, IrEdge::Next);
+    }
+    id
+}
+
 fn patch_prologue_tail(graph: &mut IrGraph, from: NodeIndex, new_next: NodeIndex) {
     let mut current = from;
     let mut visited: HashSet<NodeIndex> = HashSet::new();
@@ -726,19 +918,10 @@ fn patch_prologue_tail(graph: &mut IrGraph, from: NodeIndex, new_next: NodeIndex
             break; // cycle guard
         }
 
-        let is_preamble_node = matches!(
-            graph.graph.node_weight(current),
-            Some(
-                IrNodeKind::Assign { .. }
-                    | IrNodeKind::Eval { .. }
-                    | IrNodeKind::DefineEnum { .. }
-                    | IrNodeKind::DefineScriptDecorator { .. }
-                    | IrNodeKind::DefineFunction { .. }
-                    | IrNodeKind::DefineStruct { .. }
-                    | IrNodeKind::ExternDecl { .. }
-                    | IrNodeKind::Nop
-            )
-        );
+        let is_preamble_node = graph
+            .graph
+            .node_weight(current)
+            .is_some_and(is_preamble_node_kind);
         if !is_preamble_node {
             break;
         }
