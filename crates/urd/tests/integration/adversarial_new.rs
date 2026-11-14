@@ -624,7 +624,7 @@ label start {
     let steps = run_script(src);
 
     let errored = first_error(&steps).is_some();
-    let reached = dialogue_texts(&steps).contains(&"after match".to_string());
+    let reached = dialogue_texts(&steps).iter().any(|i| i == "after match");
 
     assert!(
         errored || reached,
@@ -664,7 +664,7 @@ label start {
     let steps = run_script(src);
 
     let errored = first_error(&steps).is_some();
-    let reached = dialogue_texts(&steps).contains(&"after match".to_string());
+    let reached = dialogue_texts(&steps).iter().any(|i| i == "after match");
 
     assert!(
         errored || reached,
@@ -695,7 +695,7 @@ label start {
     let steps = run_script(src);
 
     let errored = first_error(&steps).is_some();
-    let reached = dialogue_texts(&steps).contains(&"after match".to_string());
+    let reached = dialogue_texts(&steps).iter().any(|i| i == "after match");
 
     assert!(
         errored || reached,

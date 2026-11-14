@@ -417,6 +417,25 @@ impl Environment {
     }
 }
 
+// ─── CallFrame ────────────────────────────────────────────────────────────────
+
+/// Saved execution context pushed when entering a labeled block.
+///
+/// When [`crate::ir::IrNodeKind::Return`] fires, the top frame is popped and
+/// execution resumes at `return_cursor`.
+#[derive(Debug, Clone)]
+pub struct CallFrame {
+    /// The node to resume execution at after the return.
+    ///
+    /// `None` means "end the script" — analogous to the old `NODE_END` sentinel.
+    pub return_cursor: Option<NodeIndex>,
+    /// The scope depth at the time the frame was pushed (used by Return to
+    /// unwind extra scopes).
+    pub scope_depth: usize,
+    /// If `Some(name)`, store the return value in this variable when returning.
+    pub assign_to_var: Option<String>,
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -537,23 +556,4 @@ mod tests {
         env.pop_scope().unwrap();
         assert_eq!(env.depth(), 1);
     }
-}
-
-// ─── CallFrame ────────────────────────────────────────────────────────────────
-
-/// Saved execution context pushed when entering a labeled block.
-///
-/// When [`crate::ir::IrNodeKind::Return`] fires, the top frame is popped and
-/// execution resumes at `return_cursor`.
-#[derive(Debug, Clone)]
-pub struct CallFrame {
-    /// The node to resume execution at after the return.
-    ///
-    /// `None` means "end the script" — analogous to the old `NODE_END` sentinel.
-    pub return_cursor: Option<NodeIndex>,
-    /// The scope depth at the time the frame was pushed (used by Return to
-    /// unwind extra scopes).
-    pub scope_depth: usize,
-    /// If `Some(name)`, store the return value in this variable when returning.
-    pub assign_to_var: Option<String>,
 }

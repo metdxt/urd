@@ -228,12 +228,12 @@ fn derive_set_renamed_field() {
 fn derive_fields_list() {
     let p = Player::new(1, "x", 10, 0.0);
     let fields = ExternObject::fields(&p);
-    assert!(fields.contains(&"hp".to_string()));
-    assert!(fields.contains(&"name".to_string()));
-    assert!(fields.contains(&"id".to_string()));
-    assert!(fields.contains(&"pos_x".to_string()));
-    assert!(!fields.contains(&"internal_counter".to_string()));
-    assert!(!fields.contains(&"position_x".to_string()));
+    assert!(fields.iter().any(|i| i == "hp"));
+    assert!(fields.iter().any(|i| i == "name"));
+    assert!(fields.iter().any(|i| i == "id"));
+    assert!(fields.iter().any(|i| i == "pos_x"));
+    assert!(!fields.iter().any(|i| i == "internal_counter"));
+    assert!(!fields.iter().any(|i| i == "position_x"));
 }
 
 // ── ExternHandle: shared identity and mutation ────────────────────────────────

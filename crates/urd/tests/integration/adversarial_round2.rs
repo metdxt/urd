@@ -329,7 +329,7 @@ narrator: "{result}"
     let texts = dialogue_texts(&steps);
     // 1^anything == 1
     assert!(
-        texts.contains(&"1".to_string()) || first_error(&steps).is_some(),
+        texts.iter().any(|i| i == "1") || first_error(&steps).is_some(),
         "expected either '1' or a graceful error, got: {texts:?}"
     );
 }
@@ -364,8 +364,8 @@ narrator: "{result}"
     let texts = dialogue_texts(&steps);
     // (-1)^(even) = 1, (-1)^(odd) = -1.  2_000_000_000 is even.
     assert!(
-        texts.contains(&"1".to_string())
-            || texts.contains(&"-1".to_string())
+        texts.iter().any(|i| i == "1")
+            || texts.iter().any(|i| i == "-1")
             || first_error(&steps).is_some(),
         "expected ±1 or a graceful error, got: {texts:?}"
     );
@@ -401,7 +401,7 @@ narrator: "{result}"
     let steps = run_script(src);
     let texts = dialogue_texts(&steps);
     assert!(
-        texts.contains(&"0".to_string()) || first_error(&steps).is_some(),
+        texts.iter().any(|i| i == "0") || first_error(&steps).is_some(),
         "expected '0' or a graceful error, got: {texts:?}"
     );
 }
@@ -513,7 +513,7 @@ narrator: "{result}"
     let texts = dialogue_texts(&steps);
 
     // If we get "0" that's the bug — NaN was silently cast to 0.
-    if texts.contains(&"0".to_string()) && first_error(&steps).is_none() {
+    if texts.iter().any(|i| i == "0") && first_error(&steps).is_none() {
         panic!("float.to_int() silently converted NaN to 0 — should return an error");
     }
     // Getting an error is the correct behaviour.
@@ -569,7 +569,7 @@ narrator: "{result}"
     let steps = run_script(src);
     let texts = dialogue_texts(&steps);
 
-    if texts.contains(&"0".to_string()) && first_error(&steps).is_none() {
+    if texts.iter().any(|i| i == "0") && first_error(&steps).is_none() {
         panic!("float.ceil() silently converted NaN to 0 — should return an error");
     }
 }
@@ -588,7 +588,7 @@ narrator: "{result}"
     let steps = run_script(src);
     let texts = dialogue_texts(&steps);
 
-    if texts.contains(&"0".to_string()) && first_error(&steps).is_none() {
+    if texts.iter().any(|i| i == "0") && first_error(&steps).is_none() {
         panic!("float.round() silently converted NaN to 0 — should return an error");
     }
 }
@@ -815,7 +815,7 @@ narrator: "{result}"
             // Should either be 0 (mathematically correct) or a graceful error.
             // Anything but a panic is acceptable as long as the contract is clear.
             assert!(
-                first_error(&steps).is_some() || dialogue_texts(&steps).contains(&"0".to_string()),
+                first_error(&steps).is_some() || dialogue_texts(&steps).iter().any(|i| i == "0"),
                 "i64::MIN %% -1 should return 0 or an overflow error, got: {:?}",
                 dialogue_texts(&steps)
             );
@@ -843,7 +843,7 @@ narrator: "{total}"
     let steps = run_script(src);
     let texts = dialogue_texts(&steps);
 
-    if texts.contains(&"0".to_string()) && first_error(&steps).is_none() {
+    if texts.iter().any(|i| i == "0") && first_error(&steps).is_none() {
         panic!("list.sum() silently coerced NaN to 0 — should return an error");
     }
 }
@@ -1028,7 +1028,7 @@ narrator: "{total}"
 
     // If the result is "5", truncation is happening.
     // If the result is "6" or "6.6", the implementation handles floats natively.
-    if texts.contains(&"5".to_string()) {
+    if texts.iter().any(|i| i == "5") {
         eprintln!(
             "NOTE: [3.7, 2.9].sum() returns 5 due to float→int truncation. \
              Consider returning a Float sum when any element is Float."
@@ -1231,7 +1231,7 @@ narrator: "{result_b}"
     let texts = dialogue_texts(&steps);
 
     assert!(
-        texts.contains(&"1".to_string()),
+        texts.iter().any(|i| i == "1"),
         "x.pow(0) should return 1, got: {texts:?}"
     );
     assert_eq!(
@@ -1257,7 +1257,7 @@ narrator: "{result}"
     // Most languages (Python, JS, C) define 0^0 = 1.
     // An error is also acceptable but should be documented.
     assert!(
-        texts.contains(&"1".to_string()) || first_error(&steps).is_some(),
+        texts.iter().any(|i| i == "1") || first_error(&steps).is_some(),
         "0.pow(0) should return 1 or a documented error, got: {texts:?}"
     );
 }
@@ -1359,7 +1359,7 @@ narrator: "{result}"
     let texts = dialogue_texts(&steps);
 
     assert!(
-        texts.contains(&"abc".to_string()),
+        texts.iter().any(|i| i == "abc"),
         "str.repeat(1) should return 'abc', got: {texts:?}"
     );
 }
@@ -1388,7 +1388,7 @@ narrator: "{result}"
             // null or error are both acceptable for empty list min.
             let texts = dialogue_texts(&steps);
             assert!(
-                texts.contains(&"null".to_string())
+                texts.iter().any(|i| i == "null")
                     || first_error(&steps).is_some()
                     // Some implementations use "Null" with a capital N
                     || texts.iter().any(|t| t.to_lowercase() == "null"),
@@ -1417,7 +1417,7 @@ narrator: "{result}"
         Ok(steps) => {
             let texts = dialogue_texts(&steps);
             assert!(
-                texts.contains(&"null".to_string())
+                texts.iter().any(|i| i == "null")
                     || first_error(&steps).is_some()
                     || texts.iter().any(|t| t.to_lowercase() == "null"),
                 "[].max() should return null or an error, got: {texts:?}"
@@ -1440,7 +1440,7 @@ narrator: "{result}"
     let texts = dialogue_texts(&steps);
 
     assert!(
-        texts.contains(&"0".to_string()),
+        texts.iter().any(|i| i == "0"),
         "[].sum() should return 0, got: {texts:?}"
     );
 }
@@ -1475,7 +1475,7 @@ if c == c {
     // NaN != NaN (IEEE 754), so `c == c` is false.
     // The fact that `c` is NaN silently propagated through 3 arithmetic ops
     // and only manifests as `c != c` is the bug.
-    if texts.contains(&"not equal".to_string()) && first_error(&steps).is_none() {
+    if texts.iter().any(|i| i == "not equal") && first_error(&steps).is_none() {
         eprintln!(
             "NOTE: NaN silently propagated through 3 arithmetic operations \
              (sqrt → add → mul → sub) without any error.  Consider trapping NaN \
@@ -1653,7 +1653,7 @@ if {} > min_val {{
     let texts = dialogue_texts(&steps);
 
     assert!(
-        texts.contains(&"correct".to_string()),
+        texts.iter().any(|i| i == "correct"),
         "i64::MAX > i64::MIN should be true, got: {texts:?}"
     );
 }
@@ -1678,7 +1678,7 @@ if x == x {{
     let texts = dialogue_texts(&steps);
 
     assert!(
-        texts.contains(&"equal".to_string()),
+        texts.iter().any(|i| i == "equal"),
         "i64::MAX == i64::MAX should be true, got: {texts:?}"
     );
 }

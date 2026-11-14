@@ -160,8 +160,8 @@ fn bare_fields_lists_all() {
     };
     let fields = ExternObject::fields(&b);
     assert_eq!(fields.len(), 2);
-    assert!(fields.contains(&"x".to_string()));
-    assert!(fields.contains(&"name".to_string()));
+    assert!(fields.iter().any(|i| i == "x"));
+    assert!(fields.iter().any(|i| i == "name"));
 }
 
 #[test]
@@ -172,8 +172,8 @@ fn skip_field_absent_from_fields() {
     };
     let fields = ExternObject::fields(&w);
     assert_eq!(fields.len(), 1);
-    assert!(fields.contains(&"visible".to_string()));
-    assert!(!fields.contains(&"hidden".to_string()));
+    assert!(fields.iter().any(|i| i == "visible"));
+    assert!(!fields.iter().any(|i| i == "hidden"));
 }
 
 #[test]
@@ -184,8 +184,8 @@ fn readonly_field_present_in_fields() {
     };
     let fields = ExternObject::fields(&w);
     assert_eq!(fields.len(), 2);
-    assert!(fields.contains(&"mutable_field".to_string()));
-    assert!(fields.contains(&"locked".to_string()));
+    assert!(fields.iter().any(|i| i == "mutable_field"));
+    assert!(fields.iter().any(|i| i == "locked"));
 }
 
 #[test]
@@ -195,9 +195,9 @@ fn renamed_field_uses_script_name_in_fields() {
     };
     let fields = ExternObject::fields(&w);
     assert_eq!(fields.len(), 1);
-    assert!(fields.contains(&"public_name".to_string()));
+    assert!(fields.iter().any(|i| i == "public_name"));
     assert!(
-        !fields.contains(&"internal_name".to_string()),
+        !fields.iter().any(|i| i == "internal_name"),
         "Rust ident must not leak into fields()"
     );
 }
@@ -212,12 +212,12 @@ fn full_combo_fields_skips_internal_and_renames() {
         position_x: 0.0,
     };
     let fields = ExternObject::fields(&p);
-    assert!(fields.contains(&"hp".to_string()));
-    assert!(fields.contains(&"name".to_string()));
-    assert!(fields.contains(&"id".to_string()));
-    assert!(fields.contains(&"pos_x".to_string()));
-    assert!(!fields.contains(&"internal_counter".to_string()));
-    assert!(!fields.contains(&"position_x".to_string()));
+    assert!(fields.iter().any(|i| i == "hp"));
+    assert!(fields.iter().any(|i| i == "name"));
+    assert!(fields.iter().any(|i| i == "id"));
+    assert!(fields.iter().any(|i| i == "pos_x"));
+    assert!(!fields.iter().any(|i| i == "internal_counter"));
+    assert!(!fields.iter().any(|i| i == "position_x"));
     assert_eq!(fields.len(), 4);
 }
 
