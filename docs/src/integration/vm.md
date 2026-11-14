@@ -20,6 +20,16 @@ let mut vm = Vm::new(graph, registry)?;
 
 The result is a `Vm` that is ready to execute. All the expensive work happens here, not during the step loop.
 
+### Starting at a specific entry point
+
+`Vm::new` starts at the module's default entry: first the definition preamble (imports, `const`/`global` declarations, script decorators), then the first `@entry` label. When a script exposes several `@entry` labels, use `Vm::new_at` to choose one:
+
+```rust
+let mut vm = Vm::new_at(graph, registry, "chapter_two")?;
+```
+
+`new_at` still runs the full preamble before jumping to the requested label, so imported speakers, globals and script decorators are initialised exactly as they are for the default entry.
+
 ## VM State
 
 The VM is **stateful**. It holds:
@@ -59,6 +69,24 @@ let env = vm.env();
 ```
 
 `vm.env()` returns an immutable reference to the VM's `Environment`. This is useful for debugging, inspecting variable state between events, or reading computed values that the script has set.
+
+### Reading and restoring globals
+
+`global` declarations are the persistent part of the VM state — the values a save file needs. Read one, snapshot them all, or overwrite one from the host:
+
+```rust
+let hp = vm.get_global("hp");          // Option<&RuntimeValue>
+let snapshot = vm.globals();            // &HashMap<String, RuntimeValue>
+vm.set_global("hp", RuntimeValue::Int(42));
+```
+
+The same data is available on the environment as `Environment::globals()` and `Environment::set_global_value()`.
+
+Because the preamble initialisers execute on the first `vm.next()` call, restore saved globals **after** the first event, not between `Vm::new` and the first step.
+
+### Pending choices
+
+`vm.is_awaiting_choice()` is true when the last emitted event was a `Choice` that has not been answered. While it is true, call `vm.next(Some(index))`; calling `vm.next(None)` re-emits the same menu (or follows its default option when one exists).
 
 ### Reading the compiled graph
 

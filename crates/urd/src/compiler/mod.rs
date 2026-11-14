@@ -112,8 +112,9 @@ impl Compiler {
         state.scan_labels(ast)?;
 
         // Pass 2 — emit IR nodes using top-level partitioning (@entry support).
-        let entry = state.compile_top_level(ast)?;
+        let (entry, body_entry) = state.compile_top_level(ast)?;
         state.graph.entry = entry;
+        state.graph.body_entry = body_entry;
 
         Ok(state.graph)
     }
@@ -153,8 +154,9 @@ impl Compiler {
         let mut state = CompilerState::new();
         state.id_ctx = Some(IdContext::new(file_stem));
         state.scan_labels(ast)?;
-        let entry = state.compile_top_level(ast)?;
+        let (entry, body_entry) = state.compile_top_level(ast)?;
         state.graph.entry = entry;
+        state.graph.body_entry = body_entry;
         Ok(state.graph)
     }
 

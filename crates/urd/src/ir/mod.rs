@@ -24,7 +24,9 @@ mod render_common;
 
 use std::collections::{HashMap, HashSet};
 
+use petgraph::Direction;
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
+use petgraph::visit::EdgeRef as _;
 
 use crate::parser::ast::{Ast, DeclKind, Decorator, MatchPattern};
 
@@ -79,7 +81,18 @@ pub struct IrGraph {
     /// The directed graph of IR nodes and control-flow edges.
     pub(crate) graph: StableDiGraph<IrNodeKind, IrEdge>,
     /// The [`NodeIndex`] at which execution begins, or `None` for an empty graph.
+    ///
+    /// In multi-file compilation this is the first node of the chained
+    /// module-definition preamble (imports, const/global, decorators,
+    /// functions), not the first line of story. See `Self::body_entry`.
     pub entry: Option<NodeIndex>,
+    /// The [`NodeIndex`] at which the root module's story body begins: the end
+    /// of the preamble chain that `Self::entry` starts.
+    ///
+    /// `None` for graphs built before this field existed, and for empty graphs.
+    /// Used by `Self::entry_point_for` so starting at an explicit @entry label
+    /// still runs the imports/definitions first.
+    pub body_entry: Option<NodeIndex>,
     /// Maps every `label ident { … }` label name to the [`NodeIndex`] of the
     /// corresponding [`IrNodeKind::EnterScope`] node.
     ///
@@ -122,11 +135,54 @@ impl IrGraph {
         &self.graph
     }
 
+    /// Compute where execution must start so that `target` runs **after** the
+    /// module-definition preamble.
+    ///
+    /// `Vm::new_at` used to start directly at a label node, skipping the chain
+    /// of imports/decorators/const/global definitions that the multi-file
+    /// compiler emits before the default entry (`Self::entry`). This method
+    /// keeps that preamble in the path: when `target` is not the default
+    /// entry, it inserts a synthetic `IrNodeKind::Jump` after the preamble
+    /// chain and returns the graph entry. Single-file graphs (no preamble)
+    /// jump straight to `target`.
+    ///
+    /// The graph is mutated (one extra node and two edges) only for the
+    /// alternate-entry case; each VM owns its own cloned graph, so this never
+    /// affects other VMs.
+    pub fn entry_point_for(&mut self, target: NodeIndex) -> NodeIndex {
+        let (Some(entry), Some(body)) = (self.entry, self.body_entry) else {
+            return target;
+        };
+        if body == target {
+            // Default entry: the preamble chain already ends at the target.
+            return entry;
+        }
+        // The preamble chain's last node has a `Next` edge into the body.
+        let predecessor_edge = self
+            .graph
+            .edges_directed(body, Direction::Incoming)
+            .find(|edge| matches!(edge.weight(), IrEdge::Next))
+            .map(|edge| edge.id());
+        let Some(edge_id) = predecessor_edge else {
+            // No preamble: there is nothing to run before the target.
+            return target;
+        };
+        let Some((source, _)) = self.graph.edge_endpoints(edge_id) else {
+            return target;
+        };
+        let jump = self.push(IrNodeKind::Jump);
+        self.graph.remove_edge(edge_id);
+        self.graph.add_edge(source, jump, IrEdge::Next);
+        self.graph.add_edge(jump, target, IrEdge::Jump);
+        entry
+    }
+
     /// Creates an empty graph with no nodes and no entry point.
     pub(crate) fn new() -> Self {
         IrGraph {
             graph: StableDiGraph::new(),
             entry: None,
+            body_entry: None,
             labels: HashMap::new(),
             entry_labels: HashSet::new(),
             cluster_names: HashMap::new(),

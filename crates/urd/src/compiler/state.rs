@@ -167,16 +167,19 @@ impl CompilerState {
     pub(super) fn compile_top_level(
         &mut self,
         ast: &Ast,
-    ) -> Result<Option<NodeIndex>, CompilerError> {
+    ) -> Result<(Option<NodeIndex>, Option<NodeIndex>), CompilerError> {
         let stmts = match ast.content() {
             AstContent::Block(stmts) => stmts,
             // Not a block — fall back to the general compile path.
-            _ => return self.compile_node(ast, None),
+            _ => {
+                let id = self.compile_node(ast, None)?;
+                return Ok((id, id));
+            }
         };
 
         if stmts.is_empty() {
             let id = self.graph.push(IrNodeKind::Nop);
-            return Ok(Some(id));
+            return Ok((Some(id), Some(id)));
         }
 
         // Partition into preamble (definitions / non-label statements) and labels.
@@ -217,7 +220,7 @@ impl CompilerState {
         // ── Phase 3: compile preamble right-to-left, chaining into entry ──
         if preamble.is_empty() {
             // No preamble — entry is the label directly (or None).
-            return Ok(entry_label_node);
+            return Ok((entry_label_node, entry_label_node));
         }
 
         // If there are no labels, preamble chains to None (backward compat
@@ -227,7 +230,10 @@ impl CompilerState {
             continuation = self.compile_node(stmt, continuation)?;
         }
 
-        Ok(continuation)
+        // `continuation` is the preamble start (what `graph.entry` points at);
+        // `entry_label_node` is where the story body actually begins (what
+        // `graph.body_entry` needs for preamble-aware alternate entry points).
+        Ok((continuation, entry_label_node))
     }
 
     /// Find the entry label [`NodeIndex`] among the given label AST nodes.

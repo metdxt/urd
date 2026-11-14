@@ -334,7 +334,7 @@ impl Vm {
     /// - [`VmError::UnknownLabel`] if `label` is not a known `@entry` label.
     /// - [`VmError::UnknownDecorator`] if any script decorator is not registered.
     pub fn new_at(
-        graph: IrGraph,
+        mut graph: IrGraph,
         registry: DecoratorRegistry,
         label: &str,
     ) -> Result<Self, VmError> {
@@ -345,8 +345,14 @@ impl Vm {
                 label, graph.entry_labels
             )));
         }
-        let cursor = graph.labels.get(label).copied();
-        Self::build(graph, registry, cursor)
+        let target = graph.labels.get(label).copied().ok_or_else(|| {
+            VmError::UnknownLabel(format!("@entry label '{label}' has no graph node"))
+        })?;
+        // Run the definition/import preamble first, then jump to the requested
+        // entry label. Multi-file scripts rely on that preamble for speakers,
+        // globals and script-defined decorators.
+        let cursor = graph.entry_point_for(target);
+        Self::build(graph, registry, Some(cursor))
     }
 
     /// Shared constructor: validates decorators, builds the exit-scope map,
@@ -1135,6 +1141,34 @@ impl Vm {
     /// Returns a reference to the compiled [`IrGraph`].
     pub fn graph(&self) -> &IrGraph {
         &self.graph
+    }
+
+    /// Returns the value of a global variable declared with `global`, if set.
+    pub fn get_global(&self, name: &str) -> Option<&RuntimeValue> {
+        self.state.env.globals().get(name)
+    }
+
+    /// Returns all global variables (name -> value).
+    ///
+    /// This is the natural snapshot for a save file: it excludes locals,
+    /// constants and externs, which are recreated when the script runs again.
+    pub fn globals(&self) -> &HashMap<String, RuntimeValue> {
+        self.state.env.globals()
+    }
+
+    /// Sets a global variable from the host side.
+    ///
+    /// Intended for save restoration and engine-driven state. Script code keeps
+    /// writing globals normally; this is an additional entry point.
+    pub fn set_global(&mut self, name: impl Into<String>, value: RuntimeValue) {
+        self.state.env.set_global_value(name, value);
+    }
+
+    /// Whether the last emitted event was a [`Event::Choice`] that has not been
+    /// answered yet. While this is true, [`Vm::next`] must be called with
+    /// `Some(index)`.
+    pub fn is_awaiting_choice(&self) -> bool {
+        self.state.pending_choice.is_some()
     }
 
     /// Inject a runtime-provided extern value into the VM's environment.

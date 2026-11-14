@@ -1221,3 +1221,191 @@ fn test_max_compiler_depth_exceeded_returns_error() {
         other => panic!("expected CompilerError::Internal for depth overflow, got: {other}",),
     }
 }
+
+// ── Preamble-aware entry points ───────────────────────────────────────────
+
+/// Single-file: entry starts the preamble, body_entry points at the label.
+#[test]
+fn test_body_entry_skips_single_file_preamble() {
+    use crate::compiler::loader::parse_source;
+
+    let ast =
+        parse_source("const x = 1\n\n@entry\nlabel start { end!() }\n\nlabel second { end!() }\n")
+            .expect("parse");
+    let graph = Compiler::compile(&ast).expect("compile");
+
+    let entry = graph.entry.expect("entry");
+    let body = graph.body_entry.expect("body_entry");
+    assert_ne!(
+        entry, body,
+        "preamble start and story body must be different nodes"
+    );
+    assert_eq!(
+        Some(body),
+        graph.labels.get("start").copied(),
+        "body_entry must be the @entry label node"
+    );
+}
+
+/// Multi-file: the same distinction holds with imported module preambles.
+#[test]
+fn test_body_entry_skips_multifile_preamble() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add("cast.urd", r#"const narrator = :{ name: "Narrator" }"#);
+    let src = r#"
+import "cast.urd" as cast
+
+global flag = 7
+
+@entry
+label start {
+    cast.narrator: "start"
+    end!()
+}
+
+@entry
+label second {
+    cast.narrator: "second"
+    end!()
+}
+"#;
+    let ast = parse_source(src).expect("parse");
+    let graph = Compiler::compile_with_loader(&ast, &loader).expect("compile");
+
+    let entry = graph.entry.expect("entry");
+    let body = graph.body_entry.expect("body_entry");
+    assert_ne!(entry, body);
+    assert_eq!(Some(body), graph.labels.get("start").copied());
+}
+
+/// entry_point_for keeps the preamble in the path and jumps to the target.
+#[test]
+fn test_entry_point_for_inserts_jump_to_alternate_label() {
+    use crate::compiler::loader::parse_source;
+
+    let ast = parse_source(
+        "const x = 1\n\n@entry\nlabel start { end!() }\n\n@entry\nlabel second { end!() }\n",
+    )
+    .expect("parse");
+    let mut graph = Compiler::compile(&ast).expect("compile");
+
+    let entry = graph.entry.expect("entry");
+    let start = graph.labels.get("start").copied().expect("start label");
+    let second = graph.labels.get("second").copied().expect("second label");
+
+    assert_eq!(
+        graph.entry_point_for(start),
+        entry,
+        "default entry must run the preamble chain"
+    );
+
+    let start = graph.entry_point_for(second);
+    assert_eq!(
+        start, entry,
+        "alternate entry must still start at the preamble"
+    );
+
+    let jump_targets: Vec<_> = graph
+        .graph
+        .node_indices()
+        .filter_map(|idx| {
+            if !matches!(graph.graph.node_weight(idx), Some(IrNodeKind::Jump)) {
+                return None;
+            }
+            graph
+                .graph
+                .edges(idx)
+                .find(|edge| matches!(edge.weight(), IrEdge::Jump))
+                .map(|edge| edge.target())
+        })
+        .collect();
+    assert!(
+        jump_targets.contains(&second),
+        "expected a synthetic jump to the alternate label, targets: {jump_targets:?}"
+    );
+}
+
+/// Named imports of values/types are accepted; label imports stay strict.
+#[test]
+fn test_named_import_of_constant_is_accepted() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add("cast.urd", r#"const narrator = :{ name: "Narrator" }"#);
+
+    let ast = parse_source(
+        r#"
+import (narrator) from "cast.urd"
+
+@entry
+label start {
+    narrator: "hi"
+    end!()
+}
+"#,
+    )
+    .expect("parse");
+    let result = Compiler::compile_with_loader(&ast, &loader);
+    assert!(
+        result.is_ok(),
+        "named import of a const must compile, got: {result:?}"
+    );
+}
+
+/// Unknown names in a named import are still rejected.
+#[test]
+fn test_named_import_of_unknown_symbol_errors() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add("cast.urd", r#"const narrator = :{ name: "Narrator" }"#);
+
+    let ast =
+        parse_source("import (missing) from \"cast.urd\"\n\n@entry\nlabel start { end!() }\n")
+            .expect("parse");
+    let result = Compiler::compile_with_loader(&ast, &loader);
+    assert!(
+        matches!(result, Err(CompilerError::MissingImportedSymbol { .. })),
+        "expected MissingImportedSymbol, got: {result:?}"
+    );
+}
+
+/// Imported module values are materialised under their whole-module aliases.
+#[test]
+fn test_imported_values_get_alias_bindings() {
+    use crate::compiler::loader::parse_source;
+    use crate::vm::loader::MemLoader;
+
+    let mut loader = MemLoader::new();
+    loader.add(
+        "a.urd",
+        r#"const shared = "A"
+global counter = 1
+"#,
+    );
+    let ast =
+        parse_source("import \"a.urd\" as a\n\n@entry\nlabel start { end!() }\n").expect("parse");
+    let graph = Compiler::compile_with_loader(&ast, &loader).expect("compile");
+
+    let assigned: Vec<&str> = graph
+        .graph
+        .node_weights()
+        .filter_map(|kind| match kind {
+            IrNodeKind::Assign { var, .. } => Some(var.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        assigned.contains(&"a::shared"),
+        "expected an a::shared binding, got: {assigned:?}"
+    );
+    assert!(
+        assigned.contains(&"a::counter"),
+        "expected an a::counter binding, got: {assigned:?}"
+    );
+}

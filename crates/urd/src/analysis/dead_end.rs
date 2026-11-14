@@ -112,13 +112,7 @@ fn last_menu_in_block(block: &Ast) -> Option<&Ast> {
         .iter()
         .rev()
         .find(|s| !matches!(s.content(), AstContent::LabeledBlock { .. }))
-        .and_then(|s| {
-            if matches!(s.content(), AstContent::Menu { .. }) {
-                Some(s)
-            } else {
-                None
-            }
-        })
+        .filter(|s| matches!(s.content(), AstContent::Menu { .. }))
 }
 
 /// Emit one [`AnalysisError::DeadEnd`] for each option in `menu_node` whose

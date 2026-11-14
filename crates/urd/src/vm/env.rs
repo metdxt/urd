@@ -270,6 +270,25 @@ impl Environment {
         Err(VmError::UndefinedVariable(name.to_string()))
     }
 
+    /// Returns the full map of global variables.
+    ///
+    /// Globals (`global x = ...`) are the persistent, save-game-worthy part of
+    /// the environment: they live for the whole run, unlike scoped locals.
+    /// Hosts use this to serialise/restore state or to drive the script from
+    /// the engine side.
+    pub fn globals(&self) -> &HashMap<String, RuntimeValue> {
+        &self.globals
+    }
+
+    /// Overwrites a global variable from the host side.
+    ///
+    /// Unlike [`Self::set`] this does not need a declaration kind and does not
+    /// touch constants or scoped locals; it is meant for save restoration and
+    /// engine-driven state changes (e.g. toggling a story flag between runs).
+    pub fn set_global_value(&mut self, name: impl Into<String>, value: RuntimeValue) {
+        self.globals.insert(name.into(), value);
+    }
+
     /// Registers an enum type with its ordered variant names.
     pub fn define_enum(&mut self, name: String, variants: Vec<String>) {
         self.enums.insert(name, variants);
@@ -398,6 +417,25 @@ impl Environment {
     }
 }
 
+// ─── CallFrame ────────────────────────────────────────────────────────────────
+
+/// Saved execution context pushed when entering a labeled block.
+///
+/// When [`crate::ir::IrNodeKind::Return`] fires, the top frame is popped and
+/// execution resumes at `return_cursor`.
+#[derive(Debug, Clone)]
+pub struct CallFrame {
+    /// The node to resume execution at after the return.
+    ///
+    /// `None` means "end the script" — analogous to the old `NODE_END` sentinel.
+    pub return_cursor: Option<NodeIndex>,
+    /// The scope depth at the time the frame was pushed (used by Return to
+    /// unwind extra scopes).
+    pub scope_depth: usize,
+    /// If `Some(name)`, store the return value in this variable when returning.
+    pub assign_to_var: Option<String>,
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -518,23 +556,4 @@ mod tests {
         env.pop_scope().unwrap();
         assert_eq!(env.depth(), 1);
     }
-}
-
-// ─── CallFrame ────────────────────────────────────────────────────────────────
-
-/// Saved execution context pushed when entering a labeled block.
-///
-/// When [`crate::ir::IrNodeKind::Return`] fires, the top frame is popped and
-/// execution resumes at `return_cursor`.
-#[derive(Debug, Clone)]
-pub struct CallFrame {
-    /// The node to resume execution at after the return.
-    ///
-    /// `None` means "end the script" — analogous to the old `NODE_END` sentinel.
-    pub return_cursor: Option<NodeIndex>,
-    /// The scope depth at the time the frame was pushed (used by Return to
-    /// unwind extra scopes).
-    pub scope_depth: usize,
-    /// If `Some(name)`, store the return value in this variable when returning.
-    pub assign_to_var: Option<String>,
 }

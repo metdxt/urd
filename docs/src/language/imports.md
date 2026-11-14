@@ -105,6 +105,50 @@ Anything defined at the top level of a file is importable:
 
 ---
 
+## Aliased Values
+
+When a module is imported under an alias (`import "cast.urd" as cast`), its
+top-level `const` and `global` declarations are materialised as runtime
+bindings under the module namespace (`cast::<name>`). This happens right after
+that module's definition preamble runs, so aliased access is stable even when
+two imported modules declare the same bare name:
+
+```urd
+# a.urd
+const shared = "A"
+global counter = 1
+
+# b.urd
+const shared = "B"
+
+# main.urd
+import "a.urd" as a
+import "b.urd" as b
+
+@entry
+label start {
+    narrator: "{a.shared}/{b.shared}"   # "A/B", never "B/B"
+    end!()
+}
+```
+
+Within a module, bare names still resolve through the shared runtime
+environment; if two modules export the same name, the last definition wins for
+bare access. Prefer alias-qualified access across module boundaries. Exported
+top-level constants are materialised as module globals so duplicate declarations
+do not abort the program; scoped `const` declarations inside labels keep their
+usual immutability.
+
+Alias bindings are captured when the defining module's preamble runs. This is
+exact for `const` values. For mutable `global`s, a write performed through the
+bare name does not update an existing alias binding, so read and write mutable
+state through one form (preferably the alias) once it has been bound.
+
+Named imports (`import (shared) from "a.urd"`) bind the bare name only, so
+they are best used with unique names.
+
+---
+
 ## Cross-Module Label Jumps
 
 One of the most important uses of imports is jumping to labels defined in other

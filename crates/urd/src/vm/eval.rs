@@ -78,11 +78,18 @@ pub fn eval_expr(
                         eval_runtime_value(&RuntimeValue::IdentPath(receiver_path), env)?;
 
                     match receiver {
-                        RuntimeValue::List(list) => list_methods::dispatch(list.clone(), method, &args, env),
+                        RuntimeValue::List(list) => {
+                            list_methods::dispatch(list.clone(), method, &args, env)
+                        }
                         RuntimeValue::Roll(rolls) => {
                             let as_list: Vec<RuntimeValue> =
                                 rolls.iter().map(|&n| RuntimeValue::Int(n)).collect();
-                            list_methods::dispatch(crate::runtime::value::shared(as_list), method, &args, env)
+                            list_methods::dispatch(
+                                crate::runtime::value::shared(as_list),
+                                method,
+                                &args,
+                                env,
+                            )
                         }
                         RuntimeValue::Str(s) => str_methods::dispatch(s, method, &args),
                         RuntimeValue::Int(n) => int_methods::dispatch(n, method, &args),
@@ -188,7 +195,12 @@ pub fn eval_expr(
                         if let Some(list) = arg_as_list {
                             match fn_name {
                                 "min" | "max" | "sum" => {
-                                    return list_methods::dispatch(crate::runtime::value::shared(list.clone()), fn_name, &[], env);
+                                    return list_methods::dispatch(
+                                        crate::runtime::value::shared(list.clone()),
+                                        fn_name,
+                                        &[],
+                                        env,
+                                    );
                                 }
                                 _ => {}
                             }
@@ -308,9 +320,15 @@ pub fn eval_expr(
                             )));
                         }
                     };
-                    map.borrow().get(&key_str).map(|v| *v.clone()).ok_or_else(|| {
-                        VmError::UndefinedVariable(format!("key '{}' not found in map", key_str))
-                    })
+                    map.borrow()
+                        .get(&key_str)
+                        .map(|v| *v.clone())
+                        .ok_or_else(|| {
+                            VmError::UndefinedVariable(format!(
+                                "key '{}' not found in map",
+                                key_str
+                            ))
+                        })
                 }
                 RuntimeValue::List(list) => {
                     let idx = match key_val {
@@ -513,9 +531,11 @@ pub(super) fn eval_runtime_value(
                 }
             }
             2 => {
-                // Two-segment: try `EnumName.Variant` first, then try
-                // module-namespaced variable "alias::var_name", then fall back
-                // to plain variable lookup of the first segment.
+                // Two-segment: try `EnumName.Variant` first, then the
+                // module-namespaced binding "alias::var_name", then struct /
+                // extern field access. Imported module values get explicit
+                // `alias::name` bindings from the compiler, so no bare-name
+                // fallback is needed here.
                 if let Ok(variant) = env.get_enum_variant(&path[0], &path[1]) {
                     return Ok(variant);
                 }
@@ -1237,7 +1257,12 @@ fn values_equal_inner(
                 return true; // Assume equal to break cycle
             }
             visited.insert(ptr_pair);
-            let eq = xs.borrow().len() == ys.borrow().len() && xs.borrow().iter().zip(ys.borrow().iter()).all(|(a, b)| values_equal_inner(a, b, visited));
+            let eq = xs.borrow().len() == ys.borrow().len()
+                && xs
+                    .borrow()
+                    .iter()
+                    .zip(ys.borrow().iter())
+                    .all(|(a, b)| values_equal_inner(a, b, visited));
             visited.remove(&ptr_pair);
             eq
         }
@@ -1248,10 +1273,11 @@ fn values_equal_inner(
             }
             visited.insert(ptr_pair);
             let eq = xs.borrow().len() == ys.borrow().len()
-                && xs
-                    .borrow()
-                    .iter()
-                    .all(|(k, v)| ys.borrow().get(k).is_some_and(|yv| values_equal_inner(v, yv, visited)));
+                && xs.borrow().iter().all(|(k, v)| {
+                    ys.borrow()
+                        .get(k)
+                        .is_some_and(|yv| values_equal_inner(v, yv, visited))
+                });
             visited.remove(&ptr_pair);
             eq
         }
@@ -1272,10 +1298,11 @@ fn values_equal_inner(
             visited.insert(ptr_pair);
             let eq = n1 == n2
                 && f1.borrow().len() == f2.borrow().len()
-                && f1
-                    .borrow()
-                    .iter()
-                    .all(|(k, v)| f2.borrow().get(k).is_some_and(|fv| values_equal_inner(v, fv, visited)));
+                && f1.borrow().iter().all(|(k, v)| {
+                    f2.borrow()
+                        .get(k)
+                        .is_some_and(|fv| values_equal_inner(v, fv, visited))
+                });
             visited.remove(&ptr_pair);
             eq
         }
@@ -1579,10 +1606,7 @@ fn exec_fn_stmt(
                         let scalar = match &scalar_val {
                             RuntimeValue::Int(n) => Some(*n),
                             RuntimeValue::Float(f) => {
-                                if f.is_nan()
-                                    || *f < (i64::MIN as f64)
-                                    || *f > (i64::MAX as f64)
-                                {
+                                if f.is_nan() || *f < (i64::MIN as f64) || *f > (i64::MAX as f64) {
                                     None
                                 } else {
                                     Some(*f as i64)
@@ -1707,18 +1731,34 @@ mod tests {
 
     #[test]
     fn test_list_is_truthy() {
-        assert!(!is_truthy(&RuntimeValue::List(crate::runtime::value::shared(vec![]))));
-        assert!(is_truthy(&RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1)]))));
+        assert!(!is_truthy(&RuntimeValue::List(
+            crate::runtime::value::shared(vec![])
+        )));
+        assert!(is_truthy(&RuntimeValue::List(
+            crate::runtime::value::shared(vec![RuntimeValue::Int(1)])
+        )));
     }
 
     #[test]
     fn test_list_values_equal() {
-        let a = RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]));
-        let b = RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)]));
-        let c = RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1), RuntimeValue::Int(9)]));
+        let a = RuntimeValue::List(crate::runtime::value::shared(vec![
+            RuntimeValue::Int(1),
+            RuntimeValue::Int(2),
+        ]));
+        let b = RuntimeValue::List(crate::runtime::value::shared(vec![
+            RuntimeValue::Int(1),
+            RuntimeValue::Int(2),
+        ]));
+        let c = RuntimeValue::List(crate::runtime::value::shared(vec![
+            RuntimeValue::Int(1),
+            RuntimeValue::Int(9),
+        ]));
         assert!(values_equal(&a, &b));
         assert!(!values_equal(&a, &c));
-        assert!(!values_equal(&a, &RuntimeValue::List(crate::runtime::value::shared(vec![]))));
+        assert!(!values_equal(
+            &a,
+            &RuntimeValue::List(crate::runtime::value::shared(vec![]))
+        ));
     }
 
     #[test]
@@ -1759,7 +1799,10 @@ mod tests {
         let mut env = Environment::new();
         env.set(
             "xs",
-            RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(1), RuntimeValue::Int(2)])),
+            RuntimeValue::List(crate::runtime::value::shared(vec![
+                RuntimeValue::Int(1),
+                RuntimeValue::Int(2),
+            ])),
             &DeclKind::Variable,
         )
         .unwrap();
@@ -1845,7 +1888,8 @@ mod tests {
             Ast::value(RuntimeValue::Int(2)),
         )))]);
         let env = Environment::new();
-        let result = exec_fn_body(&body, &["x".to_string()], &[RuntimeValue::Int(5)], &env).unwrap();
+        let result =
+            exec_fn_body(&body, &["x".to_string()], &[RuntimeValue::Int(5)], &env).unwrap();
         assert_eq!(result, RuntimeValue::Int(10));
     }
 
@@ -2984,7 +3028,10 @@ mod tests {
     fn test_roll_not_equal_to_list_with_same_elements() {
         // Roll([3, 5]) must not compare equal to List([Int(3), Int(5)]).
         let roll = RuntimeValue::Roll(vec![3, 5]);
-        let list = RuntimeValue::List(crate::runtime::value::shared(vec![RuntimeValue::Int(3), RuntimeValue::Int(5)]));
+        let list = RuntimeValue::List(crate::runtime::value::shared(vec![
+            RuntimeValue::Int(3),
+            RuntimeValue::Int(5),
+        ]));
         assert!(!values_equal(&roll, &list));
     }
 
