@@ -234,10 +234,7 @@ pub(super) fn preamble_chain_target(
                     .edges_directed(current, Direction::Outgoing)
                     .find(|e| matches!(e.weight(), IrEdge::Next))
                     .map(|e| e.target());
-                match next {
-                    Some(n) => current = n,
-                    None => return None,
-                }
+                current = next?;
             }
             _ => return Some(current),
         }

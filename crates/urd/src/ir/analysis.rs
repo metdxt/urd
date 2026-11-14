@@ -71,10 +71,7 @@ pub fn follow_nops(graph: &IrGraph, mut idx: NodeIndex) -> Option<NodeIndex> {
                     .edges_directed(idx, Direction::Outgoing)
                     .find(|e| matches!(e.weight(), IrEdge::Next))
                     .map(|e| e.target());
-                match next {
-                    Some(n) => idx = n,
-                    None => return None,
-                }
+                idx = next?;
             }
             Some(_) => return Some(idx),
         }
@@ -290,10 +287,7 @@ pub fn entry_cluster_name(graph: &IrGraph) -> Option<String> {
                     .edges_directed(current, Direction::Outgoing)
                     .find(|e| matches!(e.weight(), IrEdge::Next))
                     .map(|e| e.target());
-                match next {
-                    Some(n) => current = n,
-                    None => return None,
-                }
+                current = next?;
             }
             _ => return None,
         }
